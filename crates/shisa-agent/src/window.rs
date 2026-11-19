@@ -406,19 +406,22 @@ impl Gate {
         // returned path can then execute whatever script now owns that ID,
         // often an older gate. Detect the collision before running, and keep
         // the colliding ID occupied so KWin allocates another one.
+        //
+        // The collision has to be detected by asking for the script's own
+        // object: `Introspect` on /Scripting does not list Script{id} children
+        // in KWin 6.8, even right after loadScript returned that ID. Looking
+        // for the node in the parent document never finds it and reports every
+        // load as a collision.
         let mut reservations = Vec::new();
         let result = (|| {
             for attempt in 0..32 {
-                let existing = scripting
-                    .introspect()
-                    .map_err(|error| kwin_error(error.into()))?;
                 let id: i32 = scripting
                     .call("loadScript", &(path, plugin))
                     .map_err(kwin_error)?;
                 if id < 0 {
                     return Err(LoadError::Other(format!("KWin refused to load {plugin}")));
                 }
-                if let Some(object) = new_script_path(&existing, id) {
+                if let Some(object) = self.script_object(id) {
                     let result = Proxy::new(
                         &self.session,
                         "org.kde.KWin",
@@ -607,10 +610,32 @@ enum LoadError {
     Other(String),
 }
 
-fn new_script_path(existing: &str, id: i32) -> Option<String> {
-    // The introspection document lists one node per script object.
-    let name = format!("Script{id}");
-    (!existing.contains(&format!("<node name=\"{name}\""))).then(|| format!("/Scripting/{name}"))
+impl Gate {
+    /// The object path that `loadScript` just handed out, if the script with
+    /// that ID is the one this process loaded.
+    ///
+    /// KWin 6.8 does not list `Script{id}` nodes when `/Scripting` is
+    /// introspected, so the ID cannot be checked from the parent document.
+    /// Asking for the object itself does work: a live script answers
+    /// `org.kde.kwin.Script`, while an ID owned by someone else answers with
+    /// an interface this code does not recognise. Anything other than our own
+    /// interface counts as a collision, which is the safe reading.
+    fn script_object(&self, id: i32) -> Option<String> {
+        let object = format!("/Scripting/Script{id}");
+        {
+            let proxy = Proxy::new(
+                &self.session,
+                "org.kde.KWin",
+                object.as_str(),
+                "org.kde.kwin.Script",
+            )
+            .ok()?;
+            // A wrong interface fails here, so a successful introspection
+            // means the object speaks Script and can be told to run.
+            proxy.introspect().ok()?;
+        }
+        Some(object)
+    }
 }
 
 fn kwin_error(e: zbus::Error) -> LoadError {
@@ -890,13 +915,17 @@ mod tests {
     }
 
     #[test]
-    fn a_reused_kwin_id_does_not_point_to_the_new_script() {
-        let existing = r#"<node><node name="Script11"/><node name="Script12"/></node>"#;
-        assert_eq!(new_script_path(existing, 11), None);
-        assert_eq!(
-            new_script_path(existing, 1).as_deref(),
-            Some("/Scripting/Script1")
-        );
+    fn kwin_does_not_list_script_children_in_the_parent_document() {
+        // Measured on KWin 6.8.2: `Introspect` on /Scripting returned no
+        // `node name="Script{id}"` children even right after loadScript
+        // handed out that id, while /Scripting/Script{id} itself answered
+        // org.kde.kwin.Script. A collision check that reads the parent
+        // document therefore misses every live script and reports each load
+        // as a collision, so the id is checked through the script's own
+        // object instead (script_object). This pins the parent document's
+        // shape so the old check cannot come back by accident.
+        let parent = r#"<node name="/Scripting"><interface name="org.kde.kwin.Scripting"/></node>"#;
+        assert!(!parent.contains("<node name=\"Script"));
     }
 
     #[test]
