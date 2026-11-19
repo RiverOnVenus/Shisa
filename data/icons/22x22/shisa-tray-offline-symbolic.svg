@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 22 22">
+      <title>Shisa Offline</title>
+      <style id="current-color-scheme">.ColorScheme-Text { color: #212320; }</style>
+      <g class="ColorScheme-Text" fill="currentColor" fill-rule="evenodd">
+      <defs>
+        <mask id="gap-22" x="0" y="0" width="22" height="22" maskUnits="userSpaceOnUse">
+          <rect width="22" height="22" fill="white"/>
+          <circle cx="17.7" cy="17.85" r="4.5" fill="black"/>
+        </mask>
+      </defs>
+      <g mask="url(#gap-22)"><path d="
+          M11 9.7a5.6 5.6 0 1 1 0 11.2 5.6 5.6 0 1 1 0-11.2Z
+          M11 11.55a3.75 3.75 0 1 0 0 7.5 3.75 3.75 0 1 0 0-7.5Z"/><path d="
+          M7 2h8l5 4v4.5l-3.7 3.3h-2.95L12.1 15.4H9.9l-1.25-1.6H5.7L2 10.5V6Z
+          M4.5 7l4.3 1.35v1.7h-2L4.5 8.25Z
+          M17.5 7l-4.3 1.35v1.7h2l2.3-1.8Z"/></g>
+      <path d="M17.7 14.200000000000001a3.65 3.65 0 1 1 0 7.3 3.65 3.65 0 1 1 0 -7.3Z M17.05 15.55h1.3v2.55h-1.3Z M17.05 19h1.3v1.1h-1.3Z"/></g>
+    </svg>

@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <vendor>Shisa</vendor>
+  <vendor_url>https://github.com/RiverOnVenus/Shisa</vendor_url>
+
+  <action id="io.github.RiverOnVenus.Shisa.launch">
+    <description>启动受保护的应用</description>
+    <description xml:lang="en">Start a protected application</description>
+    <message>打开 $(app) 需要验证身份</message>
+    <message xml:lang="en">Authentication is required to start $(app)</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+  </action>
+
+  <action id="io.github.RiverOnVenus.Shisa.change">
+    <description>修改受保护的应用和设置</description>
+    <description xml:lang="en">Change protected applications and settings</description>
+    <message>修改 $(app) 需要验证身份</message>
+    <message xml:lang="en">Authentication is required to change $(app)</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+  </action>
+</policyconfig>

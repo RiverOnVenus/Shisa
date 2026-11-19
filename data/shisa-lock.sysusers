@@ -1,0 +1,4 @@
+# Shisa 的应用锁密码持有者。安装后由管理员设置密码：
+#   sudo passwd shisa-lock
+# 账号不能登录，也没有家目录，只用于 polkit 认证。
+u shisa-lock - "Shisa application lock" / /usr/bin/nologin

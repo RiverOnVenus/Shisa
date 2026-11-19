@@ -1,0 +1,29 @@
+[workspace]
+resolver = "3"
+members = ["crates/shisa-core", "crates/shisad", "crates/shisa-agent", "crates/shisa-cli"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/RiverOnVenus/Shisa"
+publish = false
+
+[workspace.dependencies]
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+toml = { version = "0.9", default-features = false, features = ["parse", "display", "serde"] }
+tracing = { version = "0.1", default-features = false, features = ["std"] }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "fmt"] }
+futures-channel = "0.3"
+zbus = { version = "5.19", default-features = false, features = ["async-io", "blocking-api"] }
+shisa-core = { path = "crates/shisa-core" }
+
+# A panic in shisad must end the process: the kernel then allows every pending
+# exec request and drops the marks (DESIGN 5.3). Unwinding could leave a thread
+# dead while requests stay unanswered.
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"

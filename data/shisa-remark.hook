@@ -1,0 +1,11 @@
+[Trigger]
+Operation = Upgrade
+Type = Path
+Target = usr/*
+Target = opt/*
+
+[Action]
+Description = Shisa: re-reading protected paths
+When = PostTransaction
+# try- 在服务停止时直接成功返回，不会让每次系统升级都报 hook 失败。
+Exec = /usr/bin/systemctl try-reload-or-restart shisad.service

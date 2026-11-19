@@ -1,0 +1,31 @@
+# Design notes, progress logs and archived handoffs stay local
+DESIGN.md
+PROGRESS.md
+POLKIT-PLAN.md
+docs/archive/
+
+# AI agent configuration
+AGENTS.md
+CLAUDE.md
+CLAUDE.local.md
+GEMINI.md
+.claude/
+.codex/
+.cursor/
+.cursorrules
+.aider*
+.opencode/
+
+# Packaging is developed outside the repository
+packaging/
+
+# Build output
+target/
+build/
+gui/shisa-settings/node_modules/
+gui/shisa-settings/dist/
+gui/shisa-settings/src-tauri/target/
+gui/shisa-settings/src-tauri/gen/
+
+# Editor and tooling scratch
+.alma-snapshots/

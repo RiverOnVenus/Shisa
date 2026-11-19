@@ -1,0 +1,8 @@
+// Shisa 的动作使用单独的应用锁密码，账号是 shisa-lock。
+// 其他动作返回 null，继续走 50-default.rules 里的 wheel 规则。
+polkit.addAdminRule(function(action, subject) {
+    if (action.id.indexOf("io.github.RiverOnVenus.Shisa.") === 0) {
+        return ["unix-user:shisa-lock"];
+    }
+    return null;
+});

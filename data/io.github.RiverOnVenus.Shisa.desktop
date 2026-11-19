@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Shisa
+GenericName=Application Lock
+Comment=Require authentication before a protected application starts
+Exec=shisa-settings
+Icon=io.github.RiverOnVenus.Shisa-launcher
+Terminal=false
+Categories=System;Security;
+Keywords=lock;security;authentication;password;

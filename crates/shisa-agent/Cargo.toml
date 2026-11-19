@@ -1,0 +1,18 @@
+[package]
+name = "shisa-agent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "shisa-agent"
+path = "src/main.rs"
+
+[dependencies]
+shisa-core.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+ksni = "0.2"
+zbus.workspace = true

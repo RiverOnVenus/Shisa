@@ -1,0 +1,52 @@
+[Unit]
+Description=Shisa application lock
+Documentation=https://github.com/RiverOnVenus/Shisa
+After=dbus.service
+Wants=dbus.service
+
+[Service]
+Type=notify
+WatchdogSec=10
+ExecStart=/usr/bin/shisad
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=1
+# 挂起的启动每个占一个 fanotify 事件描述符，上限是每用户 256。systemd 默认
+# 软限制 1024，多用户或滥用时可能耗尽，读事件失败会让 shisad 退出。
+LimitNOFILE=8192:524288
+# 设置改动由 shisad 写回 /etc/shisa/users/。ProtectSystem=strict 下 /etc 只读，
+# ConfigurationDirectory 只负责建目录，写权限要靠 ReadWritePaths 单独放开。
+ConfigurationDirectory=shisa/users
+ReadWritePaths=/etc/shisa
+
+# CAP_SYS_ADMIN 给 fanotify_init。CAP_SYS_PTRACE 给读其他用户 /proc/<pid>/exe，
+# 那条路径要过 ptrace 访问检查，只靠 uid 0 不够。CAP_DAC_READ_SEARCH 给读用户
+# 家目录：家目录通常是 0700，没有它 shisad 读不到 ~/.local/share/applications
+# 里的 desktop 文件，也标记不了用户级 Flatpak 的入口。
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SYS_PTRACE CAP_DAC_READ_SEARCH
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+# @system-service 不含 fanotify_init 和 fanotify_mark（它们在 @mount 和
+# @privileged 里），单独放行这两条，避免把整个 @mount 打开。
+# 2026-11-15 实测：system bus、SIGHUP 重载和拦截都正常。
+SystemCallFilter=@system-service fanotify_init fanotify_mark
+# 被过滤的调用返回 EPERM，不杀进程。默认动作是 SIGSYS：名单外的调用会让
+# shisad 被杀，内核随即放行所有挂起的请求，保护反而失效。返回错误时那一次
+# 认证失败，保护还在。
+SystemCallErrorNumber=EPERM
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

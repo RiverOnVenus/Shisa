@@ -1,0 +1,1018 @@
+/* One quiet surface: white cards with hairline rows, a sidebar of small flat
+   rows, and controls that read as part of the page rather than as widgets. */
+:root {
+  --bg: #f4f4f6;
+  --card: #ffffff;
+  --pill: #f1f1f4;
+  --line: #e3e3e8;
+  --line-2: #ececf0;
+  --fg: #1c1c21;
+  --fg-2: #4b4b53;
+  --muted: #85858d;
+  --ctl-fg: #63636b;
+  --accent: #4f46e5;
+  --green: #189a58;
+  --green-soft: #e4f6ec;
+  --red: #d64545;
+  --red-soft: #fbe9e9;
+  --amber: #b45309;
+  --amber-soft: #fbf0df;
+  --seg-edge: 0 1px 2px rgba(0, 0, 0, 0.14), 0 0 0 0.5px rgba(0, 0, 0, 0.08);
+  --font: "Inter", "Noto Sans", "Noto Sans CJK SC", system-ui, sans-serif;
+  --code:
+    ui-monospace, "SF Mono", Menlo, Consolas, "Noto Sans Mono CJK SC", monospace;
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  color-scheme: light;
+}
+
+/* The window sets data-theme from the desktop's answer, asked of the XDG
+   portal in main.rs: WebKitGTK follows GTK, and KDE keeps GTK light under a
+   dark Plasma. main.js starts from the media query so the first paint is
+   already right, then the portal's answer replaces it. */
+:root[data-theme="dark"] {
+  --bg: #1a1a1e;
+  --card: #232327;
+  --pill: #2d2d33;
+  --line: #333339;
+  --line-2: #2c2c32;
+  --fg: #ededf1;
+  --fg-2: #b9b9c1;
+  --muted: #8b8b94;
+  --ctl-fg: #a1a1aa;
+  --accent: #a5b4fc;
+  --green: #6fd99b;
+  --green-soft: #1e3a2b;
+  --red: #f28b82;
+  --red-soft: #45272a;
+  --amber: #f2b544;
+  --amber-soft: #3f3220;
+  --seg-edge:
+    inset 0 0.5px 0 rgba(255, 255, 255, 0.08), 0 1px 2px rgba(0, 0, 0, 0.3);
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+  background: transparent;
+  overflow: hidden;
+}
+
+body {
+  font-family: var(--font);
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--fg);
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+  cursor: default;
+}
+
+button,
+input {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: default;
+  appearance: none;
+  -webkit-appearance: none;
+  text-align: center;
+}
+
+button:focus-visible,
+input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* ---- frame ---- */
+
+.app {
+  display: flex;
+  height: 100%;
+  background: var(--bg);
+  border-radius: 0;
+  border: 1px solid var(--line);
+  overflow: hidden;
+}
+
+.edge {
+  appearance: none;
+  -webkit-appearance: none;
+  position: fixed;
+  z-index: 50;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  cursor: default;
+}
+
+.edge-n,
+.edge-s {
+  cursor: ns-resize;
+}
+.edge-e,
+.edge-w {
+  cursor: ew-resize;
+}
+.edge-ne,
+.edge-sw {
+  cursor: nesw-resize;
+}
+.edge-nw,
+.edge-se {
+  cursor: nwse-resize;
+}
+
+.edge-n,
+.edge-s {
+  left: 8px;
+  right: 8px;
+  height: 5px;
+}
+.edge-n {
+  top: 0;
+}
+.edge-s {
+  bottom: 0;
+}
+.edge-e,
+.edge-w {
+  top: 8px;
+  bottom: 8px;
+  width: 5px;
+}
+.edge-e {
+  right: 0;
+}
+.edge-w {
+  left: 0;
+}
+.edge-ne,
+.edge-nw,
+.edge-se,
+.edge-sw {
+  width: 10px;
+  height: 10px;
+}
+.edge-ne {
+  top: 0;
+  right: 0;
+}
+.edge-nw {
+  top: 0;
+  left: 0;
+}
+.edge-se {
+  bottom: 0;
+  right: 0;
+}
+.edge-sw {
+  bottom: 0;
+  left: 0;
+}
+
+/* ---- sidebar ---- */
+
+.sidebar {
+  flex: none;
+  width: 212px;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  border-right: 1px solid var(--line);
+  min-height: 0;
+}
+
+.side-top {
+  flex: none;
+  display: flex;
+  align-items: center;
+  height: 46px;
+  padding: 0 18px 0 14px;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13.5px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.brand .logo {
+  display: block;
+  color: var(--fg);
+}
+
+.side-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 10px 10px;
+  /* the wheel still scrolls the list; a bar over the rows would cut into
+     the filter's last word */
+  scrollbar-width: none;
+}
+
+.side-scroll::-webkit-scrollbar {
+  display: none;
+}
+
+.search {
+  width: 100%;
+  height: 26px;
+  padding: 0 9px;
+  border-radius: 0;
+  border: 1px solid var(--line);
+  background: var(--card);
+  color: var(--fg);
+  font-size: 12px;
+  outline: none;
+}
+
+.search:focus {
+  border-color: var(--accent);
+}
+
+/* the filter: a segmented control, a white thumb on a pill track */
+.segs {
+  position: relative;
+  display: flex;
+  flex: none;
+  padding: 2px;
+  margin-top: 10px;
+  border-radius: 0;
+  background: var(--pill);
+}
+
+/* the chosen option carries the pill itself, sized to its word: a thumb
+   sliding over content-sized options would sit on a label */
+.segs .opt {
+  position: relative;
+  z-index: 1;
+  flex: none;
+  white-space: nowrap;
+  height: 22px;
+  padding: 0 6px;
+  border-radius: 0;
+  font-size: 11px;
+  color: var(--muted);
+  transition:
+    color 0.18s var(--ease),
+    background 0.12s;
+}
+
+.segs.two .opt {
+  padding: 0 10px;
+}
+
+.segs .opt.on {
+  background: var(--card);
+  box-shadow: var(--seg-edge);
+  color: var(--fg);
+}
+
+.segs .opt:hover:not(.on) {
+  color: var(--fg-2);
+}
+
+.segs .opt.on {
+  color: var(--fg);
+}
+
+.nav-gl {
+  padding: 14px 8px 4px;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.sidebar .row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  height: 30px;
+  padding: 0 8px;
+  border-radius: 0;
+  font-size: 13px;
+  color: var(--fg-2);
+  text-align: left;
+  white-space: nowrap;
+  transition:
+    background 0.12s,
+    color 0.12s;
+}
+
+.sidebar .row:hover:not(.on) {
+  background: var(--pill);
+  color: var(--fg);
+}
+
+.sidebar .row.on {
+  background: var(--card);
+  color: var(--fg);
+  box-shadow: var(--seg-edge);
+  font-weight: 500;
+}
+
+.sidebar .row img {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  object-fit: contain;
+}
+
+.icon-gap {
+  flex: none;
+  width: 16px;
+  height: 16px;
+}
+
+.sidebar .who {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.sidebar .name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sidebar .sub {
+  font-size: 10.5px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  margin-right: 3px;
+  border-radius: 50%;
+  background: var(--fg-2);
+}
+
+.dot.open {
+  background: var(--green);
+  box-shadow: 0 0 0 3px var(--green-soft);
+}
+
+.empty-state {
+  padding: 18px 8px;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
+}
+
+.side-foot {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 8px 10px 10px;
+  border-top: 1px solid var(--line-2);
+}
+
+.gw {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 26px;
+  margin-top: 2px;
+  padding: 0 9px;
+  border-radius: 0;
+  font-size: 11.5px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.gw > i {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--green);
+  box-shadow: 0 0 0 3px var(--green-soft);
+}
+
+.gw.off > i {
+  background: var(--muted);
+  box-shadow: none;
+}
+
+/* ---- main ---- */
+
+.main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.top {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 46px;
+  padding: 0 10px 0 20px;
+}
+
+.crumb {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  overflow: hidden;
+  white-space: nowrap;
+  font-size: 13.5px;
+}
+
+.crumb > span {
+  color: var(--muted);
+}
+
+.crumb > i {
+  font-style: normal;
+  color: var(--muted);
+  opacity: 0.6;
+}
+
+.crumb > b {
+  font-weight: 600;
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.icon {
+  width: 26px;
+  height: 26px;
+  border-radius: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  transition:
+    background 0.12s,
+    color 0.12s;
+}
+
+.icon:hover {
+  background: var(--pill);
+  color: var(--fg);
+}
+
+.icon.winclose {
+  align-self: center;
+  width: 22px;
+  height: 22px;
+  margin-left: 8px;
+  border-radius: 50%;
+  background: var(--pill);
+  color: var(--fg-2);
+}
+
+.icon.winclose:hover {
+  background: color-mix(in srgb, var(--fg) 12%, transparent);
+  color: var(--fg);
+}
+
+.view {
+  flex: 1;
+  min-height: 0;
+  overflow-y: scroll;
+  padding: 10px 16px 16px;
+  display: flex;
+  flex-direction: column;
+}
+
+.view > * {
+  flex-shrink: 0;
+}
+
+/* a column the eye can follow across, centred in a wide window */
+.col {
+  flex: 1 0 auto;
+  width: 100%;
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+.top-q {
+  flex: 0 1 220px;
+  min-width: 120px;
+  margin-right: 4px;
+}
+
+.set[hidden],
+.set-none[hidden] {
+  display: none;
+}
+
+.set-none {
+  margin: 18px 2px;
+  font-size: 13px;
+  color: var(--muted);
+  text-align: center;
+}
+
+/* ---- the activity page: the launch audit, in the app's own rows ---- */
+
+.act-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 2px 2px 6px;
+}
+
+.act-head .grow {
+  flex: 1;
+}
+
+/* the filter sits in the head, not at the sidebar's margin */
+.act-head .label {
+  padding: 0;
+}
+
+.act-head .segs {
+  margin: 0;
+}
+
+/* an audit row opens the app it names */
+.prefrow.click {
+  cursor: pointer;
+  transition: background 0.12s;
+}
+
+.prefrow.click:hover {
+  background: var(--pill);
+}
+
+.prefrow.click:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* ticket state on the app page */
+.state {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.state::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--fg-2);
+}
+
+.state.open {
+  color: var(--green);
+}
+
+.state.open::before {
+  background: var(--green);
+  box-shadow: 0 0 0 3px var(--green-soft);
+}
+
+.act-summary {
+  margin: 0 2px 10px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.prefrow .name .when {
+  margin-left: 8px;
+  font-size: 11.5px;
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.outcome {
+  flex: none;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.outcome.ok {
+  color: var(--green);
+}
+
+.outcome.bad {
+  color: var(--red);
+}
+
+.outcome.wait {
+  color: var(--amber);
+}
+
+.outcome .why {
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.set {
+  margin-top: 14px;
+}
+
+.set:first-child {
+  margin-top: 4px;
+}
+
+.label {
+  display: block;
+  padding: 0 2px 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+
+.set .list {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 0;
+  overflow: hidden;
+}
+
+/* the first run before root sets the app-lock password: impossible to miss,
+   still a card like the rest of the page */
+.set.notice .list {
+  border-color: color-mix(in srgb, var(--amber) 32%, var(--line));
+  background: var(--amber-soft);
+}
+
+.set.notice .name {
+  color: var(--amber);
+}
+
+.set.notice .sub {
+  color: var(--fg-2);
+}
+
+.prefrow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 48px;
+  padding: 7px 12px 7px 14px;
+}
+
+.prefrow + .prefrow {
+  border-top: 1px solid var(--line-2);
+}
+
+.prefrow .who {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.prefrow .name {
+  font-weight: 500;
+  letter-spacing: -0.005em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.prefrow .name.mono {
+  font-family: var(--code);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.prefrow .sub {
+  font-size: 11.5px;
+  color: var(--muted);
+  margin-top: 1px;
+  line-height: 1.45;
+}
+
+.prefrow .sub.bad {
+  color: var(--red);
+}
+
+/* a path or a config location, set apart from the sentence around it */
+.prefrow .sub.mono {
+  font-family: var(--code);
+  font-size: 11px;
+  word-break: break-all;
+}
+
+.prefrow .sub code {
+  font-family: var(--code);
+  font-size: 11px;
+  padding: 1px 5px;
+  border-radius: 0;
+  background: var(--pill);
+  color: var(--fg-2);
+}
+
+.prefrow .app-ic {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  object-fit: contain;
+}
+
+.val {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+
+/* the grace picker: five words plus, for a hand-written value, its number
+   field, so a narrow row wraps instead of squeezing the sentence */
+.val.grace {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  row-gap: 4px;
+}
+
+.val.grace .segs {
+  margin: 0;
+}
+
+.unit {
+  font-size: 11.5px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.num {
+  width: 76px;
+  height: 26px;
+  padding: 0 9px;
+  border-radius: 0;
+  border: 1px solid var(--line);
+  background: var(--card);
+  color: var(--fg);
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  outline: none;
+}
+
+.num:focus {
+  border-color: var(--accent);
+}
+
+/* WebKitGTK draws its own stepper on a number field, and it crowds the 26px
+   box */
+.num::-webkit-inner-spin-button,
+.num::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+/* ---- controls ---- */
+
+/* the switch: graphite when on, the page's own colour knocked out of the knob */
+.lib-switch {
+  flex: none;
+  position: relative;
+  width: 32px;
+  height: 19px;
+  border-radius: 10px;
+  background: var(--line);
+  transition: background 0.2s var(--ease);
+}
+
+.lib-switch i {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+  transition:
+    transform 0.22s var(--ease),
+    background 0.2s var(--ease);
+}
+
+.lib-switch.on {
+  background: var(--fg);
+}
+
+.lib-switch.on i {
+  transform: translateX(13px);
+  background: var(--card);
+}
+
+.text {
+  font-size: 12px;
+  color: var(--ctl-fg);
+  padding: 3px 7px;
+  border-radius: 0;
+  transition:
+    background 0.12s,
+    color 0.12s;
+  white-space: nowrap;
+}
+
+.text:hover {
+  color: var(--fg);
+  background: var(--pill);
+}
+
+.text.action {
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  background: var(--card);
+  color: var(--fg-2);
+  box-shadow: 0 1px 1px rgba(0, 0, 0, 0.04);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.text.action:hover {
+  border-color: var(--muted);
+  background: var(--pill);
+  color: var(--fg);
+}
+
+.text.danger {
+  color: var(--red);
+}
+
+.text.danger:hover {
+  background: var(--red-soft);
+  color: var(--red);
+}
+
+.text:disabled {
+  opacity: 0.4;
+  cursor: default;
+  background: none;
+}
+
+.text.action:disabled {
+  background: var(--card);
+  opacity: 0.5;
+}
+
+.add {
+  display: flex;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.add input {
+  flex: 1;
+  min-width: 0;
+  height: 26px;
+  padding: 0 9px;
+  border-radius: 0;
+  border: 1px solid var(--line);
+  background: var(--card);
+  color: var(--fg);
+  font-size: 12px;
+  outline: none;
+}
+
+.add input::placeholder {
+  color: var(--muted);
+}
+
+.add input:focus {
+  border-color: var(--accent);
+}
+
+.empty {
+  margin: 18px auto;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+/* ---- the waiting sheet ---- */
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--bg) 55%, transparent);
+}
+
+.busy {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 18px;
+  border-radius: 0;
+  background: var(--card);
+  border: 1px solid var(--line);
+  box-shadow:
+    0 16px 44px rgba(20, 22, 30, 0.16),
+    0 2px 8px rgba(20, 22, 30, 0.06);
+  font-size: 13px;
+  color: var(--fg-2);
+}
+
+.spinner {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid var(--line);
+  border-top-color: var(--fg-2);
+  animation: spin 0.9s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* the page's own error line, over the content column, never over the
+   sidebar's foot */
+.banner {
+  position: absolute;
+  z-index: 45;
+  left: 16px;
+  right: 16px;
+  bottom: 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 10px 9px 14px;
+  border-radius: 0;
+  border: 1px solid var(--red-soft);
+  background: var(--red-soft);
+  color: var(--red);
+  font-size: 12px;
+  box-shadow:
+    0 8px 24px rgba(20, 22, 30, 0.12),
+    0 0 0 0.5px rgba(20, 22, 30, 0.08);
+}
+
+.banner span {
+  flex: 1;
+  min-width: 0;
+}
+
+.banner .text {
+  color: var(--red);
+}
+
+.banner .text:hover {
+  background: color-mix(in srgb, var(--red) 14%, transparent);
+  color: var(--red);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+    animation: none !important;
+  }
+}
