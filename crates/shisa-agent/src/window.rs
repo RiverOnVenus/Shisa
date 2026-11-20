@@ -2,9 +2,8 @@
 //!
 //! KWin runs a generated script that hides the windows of protected apps
 //! whose tickets are gone. The script only reaches the session bus, so it
-//! calls this agent, and the agent asks shisad on the system bus. The script
-//! is regenerated and reloaded whenever the protection or ticket state
-//! changes.
+//! calls this agent, and the agent asks shisad on the system bus. The running
+//! script reads new state revisions without reloading.
 //!
 //! This layer is best effort: the script and the agent run as the user, and
 //! a same-user process can unload the script or change the window properties
@@ -34,9 +33,15 @@ pub struct Tracker {
     pub relock: HashMap<String, u64>,
     /// App id to when its window last lost focus.
     unfocused: HashMap<String, Instant>,
+    focused: Option<String>,
 }
 
 impl Tracker {
+    pub fn may_relock(&self, app: &str) -> bool {
+        self.focused.as_deref() != Some(app)
+            && !self.unfocused.contains_key(app)
+            && self.relock.get(app).is_some_and(|delay| *delay > 0)
+    }
     /// Apps that have been unfocused longer than their delay. The entry is
     /// removed so the timer fires once per focus cycle.
     pub fn take_due(&mut self, now: Instant) -> Vec<String> {
@@ -78,8 +83,17 @@ impl Tracker {
 /// `loadScript` can silently do nothing. This is the proof that the new
 /// script really executed and connected its handlers.
 #[derive(Default)]
+struct Inventory {
+    version: (u64, u64),
+    masks: String,
+    counts: HashMap<String, u32>,
+}
+
+#[derive(Default)]
 pub struct Ready {
     generation: Mutex<(u64, u32, u32)>,
+    desired: Mutex<String>,
+    inventory: Mutex<Inventory>,
     changed: Condvar,
 }
 
@@ -140,12 +154,70 @@ impl WindowService {
 
 #[zbus::interface(name = "io.github.RiverOnVenus.Shisa.Window")]
 impl WindowService {
+    fn window_state(&self) -> String {
+        self.ready.desired.lock().unwrap().clone()
+    }
+
+    fn hide_on_unfocus(&self) -> String {
+        let apps = self
+            .tracker
+            .lock()
+            .unwrap()
+            .relock
+            .iter()
+            .filter(|(_, delay)| **delay > 0)
+            .map(|(app, _)| app.clone())
+            .collect::<Vec<_>>();
+        js_list(&apps)
+    }
+
+    fn privacy_masks(&self) -> String {
+        self.ready.inventory.lock().unwrap().masks.clone()
+    }
+
+    fn hidden_apps(&self) -> HashMap<String, u32> {
+        self.ready.inventory.lock().unwrap().counts.clone()
+    }
+
+    fn unlock_mask(&self, app: String) -> zbus::fdo::Result<()> {
+        self.actions
+            .send(super::Action::Unlock(app))
+            .map_err(|error| zbus::fdo::Error::Failed(error.to_string()))
+    }
+
     fn windows_checked(&self, generation: &str, matched: &str, hidden: &str) {
         if let (Ok(generation), Ok(matched), Ok(hidden)) =
             (generation.parse(), matched.parse(), hidden.parse())
         {
             self.ready.note(generation, matched, hidden);
         }
+    }
+
+    fn hidden_windows(&self, generation: &str, sequence: &str, counts: &str, masks: String) {
+        let (Ok(generation), Ok(sequence)) = (generation.parse(), sequence.parse()) else {
+            return;
+        };
+        let counts = counts
+            .lines()
+            .filter_map(|line| {
+                let (count, app) = line.split_once('\t')?;
+                Some((app.to_owned(), count.parse().ok()?))
+            })
+            .collect::<HashMap<_, _>>();
+        {
+            let mut current = self.ready.inventory.lock().unwrap();
+            if (generation, sequence) <= current.version {
+                return;
+            }
+            *current = Inventory {
+                version: (generation, sequence),
+                masks,
+                counts: counts.clone(),
+            };
+        }
+        let _ = self
+            .actions
+            .send(super::Action::HiddenWindows((generation, sequence), counts));
     }
 
     fn verify_lock(&self) -> zbus::fdo::Result<()> {
@@ -162,8 +234,11 @@ impl WindowService {
             // The window lost focus. Start its relock clock when the app has
             // the feature enabled.
             "unfocused" => {
+                if tracker.focused.as_deref() == Some(&app_id) {
+                    tracker.focused = None;
+                }
                 if tracker.relock.contains_key(&app_id) {
-                    tracker.unfocused.insert(app_id, Instant::now());
+                    tracker.unfocused.entry(app_id).or_insert_with(Instant::now);
                 }
             }
             // The app has the focus again: a switch back before the delay
@@ -171,6 +246,7 @@ impl WindowService {
             // user is working in it.
             "focused" => {
                 tracker.unfocused.remove(&app_id);
+                tracker.focused = Some(app_id);
             }
             _ => {}
         }
@@ -184,6 +260,8 @@ pub struct Gate {
     directory: PathBuf,
     loaded: Option<(Vec<String>, Vec<String>)>,
     generation: u64,
+    instance: u64,
+    foreground: String,
     /// KWin only runs a script's handlers when it is loaded under a new
     /// plugin name. Each generation gets its own name, and the last one is
     /// kept in `gate-plugin` so a restarted agent can unload it.
@@ -194,8 +272,6 @@ pub struct Gate {
     /// after a fresh script has reported started: unloading one script right
     /// before loading another makes KWin ignore the new one.
     stale: Vec<String>,
-    /// The one-shot activation script currently loaded, if any.
-    activation: String,
 }
 
 impl Gate {
@@ -220,7 +296,8 @@ impl Gate {
             plugin: String::new(),
             ready,
             stale: vec![LEGACY_PLUGIN.to_string()],
-            activation: String::new(),
+            instance: 0,
+            foreground: String::new(),
         };
         // A previous agent leaves its script behind. Its handlers keep
         // running until a fresh generation is up, because unloading it now
@@ -235,7 +312,7 @@ impl Gate {
     }
 
     /// Match the windows to the protected apps and the apps whose windows
-    /// are allowed to show. A verification forces a fresh generation and returns
+    /// are allowed to show. A verification requests a fresh revision and returns
     /// its matched and concealed window counts. Missing reports return None.
     pub fn sync(
         &mut self,
@@ -318,77 +395,17 @@ impl Gate {
     /// gate only changes visibility, so without this the restored window
     /// stays behind whatever the user was looking at.
     pub fn activate(&mut self, app: &str) {
-        self.activate_attempt(app, true);
+        let Some((protected, allowed)) = self.loaded.clone() else {
+            return;
+        };
+        self.restore(&protected, &allowed, app);
     }
 
-    fn activate_attempt(&mut self, app: &str, retry: bool) {
-        self.generation += 1;
-        let path = self
-            .directory
-            .join(format!("shisa-activate-{}.js", self.generation));
-        let plugin = format!(
-            "shisa-window-activate-{}-{}",
-            std::process::id(),
-            self.generation
-        );
-        let script = format!(
-            "const TARGET = {};\n\
-             const list = workspace.windowList();\n\
-             for (let i = 0; i < list.length; i++) {{\n\
-               const w = list[i];\n\
-               if (w.desktopFileName === TARGET || w.resourceClass === TARGET) {{\n\
-                 w.desktops = [workspace.currentDesktop];\n\
-                 w.minimized = false;\n\
-                 w.opacity = 1;\n\
-                 w.skipTaskbar = false;\n\
-                 w.skipSwitcher = false;\n\
-                 w.skipPager = false;\n\
-                 workspace.raiseWindow(w);\n\
-                 workspace.activeWindow = w;\n\
-                 break;\n\
-               }}\n\
-             }}\n\
-             callDBus({}, {}, {}, \"WindowsChecked\", \"{}\", \"0\", \"0\", function () {{}});\n",
-            js_string(app), js_string(WINDOW_BUS_NAME), js_string(WINDOW_PATH),
-            js_string(WINDOW_INTERFACE), self.generation
-        );
-        let result = (|| -> Result<(), String> {
-            write_script(&path, &script)?;
-            self.run_script(&path, &plugin)
-                .map_err(|error| match error {
-                    LoadError::Missing => "KWin scripting is not available".to_string(),
-                    LoadError::Other(why) => why,
-                })?;
-            // The previous one-shot is unloaded when the next activation
-            // replaces it, or by unload(), not here: an unload immediately
-            // after a load can make KWin ignore a gate script loaded right
-            // afterwards.
-            let previous = std::mem::take(&mut self.activation);
-            if !previous.is_empty() {
-                self.stale.push(previous);
-            }
-            self.activation = plugin;
-            Ok(())
-        })();
-        match result {
-            // KWin may compile the source after `run` returns, so a working
-            // one-shot keeps its file until the next confirmed gate load
-            // cleans the old ones up. A failed load never reached the
-            // compiler, so its file goes now.
-            Ok(()) => {
-                if !self.ready.wait(self.generation, Duration::from_millis(1200)) {
-                    if retry {
-                        self.activate_attempt(app, false);
-                    } else {
-                        warn!("window activation did not report completed");
-                    }
-                }
-            }
-            Err(e) => {
-                let _ = fs::remove_file(&path);
-                debug!("window gate activate: {e}");
-            }
-        }
+    pub fn restore(&mut self, protected: &[String], allowed: &[String], app: &str) -> bool {
+        self.foreground = app.to_owned();
+        let confirmed = self.sync(protected, allowed, true).is_some();
+        self.foreground.clear();
+        confirmed
     }
 
     fn run_script(&self, path: &Path, plugin: &str) -> Result<(), LoadError> {
@@ -459,6 +476,34 @@ impl Gate {
         allowed: &[String],
         restore: &[String],
     ) -> Result<(), LoadError> {
+        if self.is_loaded() {
+            self.generation += 1;
+            self.publish_state(protected, allowed, restore);
+            if self.ready.wait(self.generation, Duration::from_millis(1200)) {
+                return Ok(());
+            }
+        }
+        self.bootstrap(protected, allowed, restore)
+    }
+
+    fn publish_state(&self, protected: &[String], allowed: &[String], restore: &[String]) {
+        *self.ready.desired.lock().unwrap() = format!(
+            "[{},{},{},{},{},{}]",
+            self.instance,
+            self.generation,
+            js_list(protected),
+            js_list(allowed),
+            js_list(restore),
+            js_string(&self.foreground),
+        );
+    }
+
+    fn bootstrap(
+        &mut self,
+        protected: &[String],
+        allowed: &[String],
+        restore: &[String],
+    ) -> Result<(), LoadError> {
         // KWin compiles the source asynchronously and `run` can silently do
         // nothing. The script calls back once it has started, and a fresh
         // generation is tried if that does not arrive. A new name also keeps
@@ -471,8 +516,11 @@ impl Gate {
                 debug!("window gate: the script did not report, loading another");
             }
             self.generation += 1;
+            self.instance = self.generation;
+            self.publish_state(protected, allowed, restore);
             let path = self.directory.join(format!("kwin-gate-{}.js", self.generation));
-            let source = script_for(protected, allowed, restore, self.generation);
+            let source = script_for(protected, allowed, restore, self.generation)
+                .replace("reconcile(\"\");", &format!("reconcile({});", js_string(&self.foreground)));
             write_script(&path, &source).map_err(LoadError::Other)?;
             let plugin = format!(
                 "shisa-window-gate-{}-{}",
@@ -514,12 +562,6 @@ impl Gate {
     }
 
     pub fn unload(&mut self) {
-        // A one-shot activation script has done its work by now. Leaving it
-        // loaded only adds state to KWin's script engine.
-        let activation = std::mem::take(&mut self.activation);
-        if !activation.is_empty() {
-            self.stale.push(activation);
-        }
         for name in std::mem::take(&mut self.stale) {
             self.unload_named(&name);
         }
@@ -604,6 +646,7 @@ impl Gate {
     }
 }
 
+#[derive(Debug)]
 enum LoadError {
     /// KWin's scripting interface is not on the session bus.
     Missing,
@@ -673,20 +716,19 @@ fn script_for(
     restore: &[String],
     generation: u64,
 ) -> String {
-    let list = |ids: &[String]| {
-        ids.iter()
-            .map(|id| js_string(id))
-            .collect::<Vec<_>>()
-            .join(", ")
-    };
     TEMPLATE
         .replace("@SERVICE@", &js_string(WINDOW_BUS_NAME))
         .replace("@PATH@", &js_string(WINDOW_PATH))
         .replace("@IFACE@", &js_string(WINDOW_INTERFACE))
-        .replace("@PROTECTED@", &list(protected))
-        .replace("@ALLOWED@", &list(allowed))
-        .replace("@RESTORE@", &list(restore))
+        .replace("@PROTECTED@", &js_list(protected))
+        .replace("@ALLOWED@", &js_list(allowed))
+        .replace("@RESTORE@", &js_list(restore))
         .replace("@GENERATION@", &generation.to_string())
+}
+
+fn js_list(ids: &[String]) -> String {
+    let items = ids.iter().map(|id| js_string(id)).collect::<Vec<_>>();
+    format!("[{}]", items.join(", "))
 }
 
 fn js_string(value: &str) -> String {
@@ -711,12 +753,88 @@ const TEMPLATE: &str = r#"// Generated by shisa-agent. Do not edit.
 const SERVICE = @SERVICE@;
 const PATH = @PATH@;
 const IFACE = @IFACE@;
-const GENERATION = @GENERATION@;
-const PROTECTED = [@PROTECTED@];
-const ALLOWED = [@ALLOWED@];
-const RESTORE = [@RESTORE@];
+let generation = @GENERATION@;
+const instance = generation;
+let PROTECTED = @PROTECTED@;
+let ALLOWED = @ALLOWED@;
+let RESTORE = @RESTORE@;
 
 let hidden = [];
+let inventorySequence = 0;
+let lastSnapshot;
+let privacyMasks = [];
+
+function reportHiddenWindows() {
+  const counts = new Map();
+  for (const window of hidden) {
+    const app = appOf(window);
+    if (!app || /[\x00\r\n]/.test(app)) continue;
+    if (looksHidden(window) && window.skipSwitcher && window.skipPager) {
+      counts.set(app, (counts.get(app) || 0) + 1);
+    }
+  }
+  const snapshot = Array.from(counts, ([app, count]) => count + "\t" + app).join("\n");
+  const geometry = JSON.stringify(privacyMasks);
+  const report = JSON.stringify([generation, snapshot, geometry]);
+  if (report === lastSnapshot) return;
+  callDBus(SERVICE, PATH, IFACE, "HiddenWindows", String(generation), String(++inventorySequence), snapshot, geometry, function () {
+    lastSnapshot = report;
+  });
+}
+
+function onCurrentDesktop(window) {
+  return (window.onAllDesktops || Array.from(window.desktops).includes(workspace.currentDesktop)) &&
+    (!window.activities.length || Array.from(window.activities).includes(workspace.currentActivity));
+}
+
+function subtract(rect, cover) {
+  const [left, top, right, bottom] = rect;
+  const cutLeft = Math.max(left, cover.x);
+  const cutTop = Math.max(top, cover.y);
+  const cutRight = Math.min(right, cover.x + cover.width);
+  const cutBottom = Math.min(bottom, cover.y + cover.height);
+  if (cutLeft >= cutRight || cutTop >= cutBottom) return [rect];
+  return [
+    [left, top, right, cutTop],
+    [left, cutBottom, right, bottom],
+    [left, cutTop, cutLeft, cutBottom],
+    [cutRight, cutTop, right, cutBottom],
+  ].filter(([x, y, endX, endY]) => endX > x && endY > y);
+}
+
+function geometry(window) {
+  const frame = window.frameGeometry || window;
+  return { x: frame.x, y: frame.y, width: frame.width, height: frame.height };
+}
+
+function updatePrivacyMasks(hideApps) {
+  const stack = Array.from(workspace.stackingOrder);
+  const active = workspace.activeWindow;
+  const visible = window => !window.deleted && !window.hidden && !window.minimized &&
+    window.opacity > 0 && onCurrentDesktop(window);
+  privacyMasks = [];
+  stack.forEach((window, index) => {
+    const app = appOf(window);
+    if (!window.normalWindow || window === active || !visible(window) ||
+        !app || !isAllowed(app) || hideApps.includes(app)) return;
+    const area = geometry(window);
+    let parts = [[area.x, area.y, area.x + area.width, area.y + area.height]];
+    for (const higher of stack.slice(index + 1)) {
+      if (higher.managed && higher.caption !== "Shisa Privacy Mask" && visible(higher)) {
+        const cover = geometry(higher);
+        const uncovered = [];
+        for (const part of parts) {
+          uncovered.push(...subtract(part, cover));
+        }
+        parts = uncovered;
+      }
+    }
+    parts.forEach(([x, y, right, bottom], part) => {
+      privacyMasks.push([String(window.internalId) + ":" + part, x, y, right - x, bottom - y]);
+    });
+  });
+  reportHiddenWindows();
+}
 
 function appOf(w) {
   if (!w) return "";
@@ -755,12 +873,13 @@ function show(w) {
   // up on its own. An unrelated state change must not undo the user's
   // minimize.
   const ours = i >= 0 || looksHidden(w);
+  if (!ours) return;
   if (i >= 0) hidden.splice(i, 1);
   w.opacity = 1;
   w.skipTaskbar = false;
   w.skipSwitcher = false;
   w.skipPager = false;
-  if (ours) w.minimized = false;
+  w.minimized = false;
 }
 
 function consider(w) {
@@ -773,18 +892,45 @@ function consider(w) {
   else show(w);
 }
 
-const list = workspace.windowList();
-for (let i = 0; i < list.length; i++) {
-  if (appOf(list[i])) consider(list[i]);
-  else if (looksHidden(list[i])) show(list[i]);
+function reconcile(foreground) {
+  for (const window of Array.from(workspace.windowList())) {
+    if (appOf(window)) consider(window);
+    else if (hidden.indexOf(window) >= 0 || looksHidden(window)) show(window);
+  }
+  if (foreground && (ALLOWED.indexOf(foreground) >= 0 || PROTECTED.indexOf(foreground) < 0)) {
+    const window = Array.from(workspace.windowList()).find(window =>
+      window.desktopFileName === foreground || window.resourceClass === foreground);
+    if (window) {
+      window.desktops = [workspace.currentDesktop];
+      window.minimized = false;
+      workspace.raiseWindow(window);
+      workspace.activeWindow = window;
+    }
+  }
+  const targets = Array.from(workspace.windowList()).filter(window => {
+    const app = appOf(window);
+    return PROTECTED.indexOf(app) >= 0 && !isAllowed(app);
+  });
+  const concealed = targets.filter(window => looksHidden(window) && window.skipSwitcher && window.skipPager);
+  if (foreground && ALLOWED.includes(foreground) &&
+      Array.from(workspace.windowList()).some(window => appOf(window) === foreground && looksHidden(window))) {
+    reportHiddenWindows();
+    return;
+  }
+  callDBus(SERVICE, PATH, IFACE, "WindowsChecked", String(generation), String(targets.length), String(concealed.length), function () {});
+  reportHiddenWindows();
 }
 workspace.windowAdded.connect(function (w) {
   consider(w);
+  if (hidden.indexOf(w) >= 0) reportHiddenWindows();
 });
 if (workspace.windowRemoved) {
   workspace.windowRemoved.connect(function (w) {
     const i = hidden.indexOf(w);
-    if (i >= 0) hidden.splice(i, 1);
+    if (i >= 0) {
+      hidden.splice(i, 1);
+      reportHiddenWindows();
+    }
   });
 }
 
@@ -808,6 +954,10 @@ if (initialWindow) {
 }
 workspace.windowActivated.connect(function (w) {
   const app = appOf(w);
+  if (app && PROTECTED.indexOf(app) >= 0 && !isAllowed(app)) {
+    hide(w);
+    return;
+  }
   if (activeApp && activeApp !== app) {
     report(activeApp, activePid, "unfocused");
   }
@@ -819,12 +969,29 @@ workspace.windowActivated.connect(function (w) {
 // Tell the agent this generation is running. It waits for this before
 // trusting the load, because `run` can reach KWin before the source is
 // compiled.
-const targets = Array.from(workspace.windowList()).filter(w => {
-  const app = appOf(w);
-  return PROTECTED.indexOf(app) >= 0 && !isAllowed(app);
+reconcile("");
+const timer = new QTimer();
+timer.interval = 250;
+timer.timeout.connect(function () {
+  callDBus(SERVICE, PATH, IFACE, "HideOnUnfocus", function (apps) {
+    if (apps) updatePrivacyMasks(JSON.parse(apps));
+  });
+  callDBus(SERVICE, PATH, IFACE, "WindowState", function (payload) {
+    if (!payload) return;
+    const [owner, revision, protectedApps, allowedApps, restoreApps, foreground] = JSON.parse(payload);
+    if (owner !== instance) return;
+    if (revision <= generation) {
+      reportHiddenWindows();
+      return;
+    }
+    generation = revision;
+    PROTECTED = protectedApps;
+    ALLOWED = allowedApps;
+    RESTORE = restoreApps;
+    reconcile(foreground);
+  });
 });
-const concealed = targets.filter(w => looksHidden(w) && w.skipSwitcher && w.skipPager);
-callDBus(SERVICE, PATH, IFACE, "WindowsChecked", String(GENERATION), String(targets.length), String(concealed.length), function () {});
+timer.start();
 "#;
 
 #[cfg(test)]
@@ -840,10 +1007,10 @@ mod tests {
             &["old.app".into()],
             7,
         );
-        assert!(script.contains(r#"const PROTECTED = ["org.kde.kwrite", "a\"b"];"#));
-        assert!(script.contains(r#"const ALLOWED = ["org.kde.kwrite"];"#));
-        assert!(script.contains(r#"const RESTORE = ["old.app"];"#));
-        assert!(script.contains("const GENERATION = 7;"));
+        assert!(script.contains(r#"let PROTECTED = ["org.kde.kwrite", "a\"b"];"#));
+        assert!(script.contains(r#"let ALLOWED = ["org.kde.kwrite"];"#));
+        assert!(script.contains(r#"let RESTORE = ["old.app"];"#));
+        assert!(script.contains("let generation = 7;"));
         assert!(script.contains(&format!("const SERVICE = \"{WINDOW_BUS_NAME}\";")));
         // A reload keeps the focus tracking instead of losing one cycle.
         assert!(script.contains("workspace.activeWindow"));
@@ -965,6 +1132,7 @@ mod tests {
                 .unwrap()
         );
         assert!(!tracker.lock().unwrap().unfocused.contains_key("app"));
+        assert!(!tracker.lock().unwrap().may_relock("app"));
         // The timer never fires for this focus cycle.
         assert!(
             tracker

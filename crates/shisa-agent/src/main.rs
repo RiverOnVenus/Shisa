@@ -9,7 +9,7 @@
 //! When shisad restarts or goes away the agent keeps running, marks itself
 //! offline and registers again.
 
-use ksni::menu::{CheckmarkItem, MenuItem, StandardItem};
+use ksni::menu::{MenuItem, StandardItem};
 use ksni::{Category, Handle, Status, Tray, TrayService};
 use shisa_core::dbus::{
     BUS_NAME, INTERFACE, ManagerProxyBlocking, WINDOW_BUS_NAME, WINDOW_PATH,
@@ -35,7 +35,9 @@ enum Action {
     VerifyLock,
     Lock(String),
     Unlock(String),
+    HiddenWindows((u64, u64), HashMap<String, u32>),
     OpenSettings,
+    OpenRestore,
 }
 
 /// How long a missing desktop file is left alone before the names are looked
@@ -62,6 +64,7 @@ const OFFLINE_ICON: &str = "shisa-tray-offline-symbolic";
 struct TrayState {
     /// Protected apps and whether their windows are allowed to show.
     apps: Vec<(String, bool)>,
+    hidden_windows: ((u64, u64), HashMap<String, u32>),
     names: Arc<Mutex<Names>>,
     last_lock: Option<String>,
     offline: bool,
@@ -102,11 +105,19 @@ impl Tray for TrayState {
         let mut description = if self.offline {
             "shisad 不在线，保护暂停".to_string()
         } else {
-            let open = self.apps.iter().filter(|(_, unlocked)| *unlocked).count();
-            format!("{} 个应用受保护，{open} 个当前已解锁", self.apps.len())
+            format!("{} 个应用受保护", self.apps.len())
         };
         if let Some(last_lock) = &self.last_lock {
             description.push_str(&format!("\n上次上锁：{last_lock}"));
+        }
+        let hidden: u64 = self
+            .hidden_windows
+            .1
+            .values()
+            .map(|count| u64::from(*count))
+            .sum();
+        if hidden > 0 {
+            description.push_str(&format!("\nShisa 已隐藏 {hidden} 个窗口"));
         }
         ksni::ToolTip {
             icon_name: self.icon_name(),
@@ -117,7 +128,7 @@ impl Tray for TrayState {
     }
 
     fn activate(&mut self, _x: i32, _y: i32) {
-        let _ = self.actions.send(Action::OpenSettings);
+        let _ = self.actions.send(Action::OpenRestore);
     }
 
     fn menu(&self) -> Vec<MenuItem<Self>> {
@@ -163,19 +174,23 @@ impl Tray for TrayState {
                 // Plasma opens DBusMenu submenus as their own popup, offset
                 // from the hovered row and with a larger font, and both
                 // directions listed the same apps while everything was
-                // locked. The apps live in the top-level menu instead: the
-                // checkmark is the unlocked state, picking one toggles it.
+                // locked. The apps live in the top-level menu instead.
                 for (id, unlocked) in &self.apps {
                     let name = names.map.get(id).cloned().unwrap_or_else(|| id.clone());
-                    let (status, action) = if *unlocked {
-                        ("已解锁", Action::Lock(id.clone()))
+                    let (verb, action) = if *unlocked {
+                        ("上锁", Action::Lock(id.clone()))
                     } else {
-                        ("已上锁", Action::Unlock(id.clone()))
+                        ("恢复", Action::Unlock(id.clone()))
+                    };
+                    let label = match self.hidden_windows.1.get(id) {
+                        Some(count) if *count > 0 => {
+                            format!("{verb} {name}（隐藏 {count} 个窗口）")
+                        }
+                        _ => format!("{verb} {name}"),
                     };
                     items.push(
-                        CheckmarkItem {
-                            label: format!("{status} · {name}"),
-                            checked: *unlocked,
+                        StandardItem {
+                            label,
                             activate: send(action),
                             ..Default::default()
                         }
@@ -215,6 +230,7 @@ fn main() -> std::process::ExitCode {
     let names = Arc::new(Mutex::new(Names::default()));
     let service = TrayService::new(TrayState {
         apps: Vec::new(),
+        hidden_windows: Default::default(),
         names: names.clone(),
         last_lock: None,
         offline: true,
@@ -558,7 +574,13 @@ fn action_loop(
                 }
             }
             Action::Unlock(app) => unlock(&app, gate),
-            Action::OpenSettings => open_settings(gate),
+            Action::HiddenWindows(version, counts) => handle.update(|tray| {
+                if version > tray.hidden_windows.0 {
+                    tray.hidden_windows = (version, counts);
+                }
+            }),
+            Action::OpenSettings => open_settings(gate, false),
+            Action::OpenRestore => open_settings(gate, true),
         }
     }
 }
@@ -607,6 +629,10 @@ fn lock_summary(result: Option<(u32, u32)>) -> String {
 fn notify_lock(handle: &Handle<TrayState>, message: &str) {
     info!("{message}");
     handle.update(|tray| tray.last_lock = Some(message.to_string()));
+    notify(message);
+}
+
+fn notify(message: &str) {
     let result = (|| -> zbus::Result<u32> {
         let conn = Connection::session()?;
         let proxy = Proxy::new(
@@ -638,27 +664,49 @@ fn notify_lock(handle: &Handle<TrayState>, message: &str) {
 /// Authenticate for one app from the tray. The call blocks on the desktop's
 /// polkit box; the action thread is separate, so the menu stays responsive.
 fn unlock(app: &str, gate: &Arc<Mutex<Option<window::Gate>>>) {
-    let result = (|| -> zbus::Result<()> {
+    let result = (|| -> zbus::Result<bool> {
         let conn = Connection::system()?;
         let manager = ManagerProxyBlocking::new(&conn)?;
-        manager.unlock(app)
+        if manager.window_states()?.iter().any(|id| id == app) {
+            return Ok(false);
+        }
+        manager.unlock(app)?;
+        Ok(true)
     })();
     match result {
-        Ok(()) => {
-            info!(app, "unlock authenticated");
-            // The gate only makes the window visible again. Bring it to the
-            // front, or the user finds it behind whatever was open.
-            if let Some(gate) = gate.lock().unwrap().as_mut() {
-                gate.activate(app);
+        Ok(authenticated) => {
+            if authenticated {
+                info!(app, "unlock authenticated");
             }
+            restore_window(app, gate);
         }
         Err(e) => warn!("unlock: {e}"),
     }
 }
 
+fn restore_window(app: &str, gate: &Mutex<Option<window::Gate>>) {
+    let confirmed = (|| -> Option<bool> {
+        let mut gate = gate.lock().unwrap();
+        let gate = gate.as_mut()?;
+        let conn = Connection::system().ok()?;
+        let manager = ManagerProxyBlocking::new(&conn).ok()?;
+        let protected = manager
+            .list_apps()
+            .ok()?
+            .into_iter()
+            .map(|row| row.0)
+            .collect::<Vec<_>>();
+        let allowed = manager.window_states().ok()?;
+        Some(allowed.iter().any(|id| id == app) && gate.restore(&protected, &allowed, app))
+    })();
+    if confirmed != Some(true) {
+        notify("窗口恢复未确认");
+    }
+}
+
 /// Hide an app whose window sat unfocused longer than its configured delay.
 /// The lock drops the window permission; the StateChanged that follows makes
-/// the gate reload and hide the window, exactly like a manual lock.
+/// the resident script hide the window, exactly like a manual lock.
 fn relock_loop(conn: &Connection, tracker: &Arc<Mutex<window::Tracker>>) -> ! {
     loop {
         // Short enough that the immediate preset feels immediate, cheap
@@ -672,6 +720,9 @@ fn relock_loop(conn: &Connection, tracker: &Arc<Mutex<window::Tracker>>) -> ! {
             continue;
         };
         for app in due {
+            if !tracker.lock().unwrap().may_relock(&app) {
+                continue;
+            }
             info!(%app, "window sat unfocused, hiding it");
             if let Err(e) = manager.lock(&app) {
                 debug!("relock {app}: {e}");
@@ -724,7 +775,7 @@ fn select_display_vars(
         .collect()
 }
 
-fn open_settings(gate: &Arc<Mutex<Option<window::Gate>>>) {
+fn open_settings(gate: &Arc<Mutex<Option<window::Gate>>>, restore: bool) {
     let bin = env::var_os("SHISA_SETTINGS_BIN")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| "shisa-settings".into());
@@ -733,6 +784,9 @@ fn open_settings(gate: &Arc<Mutex<Option<window::Gate>>>) {
         debug!(keys = missing.len(), "settings: display env from the user manager");
     }
     let mut settings = Command::new(bin);
+    if restore {
+        settings.arg("--restore-windows");
+    }
     settings.envs(missing);
     match settings.spawn() {
         // The agent outlives every settings process, so each launch that
@@ -744,7 +798,7 @@ fn open_settings(gate: &Arc<Mutex<Option<window::Gate>>>) {
             // ignores the toolkit's focus request without an activation token,
             // so ask KWin for it, the same way the window layer restores an
             // app. Two tries cover a window that is still being created.
-            {
+            if !restore {
                 let gate = gate.clone();
                 thread::spawn(move || {
                     for delay in [Duration::from_millis(300), Duration::from_millis(900)] {
@@ -772,6 +826,7 @@ mod tests {
     fn tray_app_label_shows_current_state_and_click_requests_the_opposite() {
         let (actions, requests) = mpsc::channel();
         let mut tray = TrayState {
+            hidden_windows: ((1, 1), HashMap::from([("org.kde.kate".into(), 2)])),
             apps: vec![
                 ("org.kde.kwrite".into(), true),
                 ("org.kde.kate".into(), false),
@@ -791,8 +846,8 @@ mod tests {
         let [
             _,
             _,
-            MenuItem::Checkmark(kwrite),
-            MenuItem::Checkmark(kate),
+            MenuItem::Standard(kwrite),
+            MenuItem::Standard(kate),
             _,
             _,
         ] = menu.as_slice()
@@ -800,13 +855,12 @@ mod tests {
             panic!("expected two top-level application rows");
         };
 
-        assert_eq!(kwrite.label, "已解锁 · KWrite");
-        assert!(kwrite.checked);
+        assert_eq!(kwrite.label, "上锁 KWrite");
         (kwrite.activate)(&mut tray);
         assert!(matches!(requests.try_recv(), Ok(Action::Lock(id)) if id == "org.kde.kwrite"));
 
-        assert_eq!(kate.label, "已上锁 · Kate");
-        assert!(!kate.checked);
+        assert_eq!(kate.label, "恢复 Kate（隐藏 2 个窗口）");
+        assert!(tray.tool_tip().description.contains("已隐藏 2 个窗口"));
         (kate.activate)(&mut tray);
         assert!(matches!(requests.try_recv(), Ok(Action::Unlock(id)) if id == "org.kde.kate"));
     }

@@ -1,6 +1,8 @@
 import { mount } from "svelte";
 import "./app.css";
 import App from "./App.svelte";
+import Restore from "./Restore.svelte";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 // The first paint's theme: the desktop's own preference as GTK reports it.
 // The portal's answer replaces this once the window asks, because KDE keeps
@@ -11,4 +13,6 @@ document.documentElement.dataset.theme = matchMedia(
   ? "dark"
   : "light";
 
-export default mount(App, { target: document.getElementById("app") });
+export default mount(getCurrentWindow().label === "restore" ? Restore : App, {
+  target: document.getElementById("app"),
+});

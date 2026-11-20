@@ -1004,7 +1004,7 @@
                 <div class="prefrow">
                   <div class="who">
                     <div class="name">失焦后隐藏</div>
-                    <div class="sub">窗口失去焦点超过这段时间后自动隐藏，恢复要重新认证。到点之前切回来不会隐藏。立即表示一切换走就隐藏，关闭时窗口保持可见。</div>
+                    <div class="sub">失焦达到设定时长后收起窗口，恢复时需要认证。选择关闭时，若已启用 Shisa Privacy Mask，失焦只遮住内容，切回即揭开。</div>
                   </div>
                   <div class="segs">
                     {#each relockPresets as [secs, label]}

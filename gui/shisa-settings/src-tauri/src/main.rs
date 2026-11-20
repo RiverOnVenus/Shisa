@@ -483,6 +483,71 @@ fn data_url(path: &std::path::Path) -> Option<String> {
     Some(format!("data:{mime};base64,{encoded}"))
 }
 
+#[zbus::proxy(
+    interface = "io.github.RiverOnVenus.Shisa.Window",
+    default_service = "io.github.RiverOnVenus.Shisa.Window",
+    default_path = "/io/github/RiverOnVenus/Shisa/Window",
+    gen_blocking = false
+)]
+trait WindowAgent {
+    fn hidden_apps(&self) -> zbus::Result<std::collections::HashMap<String, u32>>;
+    fn unlock_mask(&self, app: &str) -> zbus::Result<()>;
+}
+
+#[tauri::command]
+async fn hidden_apps() -> R<std::collections::HashMap<String, u32>> {
+    let connection = zbus::Connection::session().await.map_err(err)?;
+    let agent = WindowAgentProxy::new(&connection).await.map_err(err)?;
+    agent.hidden_apps().await.map_err(err)
+}
+
+#[tauri::command]
+async fn restore_hidden(app_id: String) -> R<()> {
+    let connection = zbus::Connection::session().await.map_err(err)?;
+    let agent = WindowAgentProxy::new(&connection).await.map_err(err)?;
+    let apps = agent.hidden_apps().await.map_err(err)?;
+    if apps.get(&app_id).copied().unwrap_or_default() == 0 {
+        return Err("这个窗口已不在列表中".into());
+    }
+    let system = zbus::Connection::system().await.map_err(err)?;
+    let manager = ManagerProxy::new(&system).await.map_err(err)?;
+    if !manager.window_states().await.map_err(err)?.contains(&app_id) {
+        manager.unlock(&app_id).await.map_err(err)?;
+    }
+    agent.unlock_mask(&app_id).await.map_err(err)
+}
+
+fn open_window(app: &tauri::AppHandle, restore: bool) -> Result<(), Box<dyn std::error::Error>> {
+    let label = if restore { "restore" } else { "main" };
+    if let Some(window) = app.get_webview_window(label) {
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+        return Ok(());
+    }
+    let data = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join(if restore { "shisa-restore" } else { "shisa-settings" });
+    std::fs::create_dir_all(&data)?;
+    let builder = WebviewWindowBuilder::new(app, label, WebviewUrl::App("index.html".into()))
+        .data_directory(data);
+    let window = if restore {
+        builder.title("恢复窗口").inner_size(384.0, 400.0).resizable(false).center().build()?
+    } else {
+        builder.title("Shisa 设置")
+            .inner_size(940.0, 620.0)
+            .min_inner_size(760.0, 520.0)
+            .decorations(false)
+            .transparent(true)
+            .build()?
+    };
+    if !restore {
+        let _ = window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
+    }
+    tauri::async_runtime::spawn(follow_appearance(window));
+    Ok(())
+}
+
 fn main() {
     // GTK names the Wayland surface after the program name, and the compositor
     // looks the desktop file up by it. Without this the titlebar shows a
@@ -491,38 +556,12 @@ fn main() {
     tauri::Builder::default()
         // A second start brings the existing window forward instead of opening
         // another one.
-        .setup(|app| {
-            // WebKit keeps its cache and storage next to the window's data
-            // directory. Put them in the runtime directory so Shisa leaves
-            // nothing in the user's home and the cache goes away at logout.
-            let data = std::env::var_os("XDG_RUNTIME_DIR")
-                .map(std::path::PathBuf::from)
-                .unwrap_or_else(std::env::temp_dir)
-                .join("shisa-settings");
-            std::fs::create_dir_all(&data)?;
-            let window =
-                WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
-                    .title("Shisa 设置")
-                    .inner_size(940.0, 620.0)
-                    .min_inner_size(760.0, 520.0)
-                    .decorations(false)
-                    .transparent(true)
-                    .data_directory(data)
-                    .build()?;
-            // The window is frameless and the HTML paints its own frame. A
-            // clear background keeps WebKit from flashing white before the
-            // page paints.
-            let _ = window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
-            // Plasma can switch its colours while the window is open.
-            tauri::async_runtime::spawn(follow_appearance(window.clone()));
-            Ok(())
-        })
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.unminimize();
-                let _ = window.set_focus();
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            if let Err(error) = open_window(app, args.iter().any(|arg| arg == "--restore-windows")) {
+                eprintln!("Shisa: {error}");
             }
         }))
+        .setup(|app| open_window(app.handle(), std::env::args_os().any(|arg| arg == "--restore-windows")))
         .manage(Icons::default())
         .invoke_handler(tauri::generate_handler![
             list_apps,
@@ -530,6 +569,8 @@ fn main() {
             recent_launches,
             diagnostics,
             unlock,
+            hidden_apps,
+            restore_hidden,
             app_config,
             global_config,
             resolve_app,
