@@ -13,11 +13,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 #[derive(Debug)]
 pub enum Event {
     /// The user authenticated for this request.
-    Granted {
-        uid: u32,
-        app: String,
-        request: u64,
-    },
+    Granted { uid: u32, app: String, request: u64 },
     /// The check did not answer before the wait limit. What waited for this
     /// request is refused at once (docs/subsystems/authentication.md).
     Cancelled { request: u64 },

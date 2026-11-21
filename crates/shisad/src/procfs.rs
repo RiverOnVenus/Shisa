@@ -38,7 +38,10 @@ impl Procs for RealProcs {
 
     fn exe(&self, pid: i32) -> Option<FileId> {
         let m = fs::metadata(format!("/proc/{pid}/exe")).ok()?;
-        Some(FileId { dev: m.dev(), ino: m.ino() })
+        Some(FileId {
+            dev: m.dev(),
+            ino: m.ino(),
+        })
     }
 
     fn stat(&self, pid: i32) -> Option<(i32, u64)> {
@@ -57,7 +60,9 @@ fn parse_uid(status: &str) -> Option<u32> {
 
 /// Path of the unified hierarchy line, `0::/user.slice/...`.
 fn parse_cgroup(cgroup: &str) -> Option<String> {
-    cgroup.lines().find_map(|l| l.strip_prefix("0::").map(str::to_string))
+    cgroup
+        .lines()
+        .find_map(|l| l.strip_prefix("0::").map(str::to_string))
 }
 
 /// Parent pid (field 4) and start time (field 22) of /proc/<pid>/stat. The
@@ -85,13 +90,19 @@ mod tests {
 
     #[test]
     fn uid_line() {
-        assert_eq!(parse_uid("Name:\tx\nUid:\t1000\t1001\t1002\t1003\nGid:\t5\n"), Some(1000));
+        assert_eq!(
+            parse_uid("Name:\tx\nUid:\t1000\t1001\t1002\t1003\nGid:\t5\n"),
+            Some(1000)
+        );
         assert_eq!(parse_uid("Name:\tx\n"), None);
     }
 
     #[test]
     fn cgroup_line() {
-        assert_eq!(parse_cgroup("0::/user.slice/x.service\n"), Some("/user.slice/x.service".into()));
+        assert_eq!(
+            parse_cgroup("0::/user.slice/x.service\n"),
+            Some("/user.slice/x.service".into())
+        );
         assert_eq!(parse_cgroup("1:systemd:/legacy\n"), None);
     }
 
@@ -103,7 +114,13 @@ mod tests {
         assert_eq!(ppid, unsafe { libc::getppid() });
         assert!(start > 0);
         let exe = fs::metadata(std::env::current_exe().unwrap()).unwrap();
-        assert_eq!(RealProcs.exe(me), Some(FileId { dev: exe.dev(), ino: exe.ino() }));
+        assert_eq!(
+            RealProcs.exe(me),
+            Some(FileId {
+                dev: exe.dev(),
+                ino: exe.ino()
+            })
+        );
         assert!(RealProcs.cgroup(me).is_some_and(|c| c.starts_with('/')));
         assert_eq!(RealProcs.uid(-1), None);
     }

@@ -80,7 +80,10 @@ impl Diag {
 
     /// One user's policy file, whether or not it exists yet.
     pub fn config_path(&self, name: &str) -> String {
-        self.config_dir.join(format!("{name}.toml")).display().to_string()
+        self.config_dir
+            .join(format!("{name}.toml"))
+            .display()
+            .to_string()
     }
 }
 
@@ -117,9 +120,7 @@ mod tests {
 
     #[test]
     fn a_hash_means_the_password_is_set() {
-        let shadow = format!(
-            "root:$y$j9T$abc:19000::::::\n{ADMIN_USER}:$y$j9T$def:19000::::::\n"
-        );
+        let shadow = format!("root:$y$j9T$abc:19000::::::\n{ADMIN_USER}:$y$j9T$def:19000::::::\n");
         assert!(password_set(&shadow, ADMIN_USER));
     }
 

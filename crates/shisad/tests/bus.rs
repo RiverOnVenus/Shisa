@@ -2,13 +2,13 @@
 //! exercises the served object, the caller identity lookup and the routing of
 //! authentication requests to the registered agent.
 
+use shisa_core::dbus::ManagerProxyBlocking;
 use shisad::activity;
 use shisad::bus::{self, Msg};
 use shisad::diag::Diag;
 use shisad::events::{Event, Events};
 use shisad::policy::Change;
 use shisad::policy::{AppPolicy, Policy, State, UserPolicy};
-use shisa_core::dbus::ManagerProxyBlocking;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -50,7 +50,11 @@ impl PrivateBus {
         );
         std::fs::write(&config, xml).unwrap();
         let daemon = Command::new("dbus-daemon")
-            .args(["--config-file".as_ref(), config.as_os_str(), "--nofork".as_ref()])
+            .args([
+                "--config-file".as_ref(),
+                config.as_os_str(),
+                "--nofork".as_ref(),
+            ])
             .stdout(Stdio::null())
             .stderr(Stdio::inherit())
             .spawn()
@@ -109,10 +113,9 @@ fn state() -> Arc<Mutex<State>> {
         apps: Vec::new(),
     };
     let state = Arc::new(Mutex::new(State::default()));
-    state
-        .lock()
-        .unwrap()
-        .set_policy(Policy { users: HashMap::from([(uid(), user), (424242, other)]) });
+    state.lock().unwrap().set_policy(Policy {
+        users: HashMap::from([(uid(), user), (424242, other)]),
+    });
     state
 }
 
@@ -133,9 +136,8 @@ fn interface_and_settings_changes() {
     .unwrap();
     // Wait until shisad owns the name.
     wait_for(|| {
-        Connection::system().is_ok_and(|conn| {
-            ManagerProxyBlocking::new(&conn).is_ok_and(|m| m.list_apps().is_ok())
-        })
+        Connection::system()
+            .is_ok_and(|conn| ManagerProxyBlocking::new(&conn).is_ok_and(|m| m.list_apps().is_ok()))
     });
     let conn = Connection::system().unwrap();
     let manager = ManagerProxyBlocking::new(&conn).unwrap();
@@ -176,7 +178,12 @@ fn interface_and_settings_changes() {
     assert_eq!(app, "app");
     assert_eq!(change, Change::Protected(false));
     tx.send(Msg::ChangeDone { id, result: Ok(()) }).unwrap();
-    assert!(result_rx.recv_timeout(Duration::from_secs(5)).unwrap().is_ok());
+    assert!(
+        result_rx
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+            .is_ok()
+    );
 
     // A refused change comes back to the caller as an error.
     let (result_tx, result_rx) = mpsc::channel();
@@ -186,8 +193,17 @@ fn interface_and_settings_changes() {
         let _ = result_tx.send(manager.set_protected("app", true));
     });
     let (id, ..) = wait_change(&events);
-    tx.send(Msg::ChangeDone { id, result: Err("not now".into()) }).unwrap();
-    assert!(result_rx.recv_timeout(Duration::from_secs(5)).unwrap().is_err());
+    tx.send(Msg::ChangeDone {
+        id,
+        result: Err("not now".into()),
+    })
+    .unwrap();
+    assert!(
+        result_rx
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+            .is_err()
+    );
 
     // Unsupported options are refused without reaching the event loop.
     let manager = ManagerProxyBlocking::new(&conn).unwrap();
@@ -195,14 +211,22 @@ fn interface_and_settings_changes() {
     assert!(bad.is_err());
     // A global option cannot be changed through an app, or the other way
     // round: the authentication box names what the change is for.
-    let bad = manager.set_option("app", "clear_on_screen_lock", zbus::zvariant::Value::from(true));
+    let bad = manager.set_option(
+        "app",
+        "clear_on_screen_lock",
+        zbus::zvariant::Value::from(true),
+    );
     assert!(bad.is_err());
     let bad = manager.set_option("", "autostart", zbus::zvariant::Value::from(true));
     assert!(bad.is_err());
     // Values the daemon would not use as written never reach the event loop.
     let bad = manager.set_option("", "grace_seconds", zbus::zvariant::Value::from(u64::MAX));
     assert!(bad.is_err());
-    let bad = manager.set_option("", "prompt_timeout_seconds", zbus::zvariant::Value::from(600u64));
+    let bad = manager.set_option(
+        "",
+        "prompt_timeout_seconds",
+        zbus::zvariant::Value::from(600u64),
+    );
     assert!(bad.is_err());
     assert!(events.drain().is_empty());
 }
@@ -211,7 +235,14 @@ fn wait_change(events: &Events) -> (u64, u32, String, Change) {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         for event in events.drain() {
-            if let Event::ChangeRequest { id, uid, app, change, .. } = event {
+            if let Event::ChangeRequest {
+                id,
+                uid,
+                app,
+                change,
+                ..
+            } = event
+            {
                 return (id, uid, app, change);
             }
         }

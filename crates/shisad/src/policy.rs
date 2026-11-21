@@ -163,7 +163,9 @@ enum TicketUse {
     None,
     /// A valid ticket covered the launch. `one_shot` means the lookup
     /// consumed it, so the app is locked again.
-    Valid { one_shot: bool },
+    Valid {
+        one_shot: bool,
+    },
     /// A ticket was there but had expired. It is removed and the app is
     /// locked.
     Expired,
@@ -263,7 +265,11 @@ impl State {
                     .get(&(uid, a.id.clone()))
                     .is_some_and(|t| t.expires > now);
                 let paths = a.paths.iter().map(|p| p.display().to_string()).collect();
-                let effective = a.effective.iter().map(|p| p.display().to_string()).collect();
+                let effective = a
+                    .effective
+                    .iter()
+                    .map(|p| p.display().to_string())
+                    .collect();
                 (a.id.clone(), unlocked, paths, effective)
             })
             .collect()
@@ -1045,10 +1051,7 @@ mod tests {
                 vec!["/usr/bin/app".to_string()]
             )
         );
-        assert_eq!(
-            apps[1],
-            ("once".to_string(), false, vec![], vec![])
-        );
+        assert_eq!(apps[1], ("once".to_string(), false, vec![], vec![]));
         assert!(s.list_apps(1001, t0).is_empty());
         assert_eq!(s.app_config(UID, "app"), (300, false, true, 0));
         assert_eq!(s.app_config(UID, "once"), (0, false, true, 0));

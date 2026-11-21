@@ -115,7 +115,9 @@ impl UserConfig {
 
     /// Grace period of one app, falling back to the global value.
     pub fn grace_seconds(&self, app: &App) -> u64 {
-        app.grace_seconds.unwrap_or(self.global.grace_seconds).min(MAX_GRACE)
+        app.grace_seconds
+            .unwrap_or(self.global.grace_seconds)
+            .min(MAX_GRACE)
     }
 
     /// Grace period for apps without their own, kept inside [`MAX_GRACE`].
@@ -131,7 +133,9 @@ impl UserConfig {
 
     /// Authentication wait, kept inside the range that is safe for systemd.
     pub fn prompt_timeout_seconds(&self) -> u64 {
-        self.global.prompt_timeout_seconds.clamp(MIN_PROMPT_TIMEOUT, MAX_PROMPT_TIMEOUT)
+        self.global
+            .prompt_timeout_seconds
+            .clamp(MIN_PROMPT_TIMEOUT, MAX_PROMPT_TIMEOUT)
     }
 }
 

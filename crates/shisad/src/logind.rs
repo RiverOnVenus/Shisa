@@ -40,7 +40,9 @@ struct SessionLock {
 type Sessions = HashMap<String, SessionLock>;
 
 pub fn spawn(state: Shared, notify: Sender<Msg>) -> io::Result<()> {
-    thread::Builder::new().name("logind".into()).spawn(move || poll(state, notify))?;
+    thread::Builder::new()
+        .name("logind".into())
+        .spawn(move || poll(state, notify))?;
     Ok(())
 }
 
@@ -93,7 +95,10 @@ fn poll(state: Shared, notify: Sender<Msg>) {
 /// Every signal logind sends: sessions coming and going, and their property
 /// changes, `LockedHint` among them.
 fn signals(conn: &Connection) -> zbus::Result<MessageIterator> {
-    let rule = MatchRule::builder().msg_type(Type::Signal).sender("org.freedesktop.login1")?.build();
+    let rule = MatchRule::builder()
+        .msg_type(Type::Signal)
+        .sender("org.freedesktop.login1")?
+        .build();
     MessageIterator::for_match_rule(rule, conn, None)
 }
 
@@ -214,14 +219,21 @@ fn apply_lock_changes(
                 let cleared = state.lock().unwrap().screen_locked(uid);
                 for app in cleared {
                     debug!(uid, %app, "tickets cleared, every graphical session is locked");
-                    let _ = notify.send(Msg::StateChanged { uid, app, unlocked: false });
+                    let _ = notify.send(Msg::StateChanged {
+                        uid,
+                        app,
+                        unlocked: false,
+                    });
                 }
             }
             LockChange::Unlocked => {
                 // KWin drops the window changes the script made while the
                 // screen was locked, so the gate has to run again now that a
                 // session is unlocked.
-                debug!(uid, "a graphical session unlocked, the window layer has to reapply");
+                debug!(
+                    uid,
+                    "a graphical session unlocked, the window layer has to reapply"
+                );
                 let _ = notify.send(Msg::SessionUnlocked { uid });
             }
             LockChange::None => {}
@@ -231,7 +243,10 @@ fn apply_lock_changes(
 
 /// Turn logind's microsecond wall-clock timestamp into a monotonic instant.
 fn start_instant(timestamp_us: u64) -> Option<Instant> {
-    let now_us = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_micros() as u64;
+    let now_us = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()?
+        .as_micros() as u64;
     let age = Duration::from_micros(now_us.saturating_sub(timestamp_us));
     Instant::now().checked_sub(age)
 }
@@ -261,8 +276,14 @@ mod tests {
         assert_eq!(all_locked(&sessions(&[]), 1), None);
         assert_eq!(all_locked(&sessions(&[(1, true)]), 1), Some(true));
         assert_eq!(all_locked(&sessions(&[(1, false)]), 1), Some(false));
-        assert_eq!(all_locked(&sessions(&[(1, true), (1, false)]), 1), Some(false));
-        assert_eq!(all_locked(&sessions(&[(1, true), (1, true)]), 1), Some(true));
+        assert_eq!(
+            all_locked(&sessions(&[(1, true), (1, false)]), 1),
+            Some(false)
+        );
+        assert_eq!(
+            all_locked(&sessions(&[(1, true), (1, true)]), 1),
+            Some(true)
+        );
         assert_eq!(all_locked(&sessions(&[(2, true)]), 1), None);
     }
 
@@ -277,8 +298,14 @@ mod tests {
 
         assert_eq!(lock_change(&empty, &one_locked, 1), LockChange::Locked);
         assert_eq!(lock_change(&one_locked, &one_locked, 1), LockChange::None);
-        assert_eq!(lock_change(&one_locked, &one_unlocked, 1), LockChange::Unlocked);
-        assert_eq!(lock_change(&one_unlocked, &one_locked, 1), LockChange::Locked);
+        assert_eq!(
+            lock_change(&one_locked, &one_unlocked, 1),
+            LockChange::Unlocked
+        );
+        assert_eq!(
+            lock_change(&one_unlocked, &one_locked, 1),
+            LockChange::Locked
+        );
         assert_eq!(lock_change(&one_locked, &mixed, 1), LockChange::Unlocked);
         assert_eq!(lock_change(&mixed, &all_locked, 1), LockChange::Locked);
         assert_eq!(lock_change(&all_locked, &mixed, 1), LockChange::Unlocked);
@@ -290,15 +317,24 @@ mod tests {
 
     #[test]
     fn recent_timestamps_map_to_the_past() {
-        let now_us = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_micros() as u64;
+        let now_us = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_micros() as u64;
         let start = start_instant(now_us - 5_000_000).unwrap();
         let age = Instant::now().saturating_duration_since(start);
-        assert!(age >= Duration::from_secs(4) && age < Duration::from_secs(7), "{age:?}");
+        assert!(
+            age >= Duration::from_secs(4) && age < Duration::from_secs(7),
+            "{age:?}"
+        );
     }
 
     #[test]
     fn a_timestamp_in_the_future_does_not_panic() {
-        let now_us = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_micros() as u64;
+        let now_us = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_micros() as u64;
         assert!(start_instant(now_us + 5_000_000).is_some());
     }
 }

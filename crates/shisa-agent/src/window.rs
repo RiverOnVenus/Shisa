@@ -460,7 +460,10 @@ impl Gate {
         if self.is_loaded() {
             self.generation += 1;
             self.publish_state(protected, allowed, restore);
-            if self.ready.wait(self.generation, Duration::from_millis(1200)) {
+            if self
+                .ready
+                .wait(self.generation, Duration::from_millis(1200))
+            {
                 return Ok(());
             }
         }
@@ -499,9 +502,16 @@ impl Gate {
             self.generation += 1;
             self.instance = self.generation;
             self.publish_state(protected, allowed, restore);
-            let path = self.directory.join(format!("kwin-gate-{}.js", self.generation));
-            let source =
-                script_for_foreground(protected, allowed, restore, self.generation, &self.foreground);
+            let path = self
+                .directory
+                .join(format!("kwin-gate-{}.js", self.generation));
+            let source = script_for_foreground(
+                protected,
+                allowed,
+                restore,
+                self.generation,
+                &self.foreground,
+            );
             write_script(&path, &source).map_err(LoadError::Other)?;
             let plugin = format!(
                 "shisa-window-gate-{}-{}",
@@ -515,7 +525,10 @@ impl Gate {
                 return Err(error);
             }
             attempted.push(plugin);
-            if self.ready.wait(self.generation, Duration::from_millis(1200)) {
+            if self
+                .ready
+                .wait(self.generation, Duration::from_millis(1200))
+            {
                 // The fresh script is running. Retire everything older.
                 let running = attempted.pop().unwrap_or_default();
                 let mut retired = std::mem::take(&mut self.stale);
@@ -615,11 +628,9 @@ impl Gate {
         for entry in entries.flatten() {
             let name = entry.file_name();
             let name = name.to_string_lossy();
-            let old_gate = name.starts_with("kwin-gate-")
-                && name.ends_with(".js")
-                && entry.path() != current;
-            let old_activation =
-                name.starts_with("shisa-activate-") && name.ends_with(".js");
+            let old_gate =
+                name.starts_with("kwin-gate-") && name.ends_with(".js") && entry.path() != current;
+            let old_activation = name.starts_with("shisa-activate-") && name.ends_with(".js");
             if old_gate || old_activation {
                 let _ = fs::remove_file(entry.path());
             }

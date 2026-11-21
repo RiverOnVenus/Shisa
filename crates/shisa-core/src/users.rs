@@ -26,16 +26,24 @@ fn lookup(name: Option<&str>, uid: Option<u32>) -> Option<(String, u32, PathBuf)
                 buf.len(),
                 &mut result,
             ),
-            (None, Some(uid)) => libc::getpwuid_r(uid, &mut pwd, buf.as_mut_ptr(), buf.len(), &mut result),
+            (None, Some(uid)) => {
+                libc::getpwuid_r(uid, &mut pwd, buf.as_mut_ptr(), buf.len(), &mut result)
+            }
             (None, None) => return None,
         }
     };
     if status != 0 || result.is_null() {
         return None;
     }
-    let name = unsafe { CStr::from_ptr(pwd.pw_name) }.to_string_lossy().into_owned();
+    let name = unsafe { CStr::from_ptr(pwd.pw_name) }
+        .to_string_lossy()
+        .into_owned();
     let home = unsafe { CStr::from_ptr(pwd.pw_dir) };
-    Some((name, pwd.pw_uid, PathBuf::from(OsStr::from_bytes(home.to_bytes()))))
+    Some((
+        name,
+        pwd.pw_uid,
+        PathBuf::from(OsStr::from_bytes(home.to_bytes())),
+    ))
 }
 
 /// Account name of a uid.
