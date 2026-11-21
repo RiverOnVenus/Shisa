@@ -47,6 +47,7 @@ check() {
     # plain JavaScript. Both suites run here so a release cannot skip them.
     ( cd gui/shisa-settings && npm test )
     ( cd gui/shisa-settings/src-tauri && cargo test --release --frozen )
+    node --test crates/shisa-agent/tests/*.test.mjs
 }
 
 package() {

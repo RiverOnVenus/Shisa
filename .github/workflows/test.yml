@@ -49,3 +49,6 @@ jobs:
         run: npm ci
       - name: Settings window tests
         run: npm test
+      - name: KWin script tests
+        working-directory: .
+        run: node --test crates/shisa-agent/tests/*.test.mjs

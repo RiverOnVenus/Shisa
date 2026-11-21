@@ -13,6 +13,7 @@ cargo clippy --workspace --all-targets
 (cd gui/shisa-settings && npm ci && npm run build)
 (cd gui/shisa-settings && npm test)
 (cd gui/shisa-settings/src-tauri && cargo test)
+(node --test crates/shisa-agent/tests/*.test.mjs)
 (cd gui/shisa-settings/src-tauri && cargo build --features custom-protocol)
 ```
 
