@@ -21,6 +21,9 @@ struct PrivateBus {
     daemon: Child,
 }
 
+/// Only one test may own DBUS_SYSTEM_BUS_ADDRESS at a time.
+static ONE_BUS: Mutex<()> = Mutex::new(());
+
 impl PrivateBus {
     fn start(name: &str) -> Self {
         let dir = std::env::temp_dir().join(format!("shisad-bus-{}-{name}", std::process::id()));
@@ -116,6 +119,7 @@ fn state() -> Arc<Mutex<State>> {
 #[test]
 fn interface_and_settings_changes() {
     // Kept alive for the whole test: dropping it kills the daemon.
+    let _serial = ONE_BUS.lock().unwrap_or_else(|e| e.into_inner());
     let _bus = PrivateBus::start("iface");
     let state = state();
     let events = Arc::new(Events::new().unwrap());
@@ -214,4 +218,125 @@ fn wait_change(events: &Events) -> (u64, u32, String, Change) {
         assert!(Instant::now() < deadline, "no ChangeRequest arrived");
         std::thread::sleep(Duration::from_millis(20));
     }
+}
+
+fn wait_unlock(events: &Events) -> (u64, u32, String) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        for event in events.drain() {
+            if let Event::UnlockRequest { id, uid, app, .. } = event {
+                return (id, uid, app);
+            }
+        }
+        assert!(Instant::now() < deadline, "no UnlockRequest arrived");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn start_daemon(state: Arc<Mutex<State>>) -> (Arc<Events>, mpsc::Sender<Msg>) {
+    let events = Arc::new(Events::new().unwrap());
+    let diag = Arc::new(Diag::new(PathBuf::from("/etc/shisa/users")));
+    let tx = bus::spawn(
+        state,
+        events.clone(),
+        Arc::new(activity::Log::default()),
+        diag,
+    )
+    .unwrap();
+    wait_for(|| {
+        Connection::system()
+            .is_ok_and(|conn| ManagerProxyBlocking::new(&conn).is_ok_and(|m| m.list_apps().is_ok()))
+    });
+    (events, tx)
+}
+
+#[test]
+fn window_states_and_relock_seconds_follow_the_policy() {
+    let _serial = ONE_BUS.lock().unwrap_or_else(|e| e.into_inner());
+    let _bus = PrivateBus::start("states");
+    let state = state();
+    {
+        let mut state = state.lock().unwrap();
+        let mut policy = state.policy().clone();
+        policy.users.get_mut(&uid()).unwrap().apps[0].relock = Duration::from_secs(300);
+        state.set_policy(policy);
+        state.allow_window(uid(), "app");
+    }
+    let (_events, _tx) = start_daemon(state);
+    let conn = Connection::system().unwrap();
+    let manager = ManagerProxyBlocking::new(&conn).unwrap();
+    assert_eq!(manager.window_states().unwrap(), vec!["app"]);
+    assert_eq!(
+        manager.relock_seconds().unwrap(),
+        vec![("app".to_string(), 300)]
+    );
+    // Locking drops the window allowance, not the relock setting.
+    manager.lock("").unwrap();
+    assert!(manager.window_states().unwrap().is_empty());
+    assert_eq!(
+        manager.relock_seconds().unwrap(),
+        vec![("app".to_string(), 300)]
+    );
+}
+
+#[test]
+fn unlock_waits_for_authentication_and_rejects_unknown_apps() {
+    let _serial = ONE_BUS.lock().unwrap_or_else(|e| e.into_inner());
+    let _bus = PrivateBus::start("unlock");
+    let state = state();
+    let (events, tx) = start_daemon(state);
+    let conn = Connection::system().unwrap();
+    let manager = ManagerProxyBlocking::new(&conn).unwrap();
+
+    // These never reach the event loop, so no authentication box is started.
+    assert!(manager.unlock("not-protected").is_err());
+    assert!(manager.unlock("bad/id").is_err());
+    assert!(events.drain().is_empty());
+
+    let (result_tx, result_rx) = mpsc::channel();
+    let caller = conn.clone();
+    std::thread::spawn(move || {
+        let manager = ManagerProxyBlocking::new(&caller).unwrap();
+        let _ = result_tx.send(manager.unlock("app"));
+    });
+    let (id, unlock_uid, app) = wait_unlock(&events);
+    assert_eq!(unlock_uid, uid());
+    assert_eq!(app, "app");
+    tx.send(Msg::ChangeDone { id, result: Ok(()) }).unwrap();
+    assert!(
+        result_rx
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+            .is_ok()
+    );
+}
+
+#[test]
+fn a_registered_agent_receives_state_changes() {
+    let _serial = ONE_BUS.lock().unwrap_or_else(|e| e.into_inner());
+    let _bus = PrivateBus::start("agent");
+    let state = state();
+    state.lock().unwrap().allow_window(uid(), "app");
+    let (_events, _tx) = start_daemon(state);
+
+    let observer = Connection::system().unwrap();
+    let register = ManagerProxyBlocking::new(&observer).unwrap();
+    register.register_agent().unwrap();
+    let (ready_tx, ready_rx) = mpsc::channel();
+    let watcher = std::thread::spawn(move || {
+        let agent = ManagerProxyBlocking::new(&observer).unwrap();
+        let mut signals = agent.receive_state_changed().unwrap();
+        ready_tx.send(()).unwrap();
+        let signal = signals.next().unwrap();
+        let args = signal.args().unwrap();
+        (args.app_id, args.unlocked)
+    });
+    ready_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    // Let the match rule reach the bus before the daemon emits.
+    std::thread::sleep(Duration::from_millis(200));
+
+    let caller = Connection::system().unwrap();
+    let manager = ManagerProxyBlocking::new(&caller).unwrap();
+    manager.lock("app").unwrap();
+    assert_eq!(watcher.join().unwrap(), ("app".to_string(), false));
 }
