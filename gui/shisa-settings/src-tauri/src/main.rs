@@ -8,6 +8,7 @@
 
 use base64::Engine;
 use shisa_core::dbus::{AppRow, DiagRow, LaunchRow, ManagerProxy};
+use shisa_core::i18n::{self, Language};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -15,8 +16,11 @@ use tauri::{Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 
 type R<T> = Result<T, String>;
 
+/// Localize the daemon's or zbus's English error for the window. The daemon
+/// keeps one canonical wording on the bus, and this is where the settings
+/// window turns it into the interface language.
 fn err(e: impl std::fmt::Display) -> String {
-    e.to_string()
+    i18n::error_text(&e.to_string(), i18n::current())
 }
 
 /// The desktop's preferred colour scheme, asked of the XDG portal.
@@ -100,6 +104,20 @@ async fn color_scheme() -> R<Option<bool>> {
     Ok(appearance::read().await)
 }
 
+/// The interface language this window should render, as a tag the frontend
+/// knows. Read before the window mounts, so the first paint is already right.
+#[tauri::command]
+fn ui_language() -> String {
+    i18n::current().tag().to_string()
+}
+
+/// Save the language chosen in the settings window. This is a user
+/// preference, so it needs no polkit authorization.
+#[tauri::command]
+fn set_ui_language(language: String) -> R<()> {
+    let language = Language::from_tag(&language).ok_or("unknown language")?;
+    i18n::save(language).map_err(err)
+}
 
 #[tauri::command]
 async fn list_apps() -> R<Vec<AppRow>> {
@@ -257,7 +275,10 @@ async fn lock(app_id: String) -> R<()> {
             proxy.call::<_, _, ()>("VerifyLock", &()).await
         }
         .await;
-        check.map_err(|e| format!("启动已上锁，窗口状态未确认：{e}"))?;
+        check.map_err(|e| match i18n::current() {
+            Language::ZhCn => format!("启动已上锁，窗口状态未确认：{e}"),
+            Language::En => format!("Lock applied, but the window state was not confirmed: {e}"),
+        })?;
     }
     Ok(())
 }
@@ -517,11 +538,19 @@ async fn restore_hidden(app_id: String) -> R<()> {
     let agent = WindowAgentProxy::new(&connection).await.map_err(err)?;
     let apps = agent.hidden_apps().await.map_err(err)?;
     if apps.get(&app_id).copied().unwrap_or_default() == 0 {
-        return Err("这个窗口已不在列表中".into());
+        return Err(match i18n::current() {
+            Language::ZhCn => "这个窗口已不在列表中".into(),
+            Language::En => "this window is no longer in the list".into(),
+        });
     }
     let system = zbus::Connection::system().await.map_err(err)?;
     let manager = ManagerProxy::new(&system).await.map_err(err)?;
-    if !manager.window_states().await.map_err(err)?.contains(&app_id) {
+    if !manager
+        .window_states()
+        .await
+        .map_err(err)?
+        .contains(&app_id)
+    {
         manager.unlock(&app_id).await.map_err(err)?;
     }
     agent.restore_window(&app_id).await.map_err(err)
@@ -537,14 +566,31 @@ fn open_window(app: &tauri::AppHandle, restore: bool) -> Result<(), Box<dyn std:
     let data = std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(std::env::temp_dir)
-        .join(if restore { "shisa-restore" } else { "shisa-settings" });
+        .join(if restore {
+            "shisa-restore"
+        } else {
+            "shisa-settings"
+        });
     std::fs::create_dir_all(&data)?;
     let builder = WebviewWindowBuilder::new(app, label, WebviewUrl::App("index.html".into()))
         .data_directory(data);
+    let language = i18n::current();
     let window = if restore {
-        builder.title("恢复窗口").inner_size(384.0, 400.0).resizable(false).center().build()?
+        builder
+            .title(match language {
+                Language::ZhCn => "恢复窗口",
+                Language::En => "Restore windows",
+            })
+            .inner_size(384.0, 400.0)
+            .resizable(false)
+            .center()
+            .build()?
     } else {
-        builder.title("Shisa 设置")
+        builder
+            .title(match language {
+                Language::ZhCn => "Shisa 设置",
+                Language::En => "Shisa Settings",
+            })
             .inner_size(940.0, 620.0)
             .min_inner_size(760.0, 520.0)
             .decorations(false)
@@ -567,11 +613,17 @@ fn main() {
         // A second start brings the existing window forward instead of opening
         // another one.
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
-            if let Err(error) = open_window(app, args.iter().any(|arg| arg == "--restore-windows")) {
+            if let Err(error) = open_window(app, args.iter().any(|arg| arg == "--restore-windows"))
+            {
                 eprintln!("Shisa: {error}");
             }
         }))
-        .setup(|app| open_window(app.handle(), std::env::args_os().any(|arg| arg == "--restore-windows")))
+        .setup(|app| {
+            open_window(
+                app.handle(),
+                std::env::args_os().any(|arg| arg == "--restore-windows"),
+            )
+        })
         .manage(Icons::default())
         .invoke_handler(tauri::generate_handler![
             list_apps,
@@ -593,7 +645,9 @@ fn main() {
             set_prompt_timeout,
             lock,
             icon,
-            color_scheme
+            color_scheme,
+            ui_language,
+            set_ui_language
         ])
         .run(tauri::generate_context!())
         .expect("shisa-settings failed to start");

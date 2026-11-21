@@ -19,7 +19,7 @@ use load::Marks;
 use policy::{Change, Policy, State, Why};
 use procfs::{Procs, RealProcs};
 use shisa_core::dbus::{POLKIT_CHANGE, POLKIT_LAUNCH};
-use shisad::{activity, bus, diag, events, gate, load, logind, notify, polkit, policy, procfs};
+use shisad::{activity, bus, diag, events, gate, load, logind, notify, policy, polkit, procfs};
 use std::collections::HashMap;
 use std::os::fd::RawFd;
 use std::path::{Path, PathBuf};
@@ -173,7 +173,8 @@ fn apply_change(
         let env = shisa_core::desktop::Env::for_user(uid).ok_or("no home directory")?;
         let found = shisa_core::desktop::resolve(id, &env).map_err(|e| e.to_string())?;
         if found.paths.is_empty() {
-            let notes: Vec<String> = found.notes.iter().map(|n| n.message()).collect();
+            let language = env.language();
+            let notes: Vec<String> = found.notes.iter().map(|n| n.message(language)).collect();
             return Err(format!(
                 "{id} has no usable protected path. {}",
                 notes.join(" ")
@@ -195,8 +196,7 @@ fn note_marks(diag: &diag::Diag, policy: &Policy) {
             // A listed app with no marked file stops nothing, which is a
             // failure whether its path list is empty or nothing in it could
             // be marked.
-            !app.files.is_empty()
-                && app.paths.iter().all(|path| app.effective.contains(path))
+            !app.files.is_empty() && app.paths.iter().all(|path| app.effective.contains(path))
         })
     });
     if complete {
@@ -207,13 +207,7 @@ fn note_marks(diag: &diag::Diag, policy: &Policy) {
     diag.note_reload();
 }
 
-fn reload(
-    gate: &Gate,
-    dir: &Path,
-    state: &Mutex<State>,
-    marks: &mut Marks,
-    diag: &diag::Diag,
-) {
+fn reload(gate: &Gate, dir: &Path, state: &Mutex<State>, marks: &mut Marks, diag: &diag::Diag) {
     let old = state.lock().unwrap().policy().clone();
     // New marks are placed before the policy that refers to them is
     // installed. Events from them in between are allowed.
@@ -328,7 +322,14 @@ fn on_request(
     };
     let id = events.next_id();
     let deadline = Instant::now() + timeout;
-    activity.record(uid, id, &app, pid, activity::ASKED, activity::after(timeout));
+    activity.record(
+        uid,
+        id,
+        &app,
+        pid,
+        activity::ASKED,
+        activity::after(timeout),
+    );
     polkit::spawn(
         events.clone(),
         id,
@@ -802,7 +803,8 @@ fn main() {
                                 None => Err("app is no longer protected".to_string()),
                             };
                             let _ = bus_tx.send(Msg::ChangeDone { id, result });
-                            let unlocked = state.lock().unwrap().has_ticket(uid, &app, Instant::now());
+                            let unlocked =
+                                state.lock().unwrap().has_ticket(uid, &app, Instant::now());
                             let _ = bus_tx.send(Msg::StateChanged { uid, app, unlocked });
                             continue;
                         }

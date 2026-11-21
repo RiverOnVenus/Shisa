@@ -2,7 +2,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { getCurrentWindow } from "@tauri-apps/api/window";
-  import { onMount } from "svelte";
+  import { onMount, tick, untrack } from "svelte";
   import {
     ago,
     detail,
@@ -13,17 +13,28 @@
     kindText,
     matches,
     outcomeClass,
-    readable,
     reasonText,
     relockPresets,
   } from "./format.js";
+  import {
+    createTranslator,
+    languageFromTag,
+    languages,
+    plural,
+  } from "./i18n.js";
+
+  let { language: initialLanguage = "en" } = $props();
+  // The language is read once when the window mounts. Later changes come
+  // from the selector below, so the prop is deliberately not reactive.
+  let lang = $state(untrack(() => languageFromTag(initialLanguage)));
+  const t = $derived(createTranslator(lang));
 
   const win = getCurrentWindow();
   const edges = [
     ["n", "North"], ["s", "South"], ["e", "East"], ["w", "West"],
     ["ne", "NorthEast"], ["nw", "NorthWest"], ["se", "SouthEast"], ["sw", "SouthWest"],
   ];
-  const filters = [["all", "全部"], ["protected", "受保护"], ["unlocked", "已解锁"], ["unprotected", "未受保护"]];
+  const filters = ["all", "protected", "unlocked", "unprotected"];
   // The account that holds the app-lock password, as created by
   // data/shisa-lock.sysusers. The first run has no password yet,
   // and every authentication fails until root sets one.
@@ -43,7 +54,7 @@
   let resolved = $state([]);
   let notes = $state([]);
   // Whether the grace picker shows its number field. Set when the stored value
-  // is not one of the presets, or when 自定义 is clicked.
+  // is not one of the presets, or when the custom button is clicked.
   let graceApp = $state(false);
   // Whether the relock picker shows its number field.
   let relockApp = $state(false);
@@ -93,8 +104,8 @@
     return counts;
   });
   const visible = $derived(apps.filter((a) => matches(a, query, filter)));
-  // The audit list, newest first. 只看拒绝 keeps the rows that ended without
-  // the user's yes.
+  // The audit list, newest first. The refusals-only filter keeps the rows
+  // that ended without the user's yes.
   const failure = $derived([...launches].reverse().find((row) => row.app === currentId && outcomeClass(row.kind) === "bad"));
   const activityRows = $derived(
     [...launches]
@@ -118,8 +129,38 @@
 
 
   function fail(e) {
-    error = readable(e instanceof Error ? e.message : String(e));
+    error = e instanceof Error ? e.message : String(e);
   }
+
+  /// Save a new interface language. This is the shell's own preference, so
+  /// no authentication is involved. The window re-renders from `lang`, and
+  /// the tray follows the same file on its own.
+  async function chooseLanguage(tag) {
+    if (tag === lang) return;
+    try {
+      await invoke("set_ui_language", { language: tag });
+    } catch (e) {
+      fail(e);
+      return;
+    }
+    // Build the title from the new language directly, so it does not wait
+    // for the derived translator to be recomputed.
+    const title = createTranslator(tag)("app.title");
+    lang = tag;
+    document.documentElement.lang = tag;
+    document.title = title;
+    // The settings search reads the rendered cards, so re-apply it to the
+    // new text once they have rendered again.
+    await tick();
+    filterSettings();
+    // The title is cosmetic. A compositor that refuses it must not undo the
+    // saved choice in the window.
+    await win.setTitle(title).catch(() => {});
+  }
+
+  $effect(() => {
+    document.title = t("app.title");
+  });
 
   async function refresh() {
     generation++;
@@ -192,7 +233,7 @@
       notes = res[1];
     } catch (e) {
       if (currentId === id && page === "app") {
-        notes = [readable(e instanceof Error ? e.message : String(e))];
+        notes = [e instanceof Error ? e.message : String(e)];
       }
     }
   }
@@ -220,8 +261,8 @@
       [rows, ...counts] = await invoke("recent_launches");
     } catch {
       activityNote = daemon
-        ? "当前守护进程不提供活动记录，装上新版 shisad 后可用。"
-        : "应用锁没有响应，等它恢复后这一页会自动更新。";
+        ? t("activity.note.old")
+        : t("activity.note.offline");
       return;
     }
     // A poll that raced the page switch puts nothing back.
@@ -269,11 +310,11 @@
   /// Run a change that needs authentication and then reload what it touched.
   /// Both halves report their own error, and `after` runs once either way so
   /// a failed reload cannot leave an unhandled rejection behind.
-  async function change(action, after, label = "等待认证…") {
+  async function change(action, after, label = null) {
     // Keyboard activation can reach a focused control through the busy
     // overlay, which only blocks the pointer.
     if (busy > 0) return;
-    busyLabel = label;
+    busyLabel = label ?? t("busy.auth");
     busy++;
     generation++;
     error = "";
@@ -342,7 +383,7 @@
     const path = newPath.trim();
     if (!path || (current?.paths ?? []).includes(path)) return;
     if (!path.startsWith("/")) {
-      error = "保护路径要写绝对路径，例如 /usr/bin/程序。";
+      error = t("app.addPath.absolute");
       return;
     }
     const paths = [...(current?.paths ?? []), path];
@@ -369,22 +410,14 @@
   }
 
   function lockAll() {
-    change(
-      () => invoke("lock", { appId: "" }),
-      refresh,
-      "正在上锁…",
-    );
+    change(() => invoke("lock", { appId: "" }), refresh, t("busy.lock"));
   }
 
   /// Drop this app's ticket without authentication: locking only ever takes
   /// something away.
   function lockNow() {
     const id = currentId;
-    change(
-      () => invoke("lock", { appId: id }),
-      syncTickets,
-      "正在上锁…",
-    );
+    change(() => invoke("lock", { appId: id }), syncTickets, t("busy.lock"));
   }
 
   /// Ask for a ticket now, the way `shisa unlock` does. The box answers first,
@@ -564,7 +597,7 @@
             apply(secs);
           }}>{label}</button>
       {/each}
-      <button class="opt" class:on={custom} onclick={() => setCustom(true)}>自定义</button>
+      <button class="opt" class:on={custom} onclick={() => setCustom(true)}>{t("general.custom")}</button>
     </div>
     {#if custom}
       <input
@@ -576,7 +609,7 @@
         value={value}
         onchange={(e) => setNumber(e.currentTarget, value, apply)}
       />
-      <span class="unit">秒</span>
+      <span class="unit">{t("common.seconds")}</span>
     {/if}
   </div>
 {/snippet}
@@ -608,18 +641,18 @@
         type="search"
         spellcheck="false"
         autocomplete="off"
-        aria-label="搜索应用"
-        placeholder="搜索应用"
+        aria-label={t("sidebar.search")}
+        placeholder={t("sidebar.search")}
         bind:value={query}
       />
 
       <div class="segs">
-        {#each filters as [key, label]}
-          <button class="opt" class:on={filter === key} onclick={() => (filter = key)}>{label}</button>
+        {#each filters as key}
+          <button class="opt" class:on={filter === key} onclick={() => (filter = key)}>{t(`filters.${key}`)}</button>
         {/each}
       </div>
 
-      <div class="nav-gl">应用</div>
+      <div class="nav-gl">{t("sidebar.group")}</div>
       <ul class="list">
         {#each visible as app (app.id)}
           <li>
@@ -634,13 +667,13 @@
                 {#if (nameCounts.get(app.name) ?? 0) > 1}<span class="sub">{app.id}</span>{/if}
               </span>
               {#if app.protected}
-                <span class="dot" class:open={app.unlocked} title={app.unlocked ? "启动凭证有效" : "启动需认证"}></span>
+                <span class="dot" class:open={app.unlocked} title={app.unlocked ? t("dot.unlocked") : t("dot.locked")}></span>
               {/if}
             </button>
           </li>
         {/each}
         {#if visible.length === 0}
-          <li class="empty-state">{query || filter !== "all" ? "没有匹配的应用" : "没有可显示的应用"}</li>
+          <li class="empty-state">{query || filter !== "all" ? t("sidebar.empty.match") : t("sidebar.empty.none")}</li>
         {/if}
       </ul>
     </div>
@@ -648,18 +681,18 @@
     <div class="side-foot">
       <button class="row" class:on={page === "general"} onclick={selectGeneral}>
         {#if gear}<img src={gear} alt="" />{:else}<span class="icon-gap"></span>{/if}
-        <span class="who"><span class="name">通用</span></span>
+        <span class="who"><span class="name">{t("sidebar.general")}</span></span>
       </button>
-      <div class="gw" class:off={!daemon}><i></i><span>{daemon ? "应用锁在运行" : "应用锁没有响应"}</span></div>
+      <div class="gw" class:off={!daemon}><i></i><span>{daemon ? t("daemon.online") : t("daemon.offline")}</span></div>
     </div>
   </aside>
 
   <div class="main">
     <div class="top" data-tauri-drag-region>
       <div class="crumb" data-tauri-drag-region>
-        <span>{page === "general" ? "设置" : page === "activity" ? "通用 · 诊断" : "应用"}</span>
+        <span>{page === "general" ? t("crumb.settings") : page === "activity" ? t("crumb.diagnostics") : t("crumb.apps")}</span>
         <i>/</i>
-        <b>{page === "general" ? "通用" : page === "activity" ? "最近启动" : current?.name ?? "—"}</b>
+        <b>{page === "general" ? t("crumb.general") : page === "activity" ? t("crumb.activity") : current?.name ?? "—"}</b>
       </div>
       {#if page === "general"}
         <input
@@ -667,20 +700,20 @@
           type="search"
           spellcheck="false"
           autocomplete="off"
-          aria-label="查找设置"
-          placeholder="查找设置"
+          aria-label={t("top.search")}
+          placeholder={t("top.search")}
           bind:value={settingsQuery}
           oninput={filterSettings}
         />
       {/if}
       <div class="actions">
         {#if page === "app" && current}
-          <button class="text" onclick={lockAll}>全部上锁</button>
+          <button class="text" onclick={lockAll}>{t("top.lockAll")}</button>
         {/if}
-        <button class="icon" aria-label="最小化" onclick={() => win.minimize()}>
+        <button class="icon" aria-label={t("top.minimize")} onclick={() => win.minimize()}>
           <svg viewBox="0 0 16 16" width="14" height="14"><path d="M3.5 8h9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
         </button>
-        <button class="icon winclose" aria-label="关闭" onclick={() => win.close()}>
+        <button class="icon winclose" aria-label={t("top.close")} onclick={() => win.close()}>
           <svg viewBox="0 0 16 16" width="10" height="10"><path d="M4 4l8 8M12 4l-8 8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
         </button>
       </div>
@@ -693,10 +726,10 @@
             <div class="list">
               <div class="prefrow">
                 <div class="who">
-                  <div class="name">还没设置应用锁密码</div>
+                  <div class="name">{t("password.name")}</div>
                   <div class="sub">
-                    受保护的应用要输入应用锁密码，这个密码还没设，现在所有认证都会失败。请管理员在终端运行
-                    <code>sudo passwd {adminUser}</code>，完成后重新打开这个窗口。
+                    {t("password.sub")}
+                    <code>sudo passwd {adminUser}</code>{t("password.after")}
                   </div>
                 </div>
               </div>
@@ -704,35 +737,52 @@
           </section>
         {/if}
       {#if page === "general"}
+        <!-- The language is a local preference, so it stays usable while the
+             daemon is down and the rest of this page cannot load. -->
+        <section class="set">
+          <div class="list">
+            <div class="prefrow">
+              <div class="who">
+                <div class="name">{t("general.language.name")}</div>
+                <div class="sub">{t("general.language.sub")}</div>
+              </div>
+              <div class="segs two">
+                {#each languages as [tag, name]}
+                  <button class="opt" class:on={lang === tag} onclick={() => chooseLanguage(tag)}>{name}</button>
+                {/each}
+              </div>
+            </div>
+          </div>
+        </section>
         {#if globalReady}
           <div bind:this={settingsRoot}>
           <section class="set">
             <div class="list">
               <div class="prefrow">
                 <div class="who">
-                  <div class="name">默认宽限期</div>
-                  <div class="sub">认证通过后这段时间内再打开不再询问。单个应用可以在自己的页面里改。</div>
+                  <div class="name">{t("general.grace.name")}</div>
+                  <div class="sub">{t("general.grace.sub")}</div>
                 </div>
-                {@render secondsPicker(global.grace, graceGlobal, (on) => (graceGlobal = on), setGlobalGrace, gracePresets, 31536000, 30)}
+                {@render secondsPicker(global.grace, graceGlobal, (on) => (graceGlobal = on), setGlobalGrace, gracePresets(t), 31536000, 30)}
               </div>
               <div class="prefrow">
                 <div class="who">
-                  <div class="name">锁屏时清除已通过的认证</div>
-                  <div class="sub">开启时锁屏会收回已打开的受保护窗口，解锁后恢复要重新认证。关掉后锁屏不改变正在使用的窗口，只影响下一次启动。</div>
+                  <div class="name">{t("general.clear.name")}</div>
+                  <div class="sub">{t("general.clear.sub")}</div>
                 </div>
                 <button
                   class="lib-switch"
                   class:on={global.clearOnLock}
                   role="switch"
                   aria-checked={global.clearOnLock}
-                  aria-label="锁屏时清除已通过的认证"
+                  aria-label={t("general.clear.name")}
                   onclick={() => setClearOnLock(!global.clearOnLock)}
                 ><i></i></button>
               </div>
               <div class="prefrow">
                 <div class="who">
-                  <div class="name">认证框等待上限</div>
-                  <div class="sub">最多等这么久，超时就拒绝启动。取消或超时也会被系统记一次认证失败，连续 3 次后应用锁暂停约 10 分钟，不影响登录。</div>
+                  <div class="name">{t("general.timeout.name")}</div>
+                  <div class="sub">{t("general.timeout.sub")}</div>
                 </div>
                 <div class="val">
                   <input
@@ -743,51 +793,59 @@
                     value={global.promptTimeout}
                     onchange={(e) => setNumber(e.currentTarget, global.promptTimeout, setPromptTimeout)}
                   />
-                  <span class="unit">秒 · 5 到 85</span>
+                  <span class="unit">{t("general.timeout.unit")}</span>
                 </div>
               </div>
             </div>
           </section>
           <section class="set">
-            <div class="label">诊断记录</div>
+            <div class="label">{t("diag.records")}</div>
             <div class="list"><div class="prefrow">
-              <button class="text action" onclick={selectActivity}>查看最近启动和拒绝原因</button>
+              <button class="text action" onclick={selectActivity}>{t("diag.view")}</button>
             </div></div>
           </section>
           {#if diag}
             <section class="set">
-              <div class="label">诊断</div>
+              <div class="label">{t("diag.title")}</div>
               <div class="list">
                 <div class="prefrow">
                   <div class="who">
                     <div class="name">shisad {diag.version}</div>
                     <div class="sub">
-                      已运行 {duration(Date.now() - diag.started)}，最近一次重新加载{diag.reloaded
-                        ? `在 ${ago(diag.reloaded)}`
-                        : "还没发生"}。
+                      {t("diag.uptime", {
+                        duration: duration(Date.now() - diag.started, t),
+                        reloaded: diag.reloaded
+                          ? t("diag.reloaded.at", { ago: ago(diag.reloaded, Date.now(), t) })
+                          : t("diag.reloaded.never"),
+                      })}
                     </div>
                   </div>
                 </div>
                 <div class="prefrow">
                   <div class="who">
-                    <div class="name">受保护的应用</div>
-                    <div class="sub">{diag.apps} 个应用，{diag.marked} 条路径已加上监视标记。</div>
+                    <div class="name">{t("diag.apps.name")}</div>
+                    <div class="sub">{t("diag.apps.sub", {
+                      apps: diag.apps,
+                      marked: diag.marked,
+                      appWord: plural(lang, diag.apps, "app", "apps"),
+                      pathWord: plural(lang, diag.marked, "path", "paths"),
+                    })}</div>
                   </div>
                 </div>
                 <div class="prefrow">
                   <div class="who">
-                    <div class="name">最近一次加载</div>
+                    <div class="name">{t("diag.last.name")}</div>
                     <div class="sub" class:bad={diag.failed > 0}>
                       {diag.failed
-                        ? `有路径没标记上，${ago(diag.failed)}`
-                        : "全部路径已标记。"}
+                        ? t("diag.last.failed", { ago: ago(diag.failed, Date.now(), t) })
+                        : t("diag.last.ok")}
                     </div>
                   </div>
                 </div>
                 {#if diag.config}
                   <div class="prefrow">
                     <div class="who">
-                      <div class="name">配置文件</div>
+                      <div class="name">{t("diag.config")}</div>
                       <div class="sub mono">{diag.config}</div>
                     </div>
                   </div>
@@ -799,32 +857,37 @@
               <div class="list">
                 <div class="prefrow">
                   <div class="who">
-                    <div class="sub">当前守护进程不提供诊断信息，装上新版 shisad 后可用。</div>
+                    <div class="sub">{t("diag.unavailable")}</div>
                   </div>
                 </div>
               </div>
             </section>
           {/if}
           </div>
-          <div class="empty set-none" hidden>没有匹配的设置</div>
+          <div class="empty set-none" hidden>{t("settings.empty.match")}</div>
         {:else}
-          <div class="empty">正在读取设置…</div>
+          <div class="empty">{t("settings.loading")}</div>
         {/if}
       {:else if page === "activity"}
         <div class="act-head">
-          <div class="label">最近启动</div>
+          <div class="label">{t("activity.title")}</div>
           <div class="segs">
-            <button class="opt" class:on={activityFilter === "all"} onclick={() => (activityFilter = "all")}>全部</button>
-            <button class="opt" class:on={activityFilter === "denied"} onclick={() => (activityFilter = "denied")}>只看拒绝</button>
+            <button class="opt" class:on={activityFilter === "all"} onclick={() => (activityFilter = "all")}>{t("activity.all")}</button>
+            <button class="opt" class:on={activityFilter === "denied"} onclick={() => (activityFilter = "denied")}>{t("activity.denied")}</button>
           </div>
           <span class="grow"></span>
-          <button class="text" onclick={lockAll}>全部上锁</button>
+          <button class="text" onclick={lockAll}>{t("top.lockAll")}</button>
         </div>
         {#if activityNote}
           <div class="empty">{activityNote}</div>
         {:else}
           <p class="act-summary">
-            本次运行 {activityCounts.requests} 次启动，{activityCounts.allowed} 次放行，{activityCounts.denied} 次拒绝。记录只保存在 shisad 的内存里，重启后清空。
+            {t("activity.summary", {
+              requests: activityCounts.requests,
+              allowed: activityCounts.allowed,
+              denied: activityCounts.denied,
+              launchWord: plural(lang, activityCounts.requests, "launch", "launches"),
+            })}
           </p>
           <section class="set">
           <div class="list">
@@ -833,7 +896,7 @@
                 class="prefrow click"
                 role="button"
                 tabindex="0"
-                title={apps.some((a) => a.id === row.app) ? "打开这个应用的页面" : ""}
+                title={apps.some((a) => a.id === row.app) ? t("activity.open") : ""}
                 onclick={() => openApp(row.app)}
                 onkeydown={(e) => {
                   if (e.key === "Enter" || e.key === " ") {
@@ -848,18 +911,18 @@
                   <span class="icon-gap"></span>
                 {/if}
                 <div class="who">
-                  <div class="name">{nameOf(row.app)}<span class="when">{ago(row.at)}</span></div>
-                  <div class="sub">{detail(row)}</div>
+                  <div class="name">{nameOf(row.app)}<span class="when">{ago(row.at, Date.now(), t)}</span></div>
+                  <div class="sub">{detail(row, Date.now(), t)}</div>
                 </div>
-                <span class="outcome {outcomeClass(row.kind)}">{kindText(row.kind)}<span class="why">{reasonText(row.kind)}</span></span>
+                <span class="outcome {outcomeClass(row.kind)}">{kindText(row.kind, t)}<span class="why">{reasonText(row.kind, t)}</span></span>
               </div>
             {:else}
               <div class="prefrow">
                 <div class="who">
                   {#if launches.length === 0}
-                    <div class="sub">还没有启动记录。打开一个受保护的应用，它的裁决会出现在这里。</div>
+                    <div class="sub">{t("activity.empty.none")}</div>
                   {:else}
-                    <div class="sub">没有拒绝的记录。</div>
+                    <div class="sub">{t("activity.empty.denied")}</div>
                   {/if}
                 </div>
               </div>
@@ -878,9 +941,9 @@
               </div>
               {#if config.ready && current.protected}
                 <div class="val">
-                  <span class="state" class:open={current.unlocked}>{current.unlocked ? "启动凭证有效" : "启动需认证"}</span>
-                  <button class="text action" onclick={lockNow}>立即上锁</button>
-                  <button class="text action" onclick={unlockNow}>立即解锁</button>
+                  <span class="state" class:open={current.unlocked}>{current.unlocked ? t("app.state.unlocked") : t("app.state.locked")}</span>
+                  <button class="text action" onclick={lockNow}>{t("app.lockNow")}</button>
+                  <button class="text action" onclick={unlockNow}>{t("app.unlockNow")}</button>
                 </div>
               {/if}
             </div>
@@ -888,8 +951,8 @@
         </section>
 
         {#if failure && !activityNote}
-          <div class="prefrow"><div class="who"><div class="name">最近一次启动失败</div>
-            <div class="sub">{ago(failure.at)} · {reasonText(failure.kind)}</div>
+          <div class="prefrow"><div class="who"><div class="name">{t("app.failure")}</div>
+            <div class="sub">{ago(failure.at, Date.now(), t)} · {reasonText(failure.kind, t)}</div>
           </div></div>
         {/if}
         {#if config.ready}
@@ -897,57 +960,57 @@
             <div class="list">
               <div class="prefrow">
                 <div class="who">
-                  <div class="name">启动前要求认证</div>
-                  <div class="sub">{config.protected ? "打开这个应用时用应用锁密码验证一次。取消或超时就拒绝启动。" : "开启后打开这个应用要先验证应用锁密码，下面是它的宽限期、自启动和保护路径。"}</div>
+                  <div class="name">{t("app.protect.name")}</div>
+                  <div class="sub">{config.protected ? t("app.protect.sub.on") : t("app.protect.sub.off")}</div>
                 </div>
                 <button
                   class="lib-switch"
                   class:on={config.protected}
                   role="switch"
                   aria-checked={config.protected}
-                  aria-label="启动前要求认证"
+                  aria-label={t("app.protect.name")}
                   onclick={() => setProtected(!config.protected)}
                 ><i></i></button>
               </div>
               {#if config.protected}
                 <div class="prefrow">
                   <div class="who">
-                    <div class="name">宽限期</div>
-                    <div class="sub">{config.grace === 0 ? "0 表示每次启动都要认证。" : "认证通过后这段时间内再打开不再询问。锁屏是否清除看通用页的开关。"}</div>
+                    <div class="name">{t("app.grace.name")}</div>
+                    <div class="sub">{config.grace === 0 ? t("app.grace.sub.zero") : t("app.grace.sub")}</div>
                   </div>
-                  {@render secondsPicker(config.grace, graceApp, (on) => (graceApp = on), setGrace, gracePresets, 31536000, 30)}
+                  {@render secondsPicker(config.grace, graceApp, (on) => (graceApp = on), setGrace, gracePresets(t), 31536000, 30)}
                 </div>
                 <div class="prefrow">
                   <div class="who">
-                    <div class="name">失焦后隐藏</div>
-                    <div class="sub">失焦达到设定时长后收起窗口，恢复时需要认证。选择关闭时，失焦不会收起窗口。</div>
+                    <div class="name">{t("app.relock.name")}</div>
+                    <div class="sub">{t("app.relock.sub")}</div>
                   </div>
                   <div class="segs">
-                    {#each relockPresets as [secs, label]}
+                    {#each relockPresets(t) as [secs, label]}
                       <button class="opt" class:on={config.relock === secs} onclick={() => setRelock(secs)}>{label}</button>
                     {/each}
-                    {#if relockApp}<span class="unit">{config.relock} 秒</span>{/if}
+                    {#if relockApp}<span class="unit">{config.relock} {t("common.seconds")}</span>{/if}
                   </div>
                 </div>
                 <details class="advanced">
                 <summary class="prefrow adv-toggle">
-                  <span class="name">高级设置</span>
+                  <span class="name">{t("app.advanced")}</span>
                   <svg class="chev" viewBox="0 0 16 16" aria-hidden="true">
                     <path d="m4 6 4 4 4-4" />
                   </svg>
                 </summary>
-                <div class="prefrow"><label>自定义失焦时长
+                <div class="prefrow"><label>{t("app.customRelock")}
                   <input class="num" type="number" min="0" max="86400" value={config.relock}
-                    onchange={(e) => setNumber(e.currentTarget, config.relock, setRelock)} /> 秒
+                    onchange={(e) => setNumber(e.currentTarget, config.relock, setRelock)} /> {t("common.seconds")}
                 </label></div>
                 <div class="prefrow">
                   <div class="who">
-                    <div class="name">自启动</div>
-                    <div class="sub">登录后 30 秒内从自启动单元启动时直接放行。这个单元名同账号可以伪造，只适合你信任自己登录后第一分钟的情况。</div>
+                    <div class="name">{t("app.autostart.name")}</div>
+                    <div class="sub">{t("app.autostart.sub")}</div>
                   </div>
                   <div class="segs two">
-                    <button class="opt" class:on={!config.autostart} onclick={() => setAutostart(false)}>要求认证</button>
-                    <button class="opt" class:on={config.autostart} onclick={() => setAutostart(true)}>放行</button>
+                    <button class="opt" class:on={!config.autostart} onclick={() => setAutostart(false)}>{t("app.autostart.prompt")}</button>
+                    <button class="opt" class:on={config.autostart} onclick={() => setAutostart(true)}>{t("app.autostart.allow")}</button>
                   </div>
                 </div>
                 {#each current.paths ?? [] as path}
@@ -955,26 +1018,26 @@
                     <div class="who">
                       <div class="name mono">{path}</div>
                       {#if !(current.effective ?? []).includes(path)}
-                        <div class="sub bad">未生效，当前没有被监视。检查文件是否存在，或者它是不是 shell、解释器。</div>
+                        <div class="sub bad">{t("app.path.inactive")}</div>
                       {/if}
                     </div>
                     <button
                       class="text danger"
                       disabled={(current.paths ?? []).length <= 1}
                       onclick={() => removePath(path)}
-                    >移除</button>
+                    >{t("common.remove")}</button>
                   </div>
                 {/each}
                 <div class="prefrow">
                   <div class="who">
                     {#if (current.paths ?? []).length === 1}
-                      <div class="sub">至少保留一条保护路径。要放开这个应用，请关掉上面的保护开关。</div>
+                      <div class="sub">{t("app.path.keep")}</div>
                     {:else if (current.paths ?? []).length === 0}
-                      <div class="sub">还没有路径，下面加一个。</div>
+                      <div class="sub">{t("app.path.none")}</div>
                     {/if}
                     <div class="add">
-                      <input class="words" placeholder="/usr/bin/程序 或 /opt/游戏/启动器" bind:value={newPath} />
-                      <button class="text action" onclick={addPath} disabled={!newPath.trim()}>添加</button>
+                      <input class="words" placeholder={t("app.path.placeholder")} bind:value={newPath} />
+                      <button class="text action" onclick={addPath} disabled={!newPath.trim()}>{t("common.add")}</button>
                     </div>
                   </div>
                 </div>
@@ -983,31 +1046,31 @@
             </div>
           </section>
         {:else}
-          <div class="empty">正在读取设置…</div>
+          <div class="empty">{t("settings.loading")}</div>
         {/if}
 
           <section class="set">
             <div class="list">
               <div class="prefrow">
                 <div class="who">
-                  <div class="name">覆盖情况</div>
-                  <div class="sub">下面列出从 desktop 文件解析出的入口。实际保护路径可在高级设置中查看。</div>
+                  <div class="name">{t("app.coverage.name")}</div>
+                  <div class="sub">{t("app.coverage.sub")}</div>
                 </div>
               </div>
               <div class="prefrow">
                 <div class="who">
-                  <div class="name">已打开的窗口</div>
-                  <div class="sub">锁屏后隐藏，再次打开需要认证。窗口层以用户身份运行，同账号的程序可以绕过。</div>
+                  <div class="name">{t("app.windows.name")}</div>
+                  <div class="sub">{t("app.windows.sub")}</div>
                 </div>
               </div>
               {#each (current.paths ?? []).filter((path) => !(current.effective ?? []).includes(path)) as path}
-                <div class="prefrow"><div class="sub bad">未生效：{path}</div></div>
+                <div class="prefrow"><div class="sub bad">{t("app.path.inactivePrefix")}{path}</div></div>
               {/each}
               {#each resolved as path}
                 <div class="prefrow"><div class="who"><div class="name mono">{path}</div></div></div>
               {/each}
               {#if resolved.length === 0}
-                <div class="prefrow"><div class="who"><div class="sub">没有从 desktop 文件解析到可保护的入口。</div></div></div>
+                <div class="prefrow"><div class="who"><div class="sub">{t("app.coverage.empty")}</div></div></div>
               {/if}
               {#each notes as note}
                 <div class="prefrow"><div class="who"><div class="sub bad">{note}</div></div></div>
@@ -1015,7 +1078,7 @@
             </div>
           </section>
       {:else}
-        <div class="empty">选择左侧的应用</div>
+        <div class="empty">{t("app.none")}</div>
       {/if}
       </div>
     </div>
@@ -1034,6 +1097,6 @@
 {#if error}
   <div class="banner" role="alert">
     <span>{error}</span>
-    <button class="text" onclick={() => (error = "")}>关闭</button>
+    <button class="text" onclick={() => (error = "")}>{t("common.close")}</button>
   </div>
 {/if}

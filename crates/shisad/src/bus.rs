@@ -380,12 +380,13 @@ impl ManagerIface {
                 let index = index_for(&cache, uid, &env);
                 let found = shisa_core::desktop::resolve_in(&index, &app_id, &env)
                     .map_err(|e| e.to_string())?;
+                let language = env.language();
                 let paths = found
                     .paths
                     .iter()
                     .map(|p| p.display().to_string())
                     .collect();
-                let notes = found.notes.iter().map(|n| n.message()).collect();
+                let notes = found.notes.iter().map(|n| n.message(language)).collect();
                 Ok((paths, notes))
             })
             .await?;
@@ -445,7 +446,8 @@ impl ManagerIface {
             .sender()
             .ok_or_else(|| zbus::fdo::Error::Failed("no sender".into()))?
             .to_string();
-        self.change(uid, app_id, Change::Protected(on), sender).await
+        self.change(uid, app_id, Change::Protected(on), sender)
+            .await
     }
 
     /// Change one option. An empty app id addresses the user's global
@@ -469,10 +471,7 @@ impl ManagerIface {
         // otherwise the authentication box would name one app while the change
         // lands in the global section (docs/subsystems/configuration.md).
         let global_only = matches!(key, "clear_on_screen_lock" | "prompt_timeout_seconds");
-        let app_only = matches!(
-            key,
-            "autostart" | "paths" | "relock_after_unfocus_seconds"
-        );
+        let app_only = matches!(key, "autostart" | "paths" | "relock_after_unfocus_seconds");
         if (app_id.is_empty() && app_only) || (!app_id.is_empty() && global_only) {
             return Err(zbus::fdo::Error::InvalidArgs(format!(
                 "option {key} does not apply to {}",
@@ -545,7 +544,13 @@ impl ManagerIface {
     /// Hand the change to the event loop and wait for the result. The loop
     /// asks the agent to authenticate this one change and then writes the
     /// configuration.
-    async fn change(&self, uid: u32, app: &str, change: Change, sender: String) -> zbus::fdo::Result<()> {
+    async fn change(
+        &self,
+        uid: u32,
+        app: &str,
+        change: Change,
+        sender: String,
+    ) -> zbus::fdo::Result<()> {
         let id = self.events.next_id();
         let (tx, rx) = oneshot::channel();
         self.waiting.lock().unwrap().insert(id, tx);
@@ -606,9 +611,7 @@ fn parse_option(key: &str, value: &zbus::zvariant::Value<'_>) -> zbus::fdo::Resu
             },
             _ => Err(invalid()),
         },
-        "relock_after_unfocus_seconds" => seconds(value)
-            .map(Change::Relock)
-            .ok_or_else(invalid),
+        "relock_after_unfocus_seconds" => seconds(value).map(Change::Relock).ok_or_else(invalid),
         "clear_on_screen_lock" => match value {
             Value::Bool(on) => Ok(Change::ClearOnLock(*on)),
             _ => Err(invalid()),

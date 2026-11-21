@@ -145,7 +145,7 @@ fn usable_path(path: &Path) -> Result<(), String> {
         return Err("not an absolute path".into());
     }
     if let Some(why) = shisa_core::desktop::unsuitable(path) {
-        return Err(why.into());
+        return Err(why.message().into());
     }
     match fs::metadata(path) {
         Ok(meta) if meta.is_file() => Ok(()),
@@ -176,10 +176,10 @@ pub fn check_range(change: &Change) -> Result<(), String> {
         // a markable file is checked on the reload thread, after the
         // authentication.
         Change::Paths(paths) if paths.is_empty() => {
-            Err("至少要保留一条保护路径，要放开请取消保护".into())
+            Err("keep at least one protected path, or turn off protection instead".into())
         }
         Change::Paths(paths) if paths.iter().any(|p| !p.is_absolute()) => {
-            Err("保护路径要写绝对路径".into())
+            Err("protected paths must be absolute".into())
         }
         _ => Ok(()),
     }
@@ -238,7 +238,9 @@ pub fn apply(
             // Giving up the protection has its own request, which the
             // authentication box names as such.
             if paths.is_empty() {
-                return Err(format!("{app} 至少要保留一条保护路径，要放开请取消保护"));
+                return Err(format!(
+                    "{app} must keep at least one protected path, or turn off protection instead"
+                ));
             }
             for path in paths {
                 usable_path(path)?;
@@ -657,13 +659,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(config.apps[0].autostart, Autostart::Allow);
-        apply(
-            &mut config,
-            "app",
-            &Change::Relock(300),
-            |_| unreachable!(),
-        )
-        .unwrap();
+        apply(&mut config, "app", &Change::Relock(300), |_| unreachable!()).unwrap();
         assert_eq!(config.apps[0].relock_after_unfocus_seconds, 300);
         assert!(check_range(&Change::Relock(MAX_RELOCK_SECONDS)).is_ok());
         assert!(check_range(&Change::Relock(MAX_RELOCK_SECONDS + 1)).is_err());

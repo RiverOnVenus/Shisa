@@ -11,9 +11,8 @@
 
 use ksni::menu::{MenuItem, StandardItem};
 use ksni::{Category, Handle, Status, Tray, TrayService};
-use shisa_core::dbus::{
-    BUS_NAME, INTERFACE, ManagerProxyBlocking, WINDOW_BUS_NAME, WINDOW_PATH,
-};
+use shisa_core::dbus::{BUS_NAME, INTERFACE, ManagerProxyBlocking, WINDOW_BUS_NAME, WINDOW_PATH};
+use shisa_core::i18n::{self, Language};
 use std::collections::HashMap;
 use std::env;
 use std::process::Command;
@@ -48,12 +47,41 @@ struct TrayState {
     hidden_windows: ((u64, u64), HashMap<String, u32>),
     last_lock: Option<String>,
     offline: bool,
+    /// The interface language, re-read while the tray runs.
+    language: Language,
     actions: Sender<Action>,
 }
 
 impl TrayState {
     fn hidden_count(&self) -> u64 {
-        self.hidden_windows.1.values().map(|&count| u64::from(count)).sum()
+        self.hidden_windows
+            .1
+            .values()
+            .map(|&count| u64::from(count))
+            .sum()
+    }
+}
+
+/// Pick between the two texts for the interface language.
+fn text(language: Language, zh: &'static str, en: &'static str) -> &'static str {
+    match language {
+        Language::ZhCn => zh,
+        Language::En => en,
+    }
+}
+
+/// Follow the language the settings window saves. The preference is a small
+/// file, so re-reading it every couple of seconds is cheaper than a watcher
+/// and still makes a change visible without restarting the tray.
+fn watch_language(handle: Handle<TrayState>) -> ! {
+    let mut shown = i18n::current();
+    loop {
+        thread::sleep(Duration::from_secs(2));
+        let now = i18n::current();
+        if now != shown {
+            shown = now;
+            handle.update(|tray| tray.language = now);
+        }
     }
 }
 
@@ -71,7 +99,11 @@ impl Tray for TrayState {
     }
 
     fn status(&self) -> Status {
-        if self.offline { Status::NeedsAttention } else { Status::Active }
+        if self.offline {
+            Status::NeedsAttention
+        } else {
+            Status::Active
+        }
     }
 
     fn icon_name(&self) -> String {
@@ -89,16 +121,34 @@ impl Tray for TrayState {
 
     fn tool_tip(&self) -> ksni::ToolTip {
         let mut description = if self.offline {
-            "shisad 不在线，保护暂停".to_string()
+            text(
+                self.language,
+                "shisad 不在线，保护暂停",
+                "shisad is offline, protection paused",
+            )
+            .to_string()
         } else {
-            format!("{} 个应用受保护", self.protected_count)
+            match (self.protected_count, self.language) {
+                (1, Language::ZhCn) => "1 个应用受保护".to_string(),
+                (count, Language::ZhCn) => format!("{count} 个应用受保护"),
+                (1, Language::En) => "1 app protected".to_string(),
+                (count, Language::En) => format!("{count} apps protected"),
+            }
         };
         if let Some(last_lock) = &self.last_lock {
-            description.push_str(&format!("\n上次上锁：{last_lock}"));
+            description.push_str(&match self.language {
+                Language::ZhCn => format!("\n上次上锁：{last_lock}"),
+                Language::En => format!("\nLast lock: {last_lock}"),
+            });
         }
         let hidden = self.hidden_count();
         if hidden > 0 {
-            description.push_str(&format!("\nShisa 已隐藏 {hidden} 个窗口"));
+            description.push_str(&match (hidden, self.language) {
+                (1, Language::ZhCn) => "\nShisa 已隐藏 1 个窗口".to_string(),
+                (hidden, Language::ZhCn) => format!("\nShisa 已隐藏 {hidden} 个窗口"),
+                (1, Language::En) => "\nShisa hid 1 window".to_string(),
+                (hidden, Language::En) => format!("\nShisa hid {hidden} windows"),
+            });
         }
         ksni::ToolTip {
             icon_name: self.icon_name(),
@@ -122,17 +172,19 @@ impl Tray for TrayState {
         };
         vec![
             StandardItem {
-                label: "全部上锁".into(),
+                label: text(self.language, "全部上锁", "Lock all").into(),
                 enabled: !self.offline,
                 activate: send(Action::LockAll),
                 ..Default::default()
-            }.into(),
+            }
+            .into(),
             Separator,
             StandardItem {
-                label: "打开设置".into(),
+                label: text(self.language, "打开设置", "Open settings").into(),
                 activate: send(Action::OpenSettings),
                 ..Default::default()
-            }.into(),
+            }
+            .into(),
         ]
     }
 }
@@ -157,9 +209,17 @@ fn main() -> std::process::ExitCode {
         hidden_windows: Default::default(),
         last_lock: None,
         offline: true,
+        language: i18n::current(),
         actions: actions_tx.clone(),
     });
     let handle = service.handle();
+    {
+        let handle = handle.clone();
+        thread::Builder::new()
+            .name("language".into())
+            .spawn(move || watch_language(handle))
+            .expect("language thread");
+    }
     {
         let gate = gate.clone();
         let handle = handle.clone();
@@ -278,7 +338,11 @@ fn supervise(
         }
     };
     // A registration is repeated now and then in case shisad lost it.
-    let mut interval = if subscribed { Duration::from_secs(60) } else { Duration::from_secs(3) };
+    let mut interval = if subscribed {
+        Duration::from_secs(60)
+    } else {
+        Duration::from_secs(3)
+    };
     let mut online = false;
     loop {
         // Each pass follows an owner change or the timer, and registers
@@ -366,7 +430,9 @@ fn signal_loop(
                 continue;
             }
         };
-        let Some(member) = message.header().member().map(|m| m.as_str().to_string()) else { continue };
+        let Some(member) = message.header().member().map(|m| m.as_str().to_string()) else {
+            continue;
+        };
         if member == "StateChanged"
             && let Ok(manager) = ManagerProxyBlocking::new(conn)
         {
@@ -386,7 +452,7 @@ fn signal_loop(
                 for delay in [Duration::from_millis(300), Duration::from_millis(1200)] {
                     thread::sleep(delay);
                     if let Ok(manager) = ManagerProxyBlocking::new(&conn) {
-                    refresh(&handle, &manager, &gate, &tracker);
+                        refresh(&handle, &manager, &gate, &tracker);
                     }
                     if let Some(gate) = gate.lock().unwrap().as_mut() {
                         gate.force();
@@ -404,7 +470,9 @@ fn refresh(
     gate: &Arc<Mutex<Option<window::Gate>>>,
     tracker: &Arc<Mutex<window::Tracker>>,
 ) {
-    let Ok(apps) = manager.list_apps() else { return };
+    let Ok(apps) = manager.list_apps() else {
+        return;
+    };
     // The unfocus delays change with the settings, which a `StateChanged`
     // does not cover. Read them on every refresh. A failed call keeps the
     // last good map: a transient bus error is not a reason to drop the clock
@@ -451,7 +519,16 @@ fn action_loop(
         match action {
             Action::LockAll => match lock("") {
                 Ok(()) => verify_lock(gate, handle),
-                Err(e) => notify_lock(handle, &format!("全部上锁失败：{e}")),
+                Err(e) => {
+                    let language = i18n::current();
+                    notify_lock(
+                        handle,
+                        &match language {
+                            Language::ZhCn => format!("全部上锁失败：{e}"),
+                            Language::En => format!("Lock all failed: {e}"),
+                        },
+                    );
+                }
             },
             Action::VerifyLock => verify_lock(gate, handle),
             Action::Unlock(app) => unlock(&app, gate),
@@ -494,16 +571,24 @@ fn verify_lock(gate: &Mutex<Option<window::Gate>>, handle: &Handle<TrayState>) {
         }
         Some(counts)
     })();
-    notify_lock(handle, &lock_summary(result));
+    notify_lock(handle, &lock_summary(result, i18n::current()));
 }
 
-fn lock_summary(result: Option<(u32, u32)>) -> String {
-    match result {
-        Some((0, 0)) => "启动已上锁，当前桌面未匹配到受保护窗口".into(),
-        Some((matched, hidden)) if matched == hidden => {
+fn lock_summary(result: Option<(u32, u32)>, language: Language) -> String {
+    match (result, language) {
+        (Some((0, 0)), Language::ZhCn) => "启动已上锁，当前桌面未匹配到受保护窗口".into(),
+        (Some((0, 0)), Language::En) => {
+            "Locked, but no protected window was found on this desktop".into()
+        }
+        (Some((matched, hidden)), Language::ZhCn) if matched == hidden => {
             format!("启动已上锁，已收起 {hidden} 个受保护窗口")
         }
-        _ => "已执行启动上锁，窗口状态未确认".into(),
+        (Some((matched, hidden)), Language::En) if matched == hidden => match hidden {
+            1 => "Locked and hid 1 protected window".into(),
+            hidden => format!("Locked and hid {hidden} protected windows"),
+        },
+        (_, Language::ZhCn) => "已执行启动上锁，窗口状态未确认".into(),
+        (_, Language::En) => "Lock applied, but the window state was not confirmed".into(),
     }
 }
 
@@ -581,7 +666,11 @@ fn restore_window(app: &str, gate: &Mutex<Option<window::Gate>>) {
         Some(allowed.iter().any(|id| id == app) && gate.restore(&protected, &allowed, app))
     })();
     if confirmed != Some(true) {
-        notify("窗口恢复未确认");
+        notify(text(
+            i18n::current(),
+            "窗口恢复未确认",
+            "Window restore was not confirmed",
+        ));
     }
 }
 
@@ -666,7 +755,10 @@ fn open_settings(gate: &Arc<Mutex<Option<window::Gate>>>, restore: bool) {
         .unwrap_or_else(|| "shisa-settings".into());
     let missing = display_env();
     if !missing.is_empty() {
-        debug!(keys = missing.len(), "settings: display env from the user manager");
+        debug!(
+            keys = missing.len(),
+            "settings: display env from the user manager"
+        );
     }
     let mut settings = Command::new(bin);
     if restore {
@@ -715,6 +807,7 @@ mod tests {
             protected_count: 2,
             last_lock: Some("已收起 2 个窗口".into()),
             offline: false,
+            language: Language::ZhCn,
             actions,
         };
         let menu = tray.menu();
@@ -736,10 +829,21 @@ mod tests {
 
     #[test]
     fn lock_feedback_requires_all_matched_windows_to_be_concealed() {
-        assert!(lock_summary(Some((0, 0))).contains("未匹配"));
-        assert!(lock_summary(Some((2, 2))).contains("已收起 2"));
-        assert_eq!(lock_summary(Some((2, 1))), lock_summary(None));
-        assert!(lock_summary(None).contains("未确认"));
+        assert!(lock_summary(Some((0, 0)), Language::ZhCn).contains("未匹配"));
+        assert!(lock_summary(Some((2, 2)), Language::ZhCn).contains("已收起 2"));
+        assert_eq!(
+            lock_summary(Some((2, 1)), Language::ZhCn),
+            lock_summary(None, Language::ZhCn)
+        );
+        assert!(lock_summary(None, Language::ZhCn).contains("未确认"));
+
+        assert!(lock_summary(Some((0, 0)), Language::En).contains("no protected window"));
+        assert!(lock_summary(Some((2, 2)), Language::En).contains("hid 2"));
+        assert_eq!(
+            lock_summary(Some((2, 1)), Language::En),
+            lock_summary(None, Language::En)
+        );
+        assert!(lock_summary(None, Language::En).contains("not confirmed"));
     }
 
     #[test]

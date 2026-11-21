@@ -10,6 +10,8 @@ use std::io::{self, Read};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
+use crate::i18n::Language;
+
 /// Where desktop files, executables and Flatpak deployments are looked up.
 #[derive(Debug, Clone)]
 pub struct Env {
@@ -22,7 +24,10 @@ pub struct Env {
     /// Set when another process reads on behalf of this account: its uid and
     /// home directory. Files below the home must then belong to the account.
     pub owner: Option<(u32, PathBuf)>,
-    /// Locale for `Name[locale]` keys, from `LC_ALL` or `LANG`.
+    /// The account's XDG config directory, for the interface language.
+    pub config_home: PathBuf,
+    /// Locale for `Name[locale]` keys and the interface, from `LC_ALL`,
+    /// `LC_MESSAGES` or `LANG`.
     pub locale: Option<String>,
 }
 
@@ -35,7 +40,9 @@ const MAX_SCAN_BYTES: usize = 8 << 20;
 
 impl Env {
     pub fn current() -> Self {
-        let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_default();
         // The XDG spec says an empty value means unset, and a relative data
         // directory is invalid and ignored.
         let data_home = std::env::var_os("XDG_DATA_HOME")
@@ -50,11 +57,17 @@ impl Env {
         let path = std::env::var_os("PATH")
             .and_then(|v| v.into_string().ok())
             .unwrap_or_default();
+        let config_home = std::env::var_os("XDG_CONFIG_HOME")
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
+            .unwrap_or_else(|| home.join(".config"));
         let locale = std::env::var("LC_ALL")
             .ok()
             .filter(|v| !v.is_empty())
+            .or_else(|| std::env::var("LC_MESSAGES").ok().filter(|v| !v.is_empty()))
             .or_else(|| std::env::var("LANG").ok().filter(|v| !v.is_empty()));
-        let mut env = Env::from_dirs(data_home, &data_dirs, &path, &home);
+        let mut env = Env::from_dirs(data_home, &data_dirs, &path, &home, config_home);
         env.locale = locale;
         env
     }
@@ -82,14 +95,26 @@ impl Env {
             .filter(|v| !v.is_empty())
             .map(String::as_str)
             .unwrap_or("/usr/local/bin:/usr/bin:/bin");
-        let mut env = Env::from_dirs(data_home, data_dirs, path, &home);
+        let config_home = vars
+            .get("XDG_CONFIG_HOME")
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
+            .unwrap_or_else(|| home.join(".config"));
+        let mut env = Env::from_dirs(data_home, data_dirs, path, &home, config_home);
         env.locale = vars
             .get("LC_ALL")
             .filter(|v| !v.is_empty())
+            .or_else(|| vars.get("LC_MESSAGES").filter(|v| !v.is_empty()))
             .or_else(|| vars.get("LANG").filter(|v| !v.is_empty()))
             .cloned();
         env.owner = Some((uid, home));
         Some(env)
+    }
+
+    /// The interface language for the account this environment belongs to.
+    pub fn language(&self) -> Language {
+        crate::i18n::for_account(&self.config_home, self.locale.as_deref())
     }
 
     /// Read a desktop file or Flatpak metadata file as text.
@@ -107,25 +132,40 @@ impl Env {
             .open(path)?;
         let meta = file.metadata()?;
         if !meta.is_file() || meta.len() > MAX_FILE_SIZE {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "not a small regular file"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "not a small regular file",
+            ));
         }
         if let Some((uid, home)) = &self.owner
             && path.starts_with(home)
             && meta.uid() != *uid
         {
-            return Err(io::Error::new(io::ErrorKind::PermissionDenied, "not owned by the account"));
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "not owned by the account",
+            ));
         }
         let mut text = String::new();
         file.take(MAX_FILE_SIZE).read_to_string(&mut text)?;
         // A NUL cannot travel in a D-Bus string, and a file with one is not a
         // desktop file the daemon should trust.
         if text.contains('\0') {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "contains a NUL byte"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "contains a NUL byte",
+            ));
         }
         Ok(text)
     }
 
-    fn from_dirs(data_home: PathBuf, data_dirs: &str, path: &str, home: &Path) -> Self {
+    fn from_dirs(
+        data_home: PathBuf,
+        data_dirs: &str,
+        path: &str,
+        home: &Path,
+        config_home: PathBuf,
+    ) -> Self {
         let mut dirs = vec![data_home];
         for dir in data_dirs
             .split(':')
@@ -138,8 +178,10 @@ impl Env {
                 dirs.push(dir);
             }
         }
-        let flatpak_roots =
-            vec![home.join(".local/share/flatpak"), PathBuf::from("/var/lib/flatpak")];
+        let flatpak_roots = vec![
+            home.join(".local/share/flatpak"),
+            PathBuf::from("/var/lib/flatpak"),
+        ];
         // Flatpak puts the desktop files of installed apps into exports/share.
         // A session's XDG_DATA_DIRS usually lists these already; the duplicate
         // is dropped.
@@ -159,6 +201,7 @@ impl Env {
                 .collect(),
             flatpak_roots,
             owner: None,
+            config_home,
             locale: None,
         }
     }
@@ -167,25 +210,40 @@ impl Env {
 /// The environment of the user's systemd manager, which carries the session's
 /// XDG directories, PATH and locale. The daemon itself has none of them.
 fn session_env(uid: u32) -> HashMap<String, String> {
-    let Ok(entries) = fs::read_dir("/proc") else { return HashMap::new() };
+    let Ok(entries) = fs::read_dir("/proc") else {
+        return HashMap::new();
+    };
     let unit = format!("user@{uid}.service");
     for entry in entries.flatten() {
-        if entry.file_name().to_str().and_then(|s| s.parse::<u32>().ok()).is_none() {
+        if entry
+            .file_name()
+            .to_str()
+            .and_then(|s| s.parse::<u32>().ok())
+            .is_none()
+        {
             continue;
         }
         let dir = entry.path();
-        let Ok(comm) = fs::read_to_string(dir.join("comm")) else { continue };
+        let Ok(comm) = fs::read_to_string(dir.join("comm")) else {
+            continue;
+        };
         if comm.trim() != "systemd" {
             continue;
         }
-        let Ok(cgroup) = fs::read_to_string(dir.join("cgroup")) else { continue };
+        let Ok(cgroup) = fs::read_to_string(dir.join("cgroup")) else {
+            continue;
+        };
         if !cgroup.contains(&unit) {
             continue;
         }
-        let Ok(environ) = fs::read(dir.join("environ")) else { continue };
+        let Ok(environ) = fs::read(dir.join("environ")) else {
+            continue;
+        };
         let mut vars = HashMap::new();
         for pair in environ.split(|b| *b == 0) {
-            let Some(eq) = pair.iter().position(|b| *b == b'=') else { continue };
+            let Some(eq) = pair.iter().position(|b| *b == b'=') else {
+                continue;
+            };
             let key = String::from_utf8_lossy(&pair[..eq]).into_owned();
             let value = String::from_utf8_lossy(&pair[eq + 1..]).into_owned();
             vars.insert(key, value);
@@ -227,14 +285,30 @@ pub enum Note {
 }
 
 impl Note {
-    pub fn message(&self) -> String {
-        match self {
-            Note::SharedRuntime(p) => format!(
+    /// The caveat in the interface language. shisad formats these for the
+    /// caller because the settings window and the CLI show them as text.
+    pub fn message(&self, language: Language) -> String {
+        match (self, language) {
+            (Note::SharedRuntime(p), Language::ZhCn) => format!(
                 "{} 被多个应用共用，不标记。直接调用运行时不经过包装脚本，覆盖不到。",
                 p.display()
             ),
-            Note::FlatpakEntryMissing(id) => format!("{id} 的入口二进制没找到，覆盖不到。"),
-            Note::CommandNotFound(c) => format!("找不到命令 {c}，覆盖不到。"),
+            (Note::SharedRuntime(p), Language::En) => format!(
+                "{} is shared with other applications, so it is not marked. Calling the runtime directly bypasses the wrapper script and is not covered.",
+                p.display()
+            ),
+            (Note::FlatpakEntryMissing(id), Language::ZhCn) => {
+                format!("{id} 的入口二进制没找到，覆盖不到。")
+            }
+            (Note::FlatpakEntryMissing(id), Language::En) => {
+                format!("The entry binary for {id} was not found, so it is not covered.")
+            }
+            (Note::CommandNotFound(c), Language::ZhCn) => {
+                format!("找不到命令 {c}，覆盖不到。")
+            }
+            (Note::CommandNotFound(c), Language::En) => {
+                format!("The command {c} was not found, so it is not covered.")
+            }
         }
     }
 }
@@ -280,7 +354,11 @@ pub fn installed(env: &Env) -> Vec<InstalledApp> {
         if !is_application(&text) {
             continue;
         }
-        out.push(InstalledApp { name: desktop_name(&text, env.locale.as_deref()), icon: desktop_icon(&text), id });
+        out.push(InstalledApp {
+            name: desktop_name(&text, env.locale.as_deref()),
+            icon: desktop_icon(&text),
+            id,
+        });
     }
     out.sort_by_key(|a| a.name.to_lowercase());
     out
@@ -299,7 +377,11 @@ pub fn display_name(app_id: &str, env: &Env) -> String {
             break;
         }
         let name = desktop_name(&text, env.locale.as_deref());
-        return if name.is_empty() { app_id.to_string() } else { name };
+        return if name.is_empty() {
+            app_id.to_string()
+        } else {
+            name
+        };
     }
     app_id.to_string()
 }
@@ -413,7 +495,9 @@ pub fn resolve_in(index: &Index, app_id: &str, env: &Env) -> Result<Resolved, Er
     for exec in exec_lines(&text) {
         let args = split_exec(&exec);
         let args = skip_env(&args);
-        let Some(command) = args.first() else { continue };
+        let Some(command) = args.first() else {
+            continue;
+        };
         let file = match resolve_command(args, command, env) {
             Command::File(file) => file,
             Command::Missing => {
@@ -443,7 +527,12 @@ pub fn resolve_in(index: &Index, app_id: &str, env: &Env) -> Result<Resolved, Er
             paths.push(file);
         }
     }
-    Ok(Resolved { desktop_file, name: desktop_name(&text, env.locale.as_deref()), paths, notes })
+    Ok(Resolved {
+        desktop_file,
+        name: desktop_name(&text, env.locale.as_deref()),
+        paths,
+        notes,
+    })
 }
 
 /// `Name` from the main group, preferring a key for the current locale. The
@@ -463,7 +552,9 @@ fn desktop_name(text: &str, locale: Option<&str>) -> String {
         if group != "Desktop Entry" {
             continue;
         }
-        let Some((key, value)) = line.split_once('=') else { continue };
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
         match key.trim() {
             "Name" => default = Some(value.trim().to_string()),
             key => {
@@ -473,7 +564,10 @@ fn desktop_name(text: &str, locale: Option<&str>) -> String {
             }
         }
     }
-    wanted.into_iter().find_map(|key| localized.get(&key).cloned()).map(|v| decode_escapes(&v))
+    wanted
+        .into_iter()
+        .find_map(|key| localized.get(&key).cloned())
+        .map(|v| decode_escapes(&v))
         .or_else(|| default.map(|v| decode_escapes(&v)))
         .unwrap_or_default()
 }
@@ -481,7 +575,9 @@ fn desktop_name(text: &str, locale: Option<&str>) -> String {
 /// Locale keys to try, most specific first. `zh_CN.UTF-8` becomes `zh_CN`,
 /// then `zh`.
 fn locale_keys(locale: Option<&str>) -> Vec<String> {
-    let Some(locale) = locale else { return Vec::new() };
+    let Some(locale) = locale else {
+        return Vec::new();
+    };
     let base = locale.split(['.', '@']).next().unwrap_or(locale);
     let mut keys = vec![base.to_string()];
     if let Some(lang) = base.split('_').next()
@@ -617,27 +713,89 @@ fn push_arg(args: &mut Vec<String>, raw: String) {
     }
 }
 
-/// Programs that must not become a protected path: every exec of them would
-/// need a password, and they are what a session needs to work at all or what
-/// Shisa needs to ask for that password. Returns why, for the error message.
-pub fn unsuitable(path: &Path) -> Option<&'static str> {
+/// Why a program cannot be a protected path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unsuitable {
+    /// Shisa's own programs ask for the password, so marking them would lock
+    /// authentication out.
+    OwnProgram,
+    /// A shell, interpreter or system program whose every exec would need a
+    /// password, which would affect the whole session.
+    SystemProgram,
+}
+
+impl Unsuitable {
+    /// The English error text. Clients translate it for the Chinese
+    /// interface, so the daemon keeps one canonical wording.
+    pub fn message(self) -> &'static str {
+        match self {
+            Self::OwnProgram => {
+                "Shisa's own programs cannot be protected, because authentication would be impossible"
+            }
+            Self::SystemProgram => {
+                "protecting a shell, interpreter or system program would affect the whole session"
+            }
+        }
+    }
+}
+
+/// Programs that must not become a protected path, and why.
+pub fn unsuitable(path: &Path) -> Option<Unsuitable> {
     const OWN: &[&str] = &["shisa", "shisad", "shisa-agent", "shisa-settings"];
     const GENERAL: &[&str] = &[
-        "sh", "bash", "dash", "ash", "zsh", "fish", "ksh", "csh", "tcsh", "rbash", "busybox",
-        "env", "sudo", "pkexec", "su", "login", "expect", "systemd", "systemd-executor",
-        "systemd-run", "dbus-daemon", "dbus-broker", "dbus-broker-launch", "python", "perl",
-        "ruby", "node", "deno", "bun", "lua", "luajit", "php", "tclsh", "wish", "java", "flatpak",
-        "bwrap", "xdg-open", "kioclient", "kwin_wayland", "plasmashell",
-        "ld-linux-x86-64.so.2", "pkttyagent", "polkit-kde-authentication-agent-1",
+        "sh",
+        "bash",
+        "dash",
+        "ash",
+        "zsh",
+        "fish",
+        "ksh",
+        "csh",
+        "tcsh",
+        "rbash",
+        "busybox",
+        "env",
+        "sudo",
+        "pkexec",
+        "su",
+        "login",
+        "expect",
+        "systemd",
+        "systemd-executor",
+        "systemd-run",
+        "dbus-daemon",
+        "dbus-broker",
+        "dbus-broker-launch",
+        "python",
+        "perl",
+        "ruby",
+        "node",
+        "deno",
+        "bun",
+        "lua",
+        "luajit",
+        "php",
+        "tclsh",
+        "wish",
+        "java",
+        "flatpak",
+        "bwrap",
+        "xdg-open",
+        "kioclient",
+        "kwin_wayland",
+        "plasmashell",
+        "ld-linux-x86-64.so.2",
+        "pkttyagent",
+        "polkit-kde-authentication-agent-1",
     ];
     let real = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let name = real.file_name()?.to_str()?;
     // python3, python3.13 and the like count as their base name.
     let base = name.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.');
     if OWN.contains(&name) {
-        Some("Shisa 自己的程序不能受保护，否则认证无法进行")
+        Some(Unsuitable::OwnProgram)
     } else if GENERAL.contains(&name) || GENERAL.contains(&base) {
-        Some("这是 shell、解释器或系统程序，保护它会影响整个会话")
+        Some(Unsuitable::SystemProgram)
     } else {
         None
     }
@@ -647,7 +805,9 @@ pub fn unsuitable(path: &Path) -> Option<&'static str> {
 /// `env` word, its options and the assignments, so the program is what gets
 /// resolved. Marking /usr/bin/env itself would be useless.
 fn skip_env(args: &[String]) -> &[String] {
-    let is_env = args.first().is_some_and(|a| Path::new(a).file_name().is_some_and(|n| n == "env"));
+    let is_env = args
+        .first()
+        .is_some_and(|a| Path::new(a).file_name().is_some_and(|n| n == "env"));
     if !is_env {
         return args;
     }
@@ -680,9 +840,14 @@ fn resolve_command(args: &[String], command: &str, env: &Env) -> Command {
     let found = if command.contains('/') {
         canonical_file(Path::new(command))
     } else {
-        env.path.iter().map(|dir| dir.join(command)).find_map(|p| canonical_file(&p))
+        env.path
+            .iter()
+            .map(|dir| dir.join(command))
+            .find_map(|p| canonical_file(&p))
     };
-    let Some(file) = found else { return Command::Missing };
+    let Some(file) = found else {
+        return Command::Missing;
+    };
     // `flatpak run <id>` names the shared flatpak binary. The application
     // itself is the entry inside its deployment. The `run` subcommand may
     // follow global options such as `--user`.
@@ -756,7 +921,9 @@ fn valid_flatpak_id(id: &str) -> bool {
     parts.len() >= 3
         && parts.iter().all(|part| {
             !part.is_empty()
-                && part.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+                && part
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
         })
 }
 
@@ -764,8 +931,12 @@ fn flatpak_entry(args: &[String], env: &Env) -> Option<PathBuf> {
     let id = flatpak_id(args)?;
     for root in &env.flatpak_roots {
         let base = root.join("app").join(&id).join("current/active");
-        let Ok(metadata) = env.read(&base.join("metadata")) else { continue };
-        let Some(command) = metadata_command(&metadata) else { continue };
+        let Ok(metadata) = env.read(&base.join("metadata")) else {
+            continue;
+        };
+        let Some(command) = metadata_command(&metadata) else {
+            continue;
+        };
         // The metadata is user-writable. The command names a file inside the
         // deployment, never an absolute or escaping path.
         let command = Path::new(&command);
@@ -777,9 +948,10 @@ fn flatpak_entry(args: &[String], env: &Env) -> Option<PathBuf> {
             continue;
         }
         let bin_dir = base.join("files/bin");
-        let (Ok(real_bin), Ok(real_entry)) =
-            (fs::canonicalize(&bin_dir), fs::canonicalize(bin_dir.join(command)))
-        else {
+        let (Ok(real_bin), Ok(real_entry)) = (
+            fs::canonicalize(&bin_dir),
+            fs::canonicalize(bin_dir.join(command)),
+        ) else {
             continue;
         };
         if !real_entry.starts_with(&real_bin) || !real_entry.is_file() {
@@ -862,7 +1034,9 @@ fn shared_commands(files: &[(String, PathBuf)], env: &Env) -> HashSet<PathBuf> {
         for exec in exec_lines(&text) {
             let all = split_exec(&exec);
             let args = skip_env(&all);
-            let Some(command) = args.first() else { continue };
+            let Some(command) = args.first() else {
+                continue;
+            };
             if let Command::File(file) = resolve_command(args, command, env) {
                 targets
                     .entry(file)
@@ -877,7 +1051,9 @@ fn shared_commands(files: &[(String, PathBuf)], env: &Env) -> HashSet<PathBuf> {
         .into_iter()
         .filter(|(_, apps)| {
             let mut sets = apps.values();
-            let Some(first) = sets.next() else { return false };
+            let Some(first) = sets.next() else {
+                return false;
+            };
             apps.len() > 1 && sets.any(|set| set != first)
         })
         .map(|(file, _)| file)
@@ -889,9 +1065,15 @@ fn shared_commands(files: &[(String, PathBuf)], env: &Env) -> HashSet<PathBuf> {
 /// Empty for a plain `program --flags %U`.
 fn target_of(all: &[String], args: &[String]) -> String {
     let assignments = &all[..all.len() - args.len()];
-    let mut parts: Vec<&str> =
-        assignments.iter().filter(|a| a.contains('=')).map(String::as_str).collect();
-    let positional = args.iter().skip(1).find(|a| !a.starts_with('-') && !a.starts_with('%'));
+    let mut parts: Vec<&str> = assignments
+        .iter()
+        .filter(|a| a.contains('='))
+        .map(String::as_str)
+        .collect();
+    let positional = args
+        .iter()
+        .skip(1)
+        .find(|a| !a.starts_with('-') && !a.starts_with('%'));
     parts.extend(positional.map(String::as_str));
     parts.join(" ")
 }
@@ -901,7 +1083,9 @@ fn all_desktop_files(env: &Env) -> Vec<(String, PathBuf)> {
         if out.len() >= MAX_ENTRIES {
             return;
         }
-        let Ok(entries) = fs::read_dir(dir) else { return };
+        let Ok(entries) = fs::read_dir(dir) else {
+            return;
+        };
         for entry in entries.flatten() {
             if out.len() >= MAX_ENTRIES {
                 return;
@@ -957,13 +1141,16 @@ mod tests {
             path: vec![bin],
             flatpak_roots: vec![dir.join("home/.local/share/flatpak")],
             owner: None,
+            config_home: dir.join("home/.config"),
             locale: None,
         };
         Fixture { dir, env }
     }
 
     fn app(fx: &Fixture, id: &str, body: &str) {
-        let path = fx.env.data_dirs[0].join("applications").join(format!("{id}.desktop"));
+        let path = fx.env.data_dirs[0]
+            .join("applications")
+            .join(format!("{id}.desktop"));
         fs::write(path, body).unwrap();
     }
 
@@ -993,20 +1180,33 @@ mod tests {
         assert_eq!(resolved.name, "One");
         assert_eq!(resolved.paths.len(), 2);
         assert!(resolved.paths.contains(&fs::canonicalize(&abs).unwrap()));
-        assert!(resolved.paths.contains(&fx.env.path[0].canonicalize().unwrap().join("rel-bin")));
+        assert!(
+            resolved
+                .paths
+                .contains(&fx.env.path[0].canonicalize().unwrap().join("rel-bin"))
+        );
         assert!(resolved.notes.is_empty());
     }
 
     #[test]
     fn quoted_first_word_and_escapes() {
-        assert_eq!(split_exec(r#""/opt/my app/run" --flag "a b""#), vec!["/opt/my app/run", "--flag", "a b"]);
+        assert_eq!(
+            split_exec(r#""/opt/my app/run" --flag "a b""#),
+            vec!["/opt/my app/run", "--flag", "a b"]
+        );
         // Field codes are not arguments, `%%` is a literal percent.
         assert_eq!(split_exec(r#"/usr/bin/x %F"#), vec!["/usr/bin/x"]);
-        assert_eq!(split_exec(r#"/usr/bin/x 100%% %u"#), vec!["/usr/bin/x", "100%"]);
+        assert_eq!(
+            split_exec(r#"/usr/bin/x 100%% %u"#),
+            vec!["/usr/bin/x", "100%"]
+        );
         // General escapes apply before quoting, so a path with a space has to
         // be quoted; unquoted, the decoded space separates two arguments.
         assert_eq!(split_exec(r#""/opt/my\sapp/run""#), vec!["/opt/my app/run"]);
-        assert_eq!(split_exec(r#"/opt/my\sapp/run"#), vec!["/opt/my", "app/run"]);
+        assert_eq!(
+            split_exec(r#"/opt/my\sapp/run"#),
+            vec!["/opt/my", "app/run"]
+        );
         assert_eq!(split_exec(r#"/opt/a\\b"#), vec!["/opt/a\\b"]);
         // Inside quotes only the four escapes are special.
         assert_eq!(split_exec(r#"/x "a\"b" "c\d""#), vec!["/x", "a\"b", "c\\d"]);
@@ -1017,10 +1217,30 @@ mod tests {
         let fx = fixture("env");
         let one = binary(&fx, "one-bin");
         let two = binary(&fx, "two-bin");
-        app(&fx, "plain", &format!("[Desktop Entry]\nName=X\nExec=env A=1 B=two {} --flag %u\n", one.display()));
-        app(&fx, "options", &format!("[Desktop Entry]\nName=X\nExec=/usr/bin/env -u OLD -i A=1 -- {}\n", two.display()));
-        assert_eq!(resolve("plain", &fx.env).unwrap().paths, vec![fs::canonicalize(&one).unwrap()]);
-        assert_eq!(resolve("options", &fx.env).unwrap().paths, vec![fs::canonicalize(&two).unwrap()]);
+        app(
+            &fx,
+            "plain",
+            &format!(
+                "[Desktop Entry]\nName=X\nExec=env A=1 B=two {} --flag %u\n",
+                one.display()
+            ),
+        );
+        app(
+            &fx,
+            "options",
+            &format!(
+                "[Desktop Entry]\nName=X\nExec=/usr/bin/env -u OLD -i A=1 -- {}\n",
+                two.display()
+            ),
+        );
+        assert_eq!(
+            resolve("plain", &fx.env).unwrap().paths,
+            vec![fs::canonicalize(&one).unwrap()]
+        );
+        assert_eq!(
+            resolve("options", &fx.env).unwrap().paths,
+            vec![fs::canonicalize(&two).unwrap()]
+        );
         // Not env: untouched. Only env: nothing left to resolve.
         assert_eq!(skip_env(&split_exec("environment A=1")).len(), 2);
         assert!(skip_env(&split_exec("env A=1")).is_empty());
@@ -1039,7 +1259,10 @@ mod tests {
         // A link to a file of someone else is refused, whatever its mode.
         let link = home.join("applications/link.desktop");
         std::os::unix::fs::symlink("/etc/passwd", &link).unwrap();
-        assert_eq!(env.read(&link).unwrap_err().kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(
+            env.read(&link).unwrap_err().kind(),
+            io::ErrorKind::PermissionDenied
+        );
         // The same file under another account's name is refused too.
         env.owner = Some((me + 1, home.clone()));
         assert!(env.read(&file).is_err());
@@ -1071,17 +1294,39 @@ mod tests {
     fn several_entries_of_one_app_share_the_path() {
         let fx = fixture("entries");
         let bin = binary(&fx, "editor");
-        app(&fx, "editor", &format!("[Desktop Entry]\nName=X\nExec={} %F\n", bin.display()));
-        app(&fx, "editor-wayland", &format!("[Desktop Entry]\nName=X\nExec={} --ozone-platform=wayland %F\n", bin.display()));
+        app(
+            &fx,
+            "editor",
+            &format!("[Desktop Entry]\nName=X\nExec={} %F\n", bin.display()),
+        );
+        app(
+            &fx,
+            "editor-wayland",
+            &format!(
+                "[Desktop Entry]\nName=X\nExec={} --ozone-platform=wayland %F\n",
+                bin.display()
+            ),
+        );
         for id in ["editor", "editor-wayland"] {
             let resolved = resolve(id, &fx.env).unwrap();
-            assert_eq!(resolved.paths, vec![fs::canonicalize(&bin).unwrap()], "{id}");
+            assert_eq!(
+                resolved.paths,
+                vec![fs::canonicalize(&bin).unwrap()],
+                "{id}"
+            );
             assert!(resolved.notes.is_empty());
         }
         // A launcher told apart only by its environment is still shared.
         let launcher = binary(&fx, "launcher");
         for id in ["one", "two"] {
-            app(&fx, id, &format!("[Desktop Entry]\nName=X\nExec=env CONF={id} {} -- %u\n", launcher.display()));
+            app(
+                &fx,
+                id,
+                &format!(
+                    "[Desktop Entry]\nName=X\nExec=env CONF={id} {} -- %u\n",
+                    launcher.display()
+                ),
+            );
         }
         assert!(resolve("one", &fx.env).unwrap().paths.is_empty());
     }
@@ -1100,7 +1345,11 @@ mod tests {
             format!("[Desktop Entry]\nName=Tool\nExec={} run\n", bin.display()),
         )
         .unwrap();
-        app(&fx, "tool", &format!("[Desktop Entry]\nName=Tool\nExec={} app\n", bin.display()));
+        app(
+            &fx,
+            "tool",
+            &format!("[Desktop Entry]\nName=Tool\nExec={} app\n", bin.display()),
+        );
         let mut env = fx.env.clone();
         env.data_dirs = vec![user, fx.env.data_dirs[0].clone()];
         let resolved = resolve("tool", &env).unwrap();
@@ -1132,14 +1381,28 @@ mod tests {
         let fx = fixture("shared");
         let electron = binary(&fx, "electron");
         for id in ["app.one", "app.two"] {
-            app(&fx, id, &format!("[Desktop Entry]\nName=X\nExec={} /opt/{id}/app.asar\n", electron.display()));
+            app(
+                &fx,
+                id,
+                &format!(
+                    "[Desktop Entry]\nName=X\nExec={} /opt/{id}/app.asar\n",
+                    electron.display()
+                ),
+            );
         }
         let resolved = resolve("app.one", &fx.env).unwrap();
         assert!(resolved.paths.is_empty());
-        assert_eq!(resolved.notes, vec![Note::SharedRuntime(fs::canonicalize(&electron).unwrap())]);
+        assert_eq!(
+            resolved.notes,
+            vec![Note::SharedRuntime(fs::canonicalize(&electron).unwrap())]
+        );
         // A different binary in another app still resolves.
         let own = binary(&fx, "own-bin");
-        app(&fx, "app.three", &format!("[Desktop Entry]\nName=X\nExec={}\n", own.display()));
+        app(
+            &fx,
+            "app.three",
+            &format!("[Desktop Entry]\nName=X\nExec={}\n", own.display()),
+        );
         assert_eq!(resolve("app.three", &fx.env).unwrap().paths.len(), 1);
     }
 
@@ -1147,7 +1410,15 @@ mod tests {
     fn duplicate_inode_is_listed_once() {
         let fx = fixture("dedup");
         let bin = binary(&fx, "dup-bin");
-        app(&fx, "dup.one", &format!("[Desktop Entry]\nName=A\nExec={}\nExec={}\n", bin.display(), bin.display()));
+        app(
+            &fx,
+            "dup.one",
+            &format!(
+                "[Desktop Entry]\nName=A\nExec={}\nExec={}\n",
+                bin.display(),
+                bin.display()
+            ),
+        );
         assert_eq!(resolve("dup.one", &fx.env).unwrap().paths.len(), 1);
     }
 
@@ -1157,7 +1428,11 @@ mod tests {
         let bin = binary(&fx, "k-bin");
         let dir = fx.env.data_dirs[0].join("applications/kde4");
         fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join("kapp.desktop"), format!("[Desktop Entry]\nName=K\nExec={}\n", bin.display())).unwrap();
+        fs::write(
+            dir.join("kapp.desktop"),
+            format!("[Desktop Entry]\nName=K\nExec={}\n", bin.display()),
+        )
+        .unwrap();
         assert_eq!(resolve("kde4-kapp", &fx.env).unwrap().name, "K");
     }
 
@@ -1172,10 +1447,14 @@ mod tests {
             format!("[Desktop Entry]\nName=Hidden\nExec={}\n", bin.display()),
         )
         .unwrap();
-        std::os::unix::fs::symlink(&outside, fx.env.data_dirs[0].join("applications/linkdir")).unwrap();
+        std::os::unix::fs::symlink(&outside, fx.env.data_dirs[0].join("applications/linkdir"))
+            .unwrap();
         // The subdirectory id would be linkdir-hidden if the link were
         // followed. A user-controlled symlink must not steer the root scan.
-        assert!(matches!(resolve("linkdir-hidden", &fx.env), Err(Error::NotFound)));
+        assert!(matches!(
+            resolve("linkdir-hidden", &fx.env),
+            Err(Error::NotFound)
+        ));
         // A symlinked desktop file itself is still read.
         let file = outside.join("linked.desktop");
         fs::write(
@@ -1190,7 +1469,9 @@ mod tests {
         .unwrap();
         let installed = installed(&fx.env);
         assert!(
-            installed.iter().any(|a| a.id == "visible" && a.name == "Linked"),
+            installed
+                .iter()
+                .any(|a| a.id == "visible" && a.name == "Linked"),
             "{installed:?}"
         );
         assert!(!installed.iter().any(|a| a.id == "linkdir-hidden"));
@@ -1202,7 +1483,11 @@ mod tests {
         let root = fx.dir.join("home/.local/share/flatpak");
         let base = root.join("app/org.example.App/current/active");
         fs::create_dir_all(base.join("files/bin")).unwrap();
-        fs::write(base.join("metadata"), "[Application]\nname=org.example.App\ncommand=example\n").unwrap();
+        fs::write(
+            base.join("metadata"),
+            "[Application]\nname=org.example.App\ncommand=example\n",
+        )
+        .unwrap();
         // Name `flatpak` through the fixture PATH: an absolute /usr/bin path
         // would make the test depend on the host's Flatpak installation.
         binary(&fx, "flatpak");
@@ -1229,7 +1514,11 @@ mod tests {
             vec![base.join("files/bin/example")]
         );
         // A metadata command that leaves the deployment is refused.
-        fs::write(base.join("metadata"), "[Application]\ncommand=/usr/bin/sh\n").unwrap();
+        fs::write(
+            base.join("metadata"),
+            "[Application]\ncommand=/usr/bin/sh\n",
+        )
+        .unwrap();
         assert!(resolve("org.example.App", &env).unwrap().paths.is_empty());
     }
 
@@ -1237,7 +1526,9 @@ mod tests {
     fn flatpak_id_skips_option_values() {
         let args = |s: &str| split_exec(s);
         assert_eq!(
-            flatpak_id(&args("/usr/bin/flatpak run --branch 1.0 --arch x86_64 org.example.App")),
+            flatpak_id(&args(
+                "/usr/bin/flatpak run --branch 1.0 --arch x86_64 org.example.App"
+            )),
             Some("org.example.App".into())
         );
         assert_eq!(
@@ -1273,15 +1564,46 @@ mod tests {
         app(
             &fx,
             "list.two",
-            &format!("[Desktop Entry]\nType=Application\nName=Two\nIcon=two\nExec={}\n", bin.display()),
+            &format!(
+                "[Desktop Entry]\nType=Application\nName=Two\nIcon=two\nExec={}\n",
+                bin.display()
+            ),
         );
-        app(&fx, "list.one", &format!("[Desktop Entry]\nType=Application\nName=One\nExec={}\n", bin.display()));
-        app(&fx, "list.link", "[Desktop Entry]\nType=Link\nName=Site\nURL=https://example.org\n");
-        app(&fx, "list.hidden", &format!("[Desktop Entry]\nType=Application\nNoDisplay=true\nName=Hidden\nExec={}\n", bin.display()));
+        app(
+            &fx,
+            "list.one",
+            &format!(
+                "[Desktop Entry]\nType=Application\nName=One\nExec={}\n",
+                bin.display()
+            ),
+        );
+        app(
+            &fx,
+            "list.link",
+            "[Desktop Entry]\nType=Link\nName=Site\nURL=https://example.org\n",
+        );
+        app(
+            &fx,
+            "list.hidden",
+            &format!(
+                "[Desktop Entry]\nType=Application\nNoDisplay=true\nName=Hidden\nExec={}\n",
+                bin.display()
+            ),
+        );
         // Hidden=true removes the entry, unlike NoDisplay, which only keeps it
         // out of menus.
-        app(&fx, "list.gone", &format!("[Desktop Entry]\nType=Application\nHidden=true\nName=Gone\nExec={}\n", bin.display()));
-        let ids: Vec<_> = installed(&fx.env).into_iter().map(|a| (a.id, a.name, a.icon)).collect();
+        app(
+            &fx,
+            "list.gone",
+            &format!(
+                "[Desktop Entry]\nType=Application\nHidden=true\nName=Gone\nExec={}\n",
+                bin.display()
+            ),
+        );
+        let ids: Vec<_> = installed(&fx.env)
+            .into_iter()
+            .map(|a| (a.id, a.name, a.icon))
+            .collect();
         assert_eq!(
             ids,
             vec![
@@ -1289,7 +1611,10 @@ mod tests {
                 ("list.two".to_string(), "Two".to_string(), "two".to_string()),
             ]
         );
-        assert!(matches!(resolve("list.gone", &fx.env), Err(Error::NotFound)));
+        assert!(matches!(
+            resolve("list.gone", &fx.env),
+            Err(Error::NotFound)
+        ));
     }
 
     #[test]
@@ -1299,14 +1624,20 @@ mod tests {
         app(
             &fx,
             "name.one",
-            &format!("[Desktop Entry]\nType=Application\nName=One\\sApp\nExec={}\n", bin.display()),
+            &format!(
+                "[Desktop Entry]\nType=Application\nName=One\\sApp\nExec={}\n",
+                bin.display()
+            ),
         );
         assert_eq!(display_name("name.one", &fx.env), "One App");
         assert_eq!(display_name("name.none", &fx.env), "name.none");
         app(
             &fx,
             "name.hidden",
-            &format!("[Desktop Entry]\nType=Application\nHidden=true\nName=H\nExec={}\n", bin.display()),
+            &format!(
+                "[Desktop Entry]\nType=Application\nHidden=true\nName=H\nExec={}\n",
+                bin.display()
+            ),
         );
         assert_eq!(display_name("name.hidden", &fx.env), "name.hidden");
     }
@@ -1316,7 +1647,11 @@ mod tests {
         let uid = unsafe { libc::getuid() };
         let env = Env::for_user(uid).unwrap();
         let home = crate::users::home(uid).unwrap();
-        assert!(env.data_dirs.iter().any(|d| d == &home.join(".local/share")));
+        assert!(
+            env.data_dirs
+                .iter()
+                .any(|d| d == &home.join(".local/share"))
+        );
         assert!(env.data_dirs.iter().any(|d| d == Path::new("/usr/share")));
     }
 
@@ -1347,10 +1682,17 @@ mod tests {
     fn missing_app_and_missing_command() {
         let fx = fixture("missing");
         assert!(matches!(resolve("nope", &fx.env), Err(Error::NotFound)));
-        app(&fx, "bad.one", "[Desktop Entry]\nName=B\nExec=does-not-exist --x\n");
+        app(
+            &fx,
+            "bad.one",
+            "[Desktop Entry]\nName=B\nExec=does-not-exist --x\n",
+        );
         let resolved = resolve("bad.one", &fx.env).unwrap();
         assert!(resolved.paths.is_empty());
-        assert_eq!(resolved.notes, vec![Note::CommandNotFound("does-not-exist".into())]);
+        assert_eq!(
+            resolved.notes,
+            vec![Note::CommandNotFound("does-not-exist".into())]
+        );
     }
 
     #[test]
@@ -1360,7 +1702,10 @@ mod tests {
         app(
             &fx,
             "grp.one",
-            &format!("# comment\n[Desktop Entry]\nName=N\nNoDisplay=true\n[Extra]\nExec={}\n", bin.display()),
+            &format!(
+                "# comment\n[Desktop Entry]\nName=N\nNoDisplay=true\n[Extra]\nExec={}\n",
+                bin.display()
+            ),
         );
         assert!(resolve("grp.one", &fx.env).unwrap().paths.is_empty());
     }

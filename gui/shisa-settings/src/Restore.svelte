@@ -2,7 +2,18 @@
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { getCurrentWindow } from "@tauri-apps/api/window";
-  import { onMount, tick } from "svelte";
+  import { onMount, tick, untrack } from "svelte";
+  import { createTranslator, languageFromTag } from "./i18n.js";
+
+  let { language: initialLanguage = "en" } = $props();
+  // The choice is fixed for the life of this window. It only reads it, so a
+  // later change in the settings window waits for the next open.
+  const lang = untrack(() => languageFromTag(initialLanguage));
+  const t = createTranslator(lang);
+
+  $effect(() => {
+    document.title = t("restore.title");
+  });
 
   const panel = getCurrentWindow();
   let rows = $state([]);
@@ -42,7 +53,7 @@
         }
       }
     } catch {
-      error = "无法读取隐藏窗口。";
+      error = t("restore.error.read");
     } finally {
       loading = false;
       await tick();
@@ -58,7 +69,7 @@
       await invoke("restore_hidden", { appId: id });
       await panel.close();
     } catch (reason) {
-      error = typeof reason === "string" ? reason : "无法恢复窗口，请重试。";
+      error = typeof reason === "string" ? reason : t("restore.error.restore");
       opening = "";
     }
   }
@@ -81,14 +92,14 @@
 
 <main>
   <header>
-    <h1>恢复窗口</h1>
-    {#if rows.length}<span>{rows.reduce((total, row) => total + row.count, 0)} 个窗口</span>{/if}
+    <h1>{t("restore.title")}</h1>
+    {#if rows.length}<span>{t("restore.windows", { count: rows.reduce((total, row) => total + row.count, 0) })}</span>{/if}
   </header>
   <div class="list" bind:this={list} aria-busy={loading || !!opening}>
     {#if loading}
-      <p class="empty" role="status">正在查找窗口…</p>
+      <p class="empty" role="status">{t("restore.loading")}</p>
     {:else if !rows.length && !error}
-      <p class="empty">没有隐藏的窗口</p>
+      <p class="empty">{t("restore.empty")}</p>
     {:else}
       {#each rows as row (row.id)}
         <button type="button" disabled={!!opening} onclick={() => restore(row.id)}>
@@ -100,7 +111,7 @@
             {/if}
           </span>
           <span class="name">{row.name}</span>
-          <span class="count">{opening === row.id ? "等待验证…" : `${row.count} 个窗口`}</span>
+          <span class="count">{opening === row.id ? t("restore.waiting") : t("restore.windows", { count: row.count })}</span>
           <span class="arrow" aria-hidden="true">›</span>
         </button>
       {/each}

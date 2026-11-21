@@ -7,11 +7,13 @@
 //! system bus without authentication (docs/subsystems/configuration.md).
 
 use shisa_core::dbus::ManagerProxyBlocking;
+use shisa_core::i18n::{self, Language};
 use std::time::Duration;
 use std::{env, process};
 
-fn usage() -> ! {
-    eprintln!("usage: shisa unlock <app-id>");
+fn usage(language: Language) -> ! {
+    eprintln!("{}", text(language, "用法：", "usage:"));
+    eprintln!("       shisa unlock <app-id>");
     eprintln!("       shisa status");
     eprintln!("       shisa lock [<app-id>]");
     eprintln!("       shisa resolve <app-id>");
@@ -68,21 +70,40 @@ fn parse_command(args: &[std::ffi::OsString]) -> Option<Command> {
 
 fn main() {
     let args: Vec<std::ffi::OsString> = env::args_os().skip(1).collect();
+    let language = i18n::current();
     let code = match parse_command(&args) {
-        Some(Command::Unlock(app)) => unlock_command(app),
-        Some(Command::Status) => status(),
-        Some(Command::Lock(app)) => lock(app),
-        Some(Command::Resolve(app)) => resolve(app),
-        Some(Command::Protect { app, on }) => protect(app, on),
-        None => usage(),
+        Some(Command::Unlock(app)) => unlock_command(app, language),
+        Some(Command::Status) => status(language),
+        Some(Command::Lock(app)) => lock(app, language),
+        Some(Command::Resolve(app)) => resolve(app, language),
+        Some(Command::Protect { app, on }) => protect(app, on, language),
+        None => usage(language),
     };
     process::exit(code);
 }
 
-fn manager() -> Result<ManagerProxyBlocking<'static>, String> {
-    let conn = zbus::blocking::Connection::system()
-        .map_err(|e| format!("cannot reach the system bus: {e}"))?;
-    ManagerProxyBlocking::new(&conn).map_err(|e| format!("cannot reach shisad: {e}"))
+/// Pick between the two texts for the interface language.
+fn text(language: Language, zh: &'static str, en: &'static str) -> &'static str {
+    match language {
+        Language::ZhCn => zh,
+        Language::En => en,
+    }
+}
+
+/// The daemon's own errors are English. Show them in the caller's language.
+fn shown(error: impl std::fmt::Display, language: Language) -> String {
+    i18n::error_text(&error.to_string(), language)
+}
+
+fn manager(language: Language) -> Result<ManagerProxyBlocking<'static>, String> {
+    let conn = zbus::blocking::Connection::system().map_err(|e| match language {
+        Language::ZhCn => format!("连不上系统总线：{e}"),
+        Language::En => format!("cannot reach the system bus: {e}"),
+    })?;
+    ManagerProxyBlocking::new(&conn).map_err(|e| match language {
+        Language::ZhCn => format!("连不上 shisad：{e}"),
+        Language::En => format!("cannot reach shisad: {e}"),
+    })
 }
 
 /// `pkttyagent` registers an authentication agent for this process, so polkit
@@ -94,7 +115,10 @@ impl PtyAgent {
         // Without a controlling terminal pkttyagent cannot prompt and prints
         // an error. Leave the check to the desktop agent in that case.
         let tty = unsafe {
-            libc::open(c"/dev/tty".as_ptr(), libc::O_RDWR | libc::O_CLOEXEC | libc::O_NOCTTY)
+            libc::open(
+                c"/dev/tty".as_ptr(),
+                libc::O_RDWR | libc::O_CLOEXEC | libc::O_NOCTTY,
+            )
         };
         if tty < 0 {
             return PtyAgent(None);
@@ -123,8 +147,8 @@ impl Drop for PtyAgent {
     }
 }
 
-fn status() -> i32 {
-    let manager = match manager() {
+fn status(language: Language) -> i32 {
+    let manager = match manager(language) {
         Ok(m) => m,
         Err(e) => {
             eprintln!("shisa: {e}");
@@ -133,13 +157,13 @@ fn status() -> i32 {
     };
     match manager.list_apps() {
         Ok(apps) => {
-            for line in status_lines(&apps) {
+            for line in status_lines(&apps, language) {
                 println!("{line}");
             }
             0
         }
         Err(e) => {
-            eprintln!("shisa: {e}");
+            eprintln!("shisa: {}", shown(e, language));
             1
         }
     }
@@ -147,21 +171,39 @@ fn status() -> i32 {
 
 /// Lines `shisa status` prints. A path without a mark says so, because
 /// settings would otherwise show protection that does not hold.
-fn status_lines(apps: &[shisa_core::dbus::AppRow]) -> Vec<String> {
+fn status_lines(apps: &[shisa_core::dbus::AppRow], language: Language) -> Vec<String> {
     if apps.is_empty() {
-        return vec!["no protected apps for this user".into()];
+        return vec![
+            text(
+                language,
+                "这个用户没有受保护的应用",
+                "no protected apps for this user",
+            )
+            .into(),
+        ];
     }
     let mut lines = Vec::new();
     for (id, unlocked, paths, effective) in apps {
-        lines.push(format!(
-            "{:<4} {id}",
-            if *unlocked { "open" } else { "lock" }
-        ));
+        let state = match (unlocked, language) {
+            (true, Language::ZhCn) => "解锁",
+            (false, Language::ZhCn) => "锁定",
+            (true, Language::En) => "open",
+            (false, Language::En) => "lock",
+        };
+        // `{:<4}` pads by characters, and the two Chinese words are already
+        // two display columns each, so padding them would misalign the id.
+        lines.push(match language {
+            Language::ZhCn => format!("{state} {id}"),
+            Language::En => format!("{state:<4} {id}"),
+        });
         for path in paths {
             if effective.contains(path) {
                 lines.push(format!("       {path}"));
             } else {
-                lines.push(format!("       {path}  (未生效)"));
+                lines.push(format!(
+                    "       {path}  ({})",
+                    text(language, "未生效", "inactive")
+                ));
             }
         }
     }
@@ -170,9 +212,9 @@ fn status_lines(apps: &[shisa_core::dbus::AppRow]) -> Vec<String> {
 
 /// Protect or unprotect an app. shisad authenticates the change through
 /// polkit before it writes it (docs/subsystems/configuration.md).
-fn protect(app: String, on: bool) -> i32 {
+fn protect(app: String, on: bool, language: Language) -> i32 {
     let _agent = PtyAgent::start();
-    let manager = match manager() {
+    let manager = match manager(language) {
         Ok(m) => m,
         Err(e) => {
             eprintln!("shisa: {e}");
@@ -181,12 +223,27 @@ fn protect(app: String, on: bool) -> i32 {
     };
     match manager.set_protected(&app, on) {
         Ok(()) => {
-            println!("{}", if on { format!("{app} is now protected") } else { format!("{app} is no longer protected") });
+            println!(
+                "{}",
+                match (on, language) {
+                    (true, Language::ZhCn) => format!("{app} 已设为受保护"),
+                    (false, Language::ZhCn) => format!("{app} 已取消保护"),
+                    (true, Language::En) => format!("{app} is now protected"),
+                    (false, Language::En) => format!("{app} is no longer protected"),
+                }
+            );
             0
         }
         Err(e) => {
-            eprintln!("shisa: {e}");
-            eprintln!("认证没有完成。图形会话里会弹出系统的认证框，终端里由 pkttyagent 提示。");
+            eprintln!("shisa: {}", shown(e, language));
+            eprintln!(
+                "{}",
+                text(
+                    language,
+                    "认证没有完成。图形会话里会弹出系统的认证框，终端里由 pkttyagent 提示。",
+                    "Authentication did not complete. A desktop session shows the system prompt, and a terminal gets it from pkttyagent.",
+                )
+            );
             1
         }
     }
@@ -196,9 +253,9 @@ fn protect(app: String, on: bool) -> i32 {
 /// daemon resolves them with the user's session environment, the same one
 /// protection uses. The local scan is only a fallback when the daemon is not
 /// available.
-fn resolve(app: String) -> i32 {
+fn resolve(app: String, language: Language) -> i32 {
     let env = shisa_core::desktop::Env::current();
-    if let Ok(manager) = manager() {
+    if let Ok(manager) = manager(language) {
         match manager.resolve_app(&app) {
             Ok((paths, notes)) => {
                 let name = shisa_core::desktop::display_name(&app, &env);
@@ -211,7 +268,7 @@ fn resolve(app: String) -> i32 {
                     println!("  {path}");
                 }
                 for note in &notes {
-                    println!("  注意：{note}");
+                    println!("  {} {note}", text(language, "注意：", "note:"));
                 }
                 return 0;
             }
@@ -219,7 +276,7 @@ fn resolve(app: String) -> i32 {
             // local scan is the best answer left.
             Err(e) if unavailable(&e) => {}
             Err(e) => {
-                eprintln!("shisa: {app}: {e}");
+                eprintln!("shisa: {app}: {}", shown(e, language));
                 return 1;
             }
         }
@@ -232,12 +289,16 @@ fn resolve(app: String) -> i32 {
                 println!("  {}", path.display());
             }
             for note in &found.notes {
-                println!("  注意：{}", note.message());
+                println!(
+                    "  {} {}",
+                    text(language, "注意：", "note:"),
+                    note.message(language)
+                );
             }
             0
         }
         Err(e) => {
-            eprintln!("shisa: {app}: {e}");
+            eprintln!("shisa: {app}: {}", shown(e, language));
             1
         }
     }
@@ -262,8 +323,8 @@ fn unavailable_name(name: &str) -> bool {
     )
 }
 
-fn lock(app: String) -> i32 {
-    let manager = match manager() {
+fn lock(app: String, language: Language) -> i32 {
+    let manager = match manager(language) {
         Ok(m) => m,
         Err(e) => {
             eprintln!("shisa: {e}");
@@ -273,7 +334,10 @@ fn lock(app: String) -> i32 {
     match manager.lock(&app) {
         Ok(()) => {
             if app.is_empty() {
-                println!("all tickets dropped");
+                println!(
+                    "{}",
+                    text(language, "已收回全部票据", "all tickets dropped")
+                );
                 if env::var_os("DBUS_SESSION_BUS_ADDRESS").is_some() {
                     let check = (|| -> zbus::Result<()> {
                         use shisa_core::dbus::{WINDOW_BUS_NAME, WINDOW_INTERFACE, WINDOW_PATH};
@@ -287,28 +351,37 @@ fn lock(app: String) -> i32 {
                         proxy.call("VerifyLock", &())
                     })();
                     if let Err(e) = check {
-                        eprintln!("窗口状态未确认：{e}");
+                        eprintln!(
+                            "{}: {e}",
+                            text(language, "窗口状态未确认", "window state not confirmed")
+                        );
                     }
                 }
             } else {
-                println!("{app} locked");
+                println!(
+                    "{}",
+                    match language {
+                        Language::ZhCn => format!("{app} 已上锁"),
+                        Language::En => format!("{app} locked"),
+                    }
+                );
             }
             0
         }
         Err(e) => {
-            eprintln!("shisa: {e}");
+            eprintln!("shisa: {}", shown(e, language));
             1
         }
     }
 }
 
-fn unlock_command(app: String) -> i32 {
-    unlock_dbus(&app)
+fn unlock_command(app: String, language: Language) -> i32 {
+    unlock_dbus(&app, language)
 }
 
-fn unlock_dbus(app: &str) -> i32 {
+fn unlock_dbus(app: &str, language: Language) -> i32 {
     let _agent = PtyAgent::start();
-    let manager = match manager() {
+    let manager = match manager(language) {
         Ok(m) => m,
         Err(e) => {
             eprintln!("shisa: {e}");
@@ -317,11 +390,17 @@ fn unlock_dbus(app: &str) -> i32 {
     };
     match manager.unlock(app) {
         Ok(()) => {
-            println!("{app} unlocked.");
+            println!(
+                "{}",
+                match language {
+                    Language::ZhCn => format!("{app} 已解锁。"),
+                    Language::En => format!("{app} unlocked."),
+                }
+            );
             0
         }
         Err(e) => {
-            eprintln!("shisa: {e}");
+            eprintln!("shisa: {}", shown(e, language));
             1
         }
     }
@@ -401,16 +480,33 @@ mod tests {
             ),
         ];
         assert_eq!(
-            status_lines(&apps),
+            status_lines(&apps, Language::En),
             vec![
                 "lock app",
                 "       /usr/bin/app",
-                "       /opt/missing  (未生效)",
+                "       /opt/missing  (inactive)",
                 "open other",
                 "       /usr/bin/other",
             ]
         );
-        assert_eq!(status_lines(&[]), vec!["no protected apps for this user"]);
+        assert_eq!(
+            status_lines(&apps, Language::ZhCn),
+            vec![
+                "锁定 app",
+                "       /usr/bin/app",
+                "       /opt/missing  (未生效)",
+                "解锁 other",
+                "       /usr/bin/other",
+            ]
+        );
+        assert_eq!(
+            status_lines(&[], Language::En),
+            vec!["no protected apps for this user"]
+        );
+        assert_eq!(
+            status_lines(&[], Language::ZhCn),
+            vec!["这个用户没有受保护的应用"]
+        );
     }
 
     #[test]

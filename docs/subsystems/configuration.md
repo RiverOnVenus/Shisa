@@ -24,6 +24,21 @@ The [launch gate resolver](launch-gate.md#protected-path-resolution) fills in `p
 
 A reload is fail-closed. If the config directory or one of its entries cannot be read, a user's file cannot be read or parsed, or an account name cannot be resolved, shisad keeps the policy it already had instead of treating the user as unprotected. A missing file is the only case that means the user has no configuration yet.
 
+### Interface language
+
+The settings window, restore window, tray menu and notifications, and `shisa` commands share one per-user choice. It lives in a user-writable file, apart from the root-owned policy file, because changing it must not need polkit authorization:
+
+```toml
+# $XDG_CONFIG_HOME/shisa/ui.toml, usually ~/.config/shisa/ui.toml
+language = "zh-CN"   # or "en"
+```
+
+Without a saved choice, the programs read `LC_ALL`, then `LC_MESSAGES`, then `LANG`. A `zh` locale selects Simplified Chinese and every other locale English. A missing, unreadable or malformed file falls back to the locale rather than failing.
+
+The settings window writes the file from the General page's language selector. The tray re-reads it every two seconds, so its menu, tooltip and notifications follow a change without a restart. The restore window reads it when it opens. Desktop files' `Name[locale]` still follow the session locale: the choice changes Shisa's own text, not application names.
+
+The daemon keeps D-Bus error strings in English so the bus contract and the debug log stay stable. The settings shell and the CLI translate the known ones for the Chinese interface (`shisa_core::i18n::error_text`). Resolution notes from `ResolveApp` are formatted in the caller's saved language because they are content rather than error codes. The `.policy` file carries both languages through `xml:lang`, and polkit selects the action text by the session locale. The detail that names the target of a global settings change uses the saved choice instead.
+
 ## System D-Bus
 
 The service is `io.github.RiverOnVenus.Shisa`, at `/io/github/RiverOnVenus/Shisa/Manager`. It derives the caller's identity from bus connection credentials and scopes state and settings to that user.
@@ -76,8 +91,10 @@ shisa unprotect <app-id>
 shisa resolve <app-id>
 ```
 
-The CLI and settings share the daemon's policy operations. The tray and CLI share the lock contract. The tray can show the measured window result, while the CLI reports daemon success and requests window verification through the session agent when available. For terminal authentication, `shisa unlock` can start `pkttyagent`. The `resolve` command is read-only and reports derived paths and coverage notes.
+The CLI and settings share the daemon's policy operations. The tray and CLI share the lock contract. The tray can show the measured window result, while the CLI reports daemon success and requests window verification through the session agent when available. For terminal authentication, `shisa unlock` can start `pkttyagent`. The `resolve` command is read-only and reports derived paths and coverage notes. Output follows the interface language above.
 
 ## Verification
 
 See [Tests and verification](../testing.md) for configuration changes and D-Bus permission coverage.
+
+On 2026-11-21, the interface language was checked with `cargo test --workspace` and `cargo clippy --workspace --all-targets` (both clean), `(cd gui/shisa-settings && npm test)` (9 passed) and `npm run build`, plus the settings shell's `cargo test` (3 passed) and `cargo build --features custom-protocol`. The live selector click and the tray language change were not exercised here and still need a check in a Wayland session.

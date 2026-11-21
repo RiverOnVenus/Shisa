@@ -1,4 +1,5 @@
 import { mount } from "svelte";
+import { invoke } from "@tauri-apps/api/core";
 import "./app.css";
 import App from "./App.svelte";
 import Restore from "./Restore.svelte";
@@ -13,6 +14,16 @@ document.documentElement.dataset.theme = matchMedia(
   ? "dark"
   : "light";
 
-export default mount(getCurrentWindow().label === "restore" ? Restore : App, {
-  target: document.getElementById("app"),
-});
+// Ask the shell for the saved language before mounting, so an English window
+// never paints Chinese first. The label picks the window; both share the
+// index.html entry.
+const window = getCurrentWindow();
+invoke("ui_language")
+  .catch(() => navigator.language)
+  .then((language) => {
+    document.documentElement.lang = language;
+    mount(window.label === "restore" ? Restore : App, {
+      target: document.getElementById("app"),
+      props: { language },
+    });
+  });

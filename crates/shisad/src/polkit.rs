@@ -97,12 +97,17 @@ fn check(
         });
     }
 
+    let env = shisa_core::desktop::Env::for_user(uid);
     let name = if app.is_empty() {
-        // Global settings have no app id.
-        "Shisa 设置".to_string()
+        // Global settings have no app id. The polkit message names Shisa, so
+        // it follows the caller's interface language while the action text
+        // itself comes from the bilingual .policy file.
+        match env.as_ref().map(|env| env.language()) {
+            Some(shisa_core::i18n::Language::ZhCn) => "Shisa 设置".to_string(),
+            _ => "Shisa Settings".to_string(),
+        }
     } else {
-        shisa_core::desktop::Env::for_user(uid)
-            .map(|env| shisa_core::desktop::display_name(&app, &env))
+        env.map(|env| shisa_core::desktop::display_name(&app, &env))
             .unwrap_or_else(|| app.clone())
     };
     let details: HashMap<&str, &str> =
@@ -146,11 +151,7 @@ fn check(
         return;
     }
     match verdict {
-        Ok(true) => events.push(Event::Granted {
-            uid,
-            app,
-            request,
-        }),
+        Ok(true) => events.push(Event::Granted { uid, app, request }),
         // A clean no is the user cancelling or failing to authenticate. It is
         // not an error, so it is recorded as a refusal rather than a failure.
         Ok(false) => events.push(Event::Denied { request }),

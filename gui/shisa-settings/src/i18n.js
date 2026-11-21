@@ -1,0 +1,381 @@
+// Interface text for the settings and restore windows.
+//
+// The dictionaries are plain data so `npm test` can cover the rules in
+// format.js without a browser. `createTranslator` returns a `t(key, params)`
+// function. A template may contain `{name}` placeholders, and a value with a
+// `|` offers singular and plural forms chosen by the `count` parameter.
+
+export const languages = [
+  ["zh-CN", "简体中文"],
+  ["en", "English"],
+];
+
+const zh = {
+  "app.title": "Shisa 设置",
+  "restore.title": "恢复窗口",
+
+  "common.seconds": "秒",
+  "common.add": "添加",
+  "common.remove": "移除",
+  "common.close": "关闭",
+
+  "filters.all": "全部",
+  "filters.protected": "受保护",
+  "filters.unlocked": "已解锁",
+  "filters.unprotected": "未受保护",
+  "sidebar.search": "搜索应用",
+  "sidebar.group": "应用",
+  "sidebar.empty.match": "没有匹配的应用",
+  "sidebar.empty.none": "没有可显示的应用",
+  "sidebar.general": "通用",
+  "daemon.online": "应用锁在运行",
+  "daemon.offline": "应用锁没有响应",
+  "dot.unlocked": "启动凭证有效",
+  "dot.locked": "启动需认证",
+
+  "crumb.settings": "设置",
+  "crumb.diagnostics": "通用 · 诊断",
+  "crumb.apps": "应用",
+  "crumb.general": "通用",
+  "crumb.activity": "最近启动",
+  "top.search": "查找设置",
+  "top.lockAll": "全部上锁",
+  "top.minimize": "最小化",
+  "top.close": "关闭",
+
+  "busy.auth": "等待认证…",
+  "busy.lock": "正在上锁…",
+
+  "password.name": "还没设置应用锁密码",
+  "password.sub":
+    "受保护的应用要输入应用锁密码，这个密码还没设，现在所有认证都会失败。请管理员在终端运行",
+  "password.after": "，完成后重新打开这个窗口。",
+
+  "general.grace.name": "默认宽限期",
+  "general.grace.sub":
+    "认证通过后这段时间内再打开不再询问。单个应用可以在自己的页面里改。",
+  "general.clear.name": "锁屏时清除已通过的认证",
+  "general.clear.sub":
+    "开启时锁屏会收回已打开的受保护窗口，解锁后恢复要重新认证。关掉后锁屏不改变正在使用的窗口，只影响下一次启动。",
+  "general.timeout.name": "认证框等待上限",
+  "general.timeout.sub":
+    "最多等这么久，超时就拒绝启动。取消或超时也会被系统记一次认证失败，连续 3 次后应用锁暂停约 10 分钟，不影响登录。",
+  "general.timeout.unit": "秒 · 5 到 85",
+  "general.custom": "自定义",
+  "general.language.name": "语言",
+  "general.language.sub": "界面语言。托盘和命令行也会跟着改变。",
+
+  "diag.records": "诊断记录",
+  "diag.view": "查看最近启动和拒绝原因",
+  "diag.title": "诊断",
+  "diag.uptime": "已运行 {duration}，最近一次重新加载{reloaded}。",
+  "diag.reloaded.at": "在 {ago}",
+  "diag.reloaded.never": "还没发生",
+  "diag.apps.name": "受保护的应用",
+  "diag.apps.sub": "{apps} 个应用，{marked} 条路径已加上监视标记。",
+  "diag.last.name": "最近一次加载",
+  "diag.last.failed": "有路径没标记上，{ago}",
+  "diag.last.ok": "全部路径已标记。",
+  "diag.config": "配置文件",
+  "diag.unavailable": "当前守护进程不提供诊断信息，装上新版 shisad 后可用。",
+  "settings.empty.match": "没有匹配的设置",
+  "settings.loading": "正在读取设置…",
+
+  "activity.title": "最近启动",
+  "activity.all": "全部",
+  "activity.denied": "只看拒绝",
+  "activity.summary":
+    "本次运行 {requests} 次启动，{allowed} 次放行，{denied} 次拒绝。记录只保存在 shisad 的内存里，重启后清空。",
+  "activity.note.old": "当前守护进程不提供活动记录，装上新版 shisad 后可用。",
+  "activity.note.offline": "应用锁没有响应，等它恢复后这一页会自动更新。",
+  "activity.empty.none":
+    "还没有启动记录。打开一个受保护的应用，它的裁决会出现在这里。",
+  "activity.empty.denied": "没有拒绝的记录。",
+  "activity.open": "打开这个应用的页面",
+
+  "app.state.unlocked": "启动凭证有效",
+  "app.state.locked": "启动需认证",
+  "app.lockNow": "立即上锁",
+  "app.unlockNow": "立即解锁",
+  "app.failure": "最近一次启动失败",
+  "app.protect.name": "启动前要求认证",
+  "app.protect.sub.on":
+    "打开这个应用时用应用锁密码验证一次。取消或超时就拒绝启动。",
+  "app.protect.sub.off":
+    "开启后打开这个应用要先验证应用锁密码，下面是它的宽限期、自启动和保护路径。",
+  "app.grace.name": "宽限期",
+  "app.grace.sub.zero": "0 表示每次启动都要认证。",
+  "app.grace.sub":
+    "认证通过后这段时间内再打开不再询问。锁屏是否清除看通用页的开关。",
+  "app.relock.name": "失焦后隐藏",
+  "app.relock.sub":
+    "失焦达到设定时长后收起窗口，恢复时需要认证。选择关闭时，失焦不会收起窗口。",
+  "app.advanced": "高级设置",
+  "app.customRelock": "自定义失焦时长",
+  "app.autostart.name": "自启动",
+  "app.autostart.sub":
+    "登录后 30 秒内从自启动单元启动时直接放行。这个单元名同账号可以伪造，只适合你信任自己登录后第一分钟的情况。",
+  "app.autostart.prompt": "要求认证",
+  "app.autostart.allow": "放行",
+  "app.path.inactive":
+    "未生效，当前没有被监视。检查文件是否存在，或者它是不是 shell、解释器。",
+  "app.path.keep":
+    "至少保留一条保护路径。要放开这个应用，请关掉上面的保护开关。",
+  "app.path.none": "还没有路径，下面加一个。",
+  "app.path.placeholder": "/usr/bin/程序 或 /opt/游戏/启动器",
+  "app.coverage.name": "覆盖情况",
+  "app.coverage.sub":
+    "下面列出从 desktop 文件解析出的入口。实际保护路径可在高级设置中查看。",
+  "app.windows.name": "已打开的窗口",
+  "app.windows.sub":
+    "锁屏后隐藏，再次打开需要认证。窗口层以用户身份运行，同账号的程序可以绕过。",
+  "app.path.inactivePrefix": "未生效：",
+  "app.coverage.empty": "没有从 desktop 文件解析到可保护的入口。",
+  "app.none": "选择左侧的应用",
+  "app.addPath.absolute": "保护路径要写绝对路径，例如 /usr/bin/程序。",
+
+  "restore.windows": "{count} 个窗口",
+  "restore.loading": "正在查找窗口…",
+  "restore.empty": "没有隐藏的窗口",
+  "restore.waiting": "等待验证…",
+  "restore.error.read": "无法读取隐藏窗口。",
+  "restore.error.restore": "无法恢复窗口，请重试。",
+
+  "grace.every": "每次",
+  "grace.5m": "5 分钟",
+  "grace.30m": "30 分钟",
+  "grace.1h": "1 小时",
+  "relock.off": "关闭",
+  "relock.now": "立即",
+  "relock.1m": "1 分钟",
+  "relock.5m": "5 分钟",
+  "relock.30m": "30 分钟",
+
+  "outcome.granted": "认证通过",
+  "outcome.ticket": "票据",
+  "outcome.instance": "进程",
+  "outcome.autostart": "自启动",
+  "outcome.selfexec": "子进程",
+  "outcome.asked": "认证中",
+  "outcome.timeout": "超时",
+  "outcome.failed": "出错",
+  "outcome.denied": "未通过",
+  "outcome.allow": "放行",
+  "outcome.wait": "等待",
+  "outcome.refuse": "拒绝",
+
+  "ago.justNow": "刚刚",
+  "ago.seconds": "{count} 秒前",
+  "ago.minutes": "{count} 分钟前",
+  "ago.hours": "{count} 小时前",
+  "duration.seconds": "{count} 秒",
+  "duration.minutes": "{count} 分钟",
+  "duration.hours": "{count} 小时",
+  "duration.days": "{count} 天",
+  "detail.waiting": "已等 {count} 秒",
+  "detail.authenticated": "认证用时 {count} 秒",
+};
+
+const en = {
+  "app.title": "Shisa Settings",
+  "restore.title": "Restore windows",
+
+  "common.seconds": "seconds",
+  "common.add": "Add",
+  "common.remove": "Remove",
+  "common.close": "Close",
+
+  "filters.all": "All",
+  "filters.protected": "Protected",
+  "filters.unlocked": "Unlocked",
+  "filters.unprotected": "Unprotected",
+  "sidebar.search": "Search apps",
+  "sidebar.group": "Apps",
+  "sidebar.empty.match": "No matching apps",
+  "sidebar.empty.none": "No apps to show",
+  "sidebar.general": "General",
+  "daemon.online": "App lock is running",
+  "daemon.offline": "App lock is not responding",
+  "dot.unlocked": "Launch ticket valid",
+  "dot.locked": "Authentication required to launch",
+
+  "crumb.settings": "Settings",
+  "crumb.diagnostics": "General · Diagnostics",
+  "crumb.apps": "Apps",
+  "crumb.general": "General",
+  "crumb.activity": "Recent launches",
+  "top.search": "Search settings",
+  "top.lockAll": "Lock all",
+  "top.minimize": "Minimize",
+  "top.close": "Close",
+
+  "busy.auth": "Waiting for authentication…",
+  "busy.lock": "Locking…",
+
+  "password.name": "The app-lock password is not set",
+  "password.sub":
+    "Protected apps ask for the app-lock password, which has not been set, so every authentication will fail. Ask an administrator to run",
+  "password.after": " in a terminal, then reopen this window.",
+
+  "general.grace.name": "Default grace period",
+  "general.grace.sub":
+    "After a successful authentication, launches in this period do not ask again. Each app can change this on its own page.",
+  "general.clear.name": "Clear authentication on screen lock",
+  "general.clear.sub":
+    "When on, locking the screen hides protected windows, and restoring them asks again after unlock. When off, the screen lock leaves windows in use alone and only affects the next launch.",
+  "general.timeout.name": "Authentication prompt timeout",
+  "general.timeout.sub":
+    "After this long the launch is refused. Cancelling or timing out also counts as a failed authentication, and three in a row pause the app lock for about 10 minutes without affecting login.",
+  "general.timeout.unit": "seconds · 5 to 85",
+  "general.custom": "Custom",
+  "general.language.name": "Language",
+  "general.language.sub":
+    "Interface language. The tray and command line follow it too.",
+
+  "diag.records": "Diagnostic records",
+  "diag.view": "View recent launches and refusals",
+  "diag.title": "Diagnostics",
+  "diag.uptime": "Running for {duration}, last reload {reloaded}.",
+  "diag.reloaded.at": "{ago}",
+  "diag.reloaded.never": "has not happened",
+  "diag.apps.name": "Protected apps",
+  "diag.apps.sub":
+    "{apps} {appWord}, {marked} {pathWord} marked for monitoring.",
+  "diag.last.name": "Last load",
+  "diag.last.failed": "Some paths could not be marked, {ago}",
+  "diag.last.ok": "All paths are marked.",
+  "diag.config": "Configuration file",
+  "diag.unavailable":
+    "This daemon does not provide diagnostics. Install a newer shisad to see them.",
+  "settings.empty.match": "No matching settings",
+  "settings.loading": "Reading settings…",
+
+  "activity.title": "Recent launches",
+  "activity.all": "All",
+  "activity.denied": "Refusals only",
+  "activity.summary":
+    "This run: {requests} {launchWord}, {allowed} allowed, {denied} refused. Records live only in shisad's memory and are cleared by a restart.",
+  "activity.note.old":
+    "This daemon does not provide launch records. Install a newer shisad to see them.",
+  "activity.note.offline":
+    "The app lock is not responding. This page updates automatically when it returns.",
+  "activity.empty.none":
+    "No launches yet. Open a protected app and its decision appears here.",
+  "activity.empty.denied": "No refusals.",
+  "activity.open": "Open this app's page",
+
+  "app.state.unlocked": "Launch ticket valid",
+  "app.state.locked": "Authentication required to launch",
+  "app.lockNow": "Lock now",
+  "app.unlockNow": "Unlock now",
+  "app.failure": "Last launch failed",
+  "app.protect.name": "Require authentication before launch",
+  "app.protect.sub.on":
+    "Opening this app asks for the app-lock password once. Cancelling or timing out refuses the launch.",
+  "app.protect.sub.off":
+    "When on, opening this app first asks for the app-lock password. Its grace period, autostart and protected paths are below.",
+  "app.grace.name": "Grace period",
+  "app.grace.sub.zero": "0 means every launch asks for authentication.",
+  "app.grace.sub":
+    "After a successful authentication, launches in this period do not ask again. Whether a screen lock clears it is set on the General page.",
+  "app.relock.name": "Hide when focus is lost",
+  "app.relock.sub":
+    "After this long without focus the window is hidden, and restoring it asks for authentication. Off leaves the window visible when focus is lost.",
+  "app.advanced": "Advanced settings",
+  "app.customRelock": "Custom focus-loss delay",
+  "app.autostart.name": "Autostart",
+  "app.autostart.sub":
+    "A launch from the autostart unit within 30 seconds of login is allowed without a prompt. The unit name can be forged by the same account, so use this only if you trust the first minute after your own login.",
+  "app.autostart.prompt": "Ask for authentication",
+  "app.autostart.allow": "Allow",
+  "app.path.inactive":
+    "Inactive and not monitored. Check that the file exists and is not a shell or interpreter.",
+  "app.path.keep":
+    "Keep at least one protected path. To release this app, turn off protection above.",
+  "app.path.none": "No paths yet. Add one below.",
+  "app.path.placeholder": "/usr/bin/program or /opt/game/launcher",
+  "app.coverage.name": "Coverage",
+  "app.coverage.sub":
+    "Entries resolved from the desktop file are listed below. The effective protected paths are in Advanced settings.",
+  "app.windows.name": "Open windows",
+  "app.windows.sub":
+    "Hidden after a lock, and asks for authentication when reopened. The window layer runs as the user, so programs under the same account can bypass it.",
+  "app.path.inactivePrefix": "Inactive: ",
+  "app.coverage.empty":
+    "No protectable entry was resolved from the desktop file.",
+  "app.none": "Select an app on the left",
+  "app.addPath.absolute":
+    "Protected paths must be absolute, for example /usr/bin/program.",
+
+  "restore.windows": "{count} window|{count} windows",
+  "restore.loading": "Looking for windows…",
+  "restore.empty": "No hidden windows",
+  "restore.waiting": "Waiting for authentication…",
+  "restore.error.read": "Could not read hidden windows.",
+  "restore.error.restore": "Could not restore the window. Try again.",
+
+  "grace.every": "Every time",
+  "grace.5m": "5 minutes",
+  "grace.30m": "30 minutes",
+  "grace.1h": "1 hour",
+  "relock.off": "Off",
+  "relock.now": "Immediately",
+  "relock.1m": "1 minute",
+  "relock.5m": "5 minutes",
+  "relock.30m": "30 minutes",
+
+  "outcome.granted": "authenticated",
+  "outcome.ticket": "ticket",
+  "outcome.instance": "process",
+  "outcome.autostart": "autostart",
+  "outcome.selfexec": "child process",
+  "outcome.asked": "authenticating",
+  "outcome.timeout": "timed out",
+  "outcome.failed": "failed",
+  "outcome.denied": "not authorized",
+  "outcome.allow": "allow",
+  "outcome.wait": "wait",
+  "outcome.refuse": "deny",
+
+  "ago.justNow": "just now",
+  "ago.seconds": "{count}s ago",
+  "ago.minutes": "{count} min ago",
+  "ago.hours": "{count}h ago",
+  "duration.seconds": "{count}s",
+  "duration.minutes": "{count} min",
+  "duration.hours": "{count}h",
+  "duration.days": "{count}d",
+  "detail.waiting": "waited {count}s",
+  "detail.authenticated": "answered in {count}s",
+};
+
+export const messages = { "zh-CN": zh, en };
+
+// Tags the frontend receives from the shell. Anything else is English.
+export function languageFromTag(tag) {
+  return String(tag ?? "")
+    .toLowerCase()
+    .startsWith("zh")
+    ? "zh-CN"
+    : "en";
+}
+
+export function createTranslator(language) {
+  const dict = messages[language] ?? messages.en;
+  return (key, values = {}) => {
+    let template = dict[key] ?? messages["zh-CN"][key] ?? key;
+    if (template.includes("|") && "count" in values) {
+      const forms = template.split("|");
+      template =
+        Number(values.count) === 1 ? forms[0] : forms[forms.length - 1];
+    }
+    return template.replace(/\{(\w+)\}/g, (_, name) =>
+      name in values ? String(values[name]) : `{${name}}`,
+    );
+  };
+}
+
+// The word for a count, for the few sentences that name two counts.
+export function plural(language, count, one, other) {
+  return language === "en" && Number(count) === 1 ? one : other;
+}

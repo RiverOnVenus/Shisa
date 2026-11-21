@@ -51,7 +51,11 @@ impl Drop for Request {
 fn respond(fan: RawFd, fd: RawFd, allow: bool) -> io::Result<()> {
     let resp = libc::fanotify_response {
         fd,
-        response: if allow { libc::FAN_ALLOW } else { libc::FAN_DENY },
+        response: if allow {
+            libc::FAN_ALLOW
+        } else {
+            libc::FAN_DENY
+        },
     };
     loop {
         let n = unsafe { libc::write(fan, (&raw const resp).cast(), mem::size_of_val(&resp)) };
@@ -70,7 +74,13 @@ fn fstat_id(fd: RawFd) -> io::Result<(FileId, libc::mode_t)> {
     if unsafe { libc::fstat(fd, &mut st) } < 0 {
         return Err(io::Error::last_os_error());
     }
-    Ok((FileId { dev: st.st_dev as u64, ino: st.st_ino as u64 }, st.st_mode))
+    Ok((
+        FileId {
+            dev: st.st_dev as u64,
+            ino: st.st_ino as u64,
+        },
+        st.st_mode,
+    ))
 }
 
 /// An O_PATH descriptor, closed on drop.
@@ -81,7 +91,11 @@ impl PathFd {
         let c = CString::new(path.as_os_str().as_bytes())
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "path contains NUL"))?;
         let fd = unsafe { libc::open(c.as_ptr(), libc::O_PATH | libc::O_CLOEXEC) };
-        if fd < 0 { Err(io::Error::last_os_error()) } else { Ok(PathFd(fd)) }
+        if fd < 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(PathFd(fd))
+        }
     }
 }
 
@@ -98,7 +112,10 @@ impl Drop for PathFd {
 fn ensure_suitable(fd: RawFd) -> io::Result<()> {
     let real = fs::read_link(format!("/proc/self/fd/{fd}"))?;
     match shisa_core::desktop::unsuitable(&real) {
-        Some(why) => Err(io::Error::new(io::ErrorKind::PermissionDenied, why)),
+        Some(why) => Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            why.message(),
+        )),
         None => Ok(()),
     }
 }
@@ -111,7 +128,11 @@ impl Gate {
                 (libc::O_RDONLY | libc::O_CLOEXEC | libc::O_LARGEFILE) as u32,
             )
         };
-        if fan < 0 { Err(io::Error::last_os_error()) } else { Ok(Gate { fan }) }
+        if fan < 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(Gate { fan })
+        }
     }
 
     pub fn fd(&self) -> RawFd {
@@ -126,7 +147,10 @@ impl Gate {
         let fd = PathFd::open(path)?;
         let (id, mode) = fstat_id(fd.0)?;
         if mode & libc::S_IFMT != libc::S_IFREG {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "not a regular file"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "not a regular file",
+            ));
         }
         ensure_suitable(fd.0)?;
         self.change(libc::FAN_MARK_ADD, &fd)?;
@@ -150,9 +174,19 @@ impl Gate {
         // No FAN_MARK_MOUNT or FAN_MARK_FILESYSTEM: this is an inode mark.
         let link = CString::new(format!("/proc/self/fd/{}", fd.0)).unwrap();
         let r = unsafe {
-            libc::fanotify_mark(self.fan, flags, libc::FAN_OPEN_EXEC_PERM, libc::AT_FDCWD, link.as_ptr())
+            libc::fanotify_mark(
+                self.fan,
+                flags,
+                libc::FAN_OPEN_EXEC_PERM,
+                libc::AT_FDCWD,
+                link.as_ptr(),
+            )
         };
-        if r < 0 { Err(io::Error::last_os_error()) } else { Ok(()) }
+        if r < 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
     }
 
     /// Read the events that are queued right now and hand each permission
