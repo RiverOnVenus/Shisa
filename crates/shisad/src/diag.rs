@@ -138,7 +138,7 @@ mod tests {
     #[test]
     fn the_config_path_is_the_users_own_file() {
         let diag = Diag::new(PathBuf::from("/etc/shisa/users"));
-        assert_eq!(diag.config_path("zhui"), "/etc/shisa/users/zhui.toml");
+        assert_eq!(diag.config_path("alice"), "/etc/shisa/users/alice.toml");
         assert_eq!(diag.started(), diag.started());
         assert!(diag.started() > 0);
         assert_eq!(diag.reloaded(), 0);
