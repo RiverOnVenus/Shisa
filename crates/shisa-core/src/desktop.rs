@@ -1,4 +1,4 @@
-//! Desktop file lookup and protected path resolution (DESIGN 5.2).
+//! Desktop file lookup and protected path resolution (docs/subsystems/launch-gate.md).
 //!
 //! The settings UI and `shisa protect` both go through this. Everything here
 //! is read-only and works on injected directories, so the tests do not need
@@ -211,7 +211,7 @@ pub struct Resolved {
     pub name: String,
     /// Files to mark, canonical and deduplicated by inode.
     pub paths: Vec<PathBuf>,
-    /// Caveats the settings window has to show (DESIGN 5.2).
+    /// Caveats the settings window has to show (docs/subsystems/launch-gate.md).
     pub notes: Vec<Note>,
 }
 
@@ -840,7 +840,7 @@ fn file_id(path: &Path) -> io::Result<(u64, u64)> {
 /// A binary is shared when two different applications make it run different
 /// things. One application often ships several entries (`codium` and
 /// `codium-wayland`) and more `Exec` lines in its actions, and those share
-/// the protected path (DESIGN 5.2), so every entry of one id counts as that
+/// the protected path (docs/subsystems/launch-gate.md), so every entry of one id counts as that
 /// one application. Electron apps pass different `app.asar` files and a
 /// launcher gets different `env` assignments, so those differ.
 fn shared_commands(files: &[(String, PathBuf)], env: &Env) -> HashSet<PathBuf> {

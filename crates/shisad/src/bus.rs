@@ -1,4 +1,4 @@
-//! shisad's side of the system bus (DESIGN 7.2, 6.1).
+//! shisad's side of the system bus (docs/subsystems/configuration.md, docs/subsystems/authentication.md).
 //!
 //! The bus thread owns the connection, the served object and the registry of
 //! session agents. Method calls reach the shared state directly. Everything
@@ -331,7 +331,7 @@ impl ManagerIface {
 
     /// Apps whose windows may show. This is not the ticket set: a ticket
     /// expiring only means the next launch needs authentication, while an
-    /// open window stays visible until a lock (DESIGN 5.7).
+    /// open window stays visible until a lock (docs/subsystems/window-management.md).
     async fn window_states(
         &self,
         #[zbus(header)] hdr: Header<'_>,
@@ -427,7 +427,7 @@ impl ManagerIface {
     }
 
     /// Mark an app as protected or not. The change only happens after the
-    /// user authenticated (DESIGN 7.2), which the event loop arranges.
+    /// user authenticated (docs/subsystems/configuration.md), which the event loop arranges.
     async fn set_protected(
         &self,
         app_id: &str,
@@ -467,7 +467,7 @@ impl ManagerIface {
         }
         // An empty app id means the global settings, so the key has to match:
         // otherwise the authentication box would name one app while the change
-        // lands in the global section (DESIGN 7.2).
+        // lands in the global section (docs/subsystems/configuration.md).
         let global_only = matches!(key, "clear_on_screen_lock" | "prompt_timeout_seconds");
         let app_only = matches!(
             key,

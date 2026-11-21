@@ -1,4 +1,4 @@
-//! Authorization through polkit (DESIGN 6).
+//! Authorization through polkit (docs/subsystems/authentication.md).
 //!
 //! polkit 127 and 128 abort on a `unix-session` subject (polkit #699), so
 //! every check names a process or a bus name instead. For a process outside

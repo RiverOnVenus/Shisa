@@ -31,7 +31,7 @@ Shisa 适合防止别人顺手打开应用。启动认证仅覆盖实际生效�
 
 运行 `cargo test --workspace` 检查 Rust 工作区。构建设置程序时，先在 `gui/shisa-settings` 运行 `npm ci` 和 `npm run build`，再在 `gui/shisa-settings/src-tauri` 运行 `cargo build --release --features custom-protocol`。
 
-维护工作区的 Arch 打包流程见 `packaging/arch/注意事项.md`。
+架构、开发规范和测试入口见[开发文档](docs/README.md)。Arch 构建与升级验证见[打包指南](docs/packaging.md)。
 
 ## 许可证
 

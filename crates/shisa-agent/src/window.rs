@@ -1,4 +1,4 @@
-//! The window layer (DESIGN 5.7).
+//! The window layer (docs/subsystems/window-management.md).
 //!
 //! KWin runs a generated script that hides the windows of protected apps
 //! whose tickets are gone. The script only reaches the session bus, so it
@@ -316,7 +316,7 @@ impl Gate {
         }
         // Apps the user stopped protecting since the last load. The running
         // script may have hidden their windows, so the new one has to give
-        // them back (DESIGN 5.7).
+        // them back (docs/subsystems/window-management.md).
         let restore: Vec<String> = self
             .loaded
             .as_ref()

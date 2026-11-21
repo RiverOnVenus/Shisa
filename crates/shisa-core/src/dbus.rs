@@ -66,7 +66,7 @@ pub trait Manager {
     /// Protect or unprotect an app. Needs authentication first.
     fn set_protected(&self, app_id: &str, on: bool) -> zbus::Result<()>;
     /// Apps whose windows may show. This is not the ticket set: a ticket
-    /// expiring only affects the next launch (DESIGN 5.7).
+    /// expiring only affects the next launch (docs/subsystems/window-management.md).
     fn window_states(&self) -> zbus::Result<Vec<String>>;
     /// Per-app unfocus relock delays, apps with the feature off left out.
     fn relock_seconds(&self) -> zbus::Result<Vec<(String, u64)>>;

@@ -1,5 +1,5 @@
 //! sd_notify without libsystemd: READY and the watchdog keep-alive
-//! (DESIGN 5.3). Without $NOTIFY_SOCKET every call is a no-op.
+//! (docs/subsystems/launch-gate.md). Without $NOTIFY_SOCKET every call is a no-op.
 
 use std::env;
 use std::mem;

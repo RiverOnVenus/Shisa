@@ -5,5 +5,5 @@ pub mod dbus;
 pub mod desktop;
 pub mod users;
 
-/// Per-user policy files live here, one `<username>.toml` each (DESIGN 7.1).
+/// Per-user policy files live here, one `<username>.toml` each (docs/subsystems/configuration.md).
 pub const CONFIG_DIR: &str = "/etc/shisa/users";

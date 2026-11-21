@@ -1,4 +1,4 @@
-//! Per-user policy file, `/etc/shisa/users/<username>.toml` (DESIGN 7.1).
+//! Per-user policy file, `/etc/shisa/users/<username>.toml` (docs/subsystems/configuration.md).
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -6,7 +6,7 @@ use std::fmt;
 use std::path::PathBuf;
 
 /// Upper bound for the authentication wait. A `Type=exec` unit counts the
-/// time a held exec takes against its 90 s start timeout (DESIGN 13.2).
+/// time a held exec takes against its 90 s start timeout (docs/subsystems/configuration.md).
 pub const MAX_PROMPT_TIMEOUT: u64 = 85;
 pub const MIN_PROMPT_TIMEOUT: u64 = 5;
 /// Upper bound for a grace period, one year. A ticket's expiry is the time
@@ -124,7 +124,7 @@ impl UserConfig {
     }
 
     /// Turn the configuration back into the file format. shisad writes this
-    /// after a settings change (DESIGN 7.1).
+    /// after a settings change (docs/subsystems/configuration.md).
     pub fn to_toml(&self) -> Result<String, ConfigError> {
         toml::to_string(self).map_err(|e| ConfigError(e.to_string()))
     }

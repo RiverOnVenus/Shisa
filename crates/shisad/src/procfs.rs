@@ -4,7 +4,7 @@ use std::fs;
 use std::os::unix::fs::MetadataExt;
 
 /// Identity of a file, independent of the path it was reached by. Paths in
-/// events can be sandbox-internal (DESIGN 13.3), so apps are matched by inode.
+/// events can be sandbox-internal (docs/subsystems/launch-gate.md), so apps are matched by inode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FileId {
     pub dev: u64,

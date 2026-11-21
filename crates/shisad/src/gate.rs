@@ -1,4 +1,4 @@
-//! fanotify exec-permission gate (DESIGN 5.1).
+//! fanotify exec-permission gate (docs/subsystems/launch-gate.md).
 //!
 //! Only inode marks on regular files are ever placed. Mount and filesystem
 //! marks are not used anywhere, so execs of unprotected programs never reach

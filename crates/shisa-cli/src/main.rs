@@ -11,7 +11,7 @@
 //! which shows the desktop's authentication dialog or, through the
 //! `pkttyagent` this program starts, prompts in the terminal. `protect` and
 //! `unprotect` authenticate the same way. `status` and `lock` go through the
-//! system bus without authentication (DESIGN 7.2, 7.3).
+//! system bus without authentication (docs/subsystems/configuration.md).
 
 use shisa_core::dbus::ManagerProxyBlocking;
 use std::time::Duration;
@@ -120,7 +120,7 @@ fn status() -> i32 {
 }
 
 /// Protect or unprotect an app. shisad authenticates the change through
-/// polkit before it writes it (DESIGN 7.2).
+/// polkit before it writes it (docs/subsystems/configuration.md).
 fn protect(args: Vec<std::ffi::OsString>, on: bool) -> i32 {
     let app = match args.as_slice() {
         [one] => one.to_string_lossy().into_owned(),
@@ -147,7 +147,7 @@ fn protect(args: Vec<std::ffi::OsString>, on: bool) -> i32 {
     }
 }
 
-/// Show the protected paths of an installed application (DESIGN 5.2). The
+/// Show the protected paths of an installed application (docs/subsystems/launch-gate.md). The
 /// daemon resolves them with the user's session environment, the same one
 /// protection uses. The local scan is only a fallback when the daemon is not
 /// available.

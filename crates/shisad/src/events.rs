@@ -19,7 +19,7 @@ pub enum Event {
         request: u64,
     },
     /// The check did not answer before the wait limit. What waited for this
-    /// request is refused at once (DESIGN 6.4).
+    /// request is refused at once (docs/subsystems/authentication.md).
     Cancelled { request: u64 },
     /// polkit answered that the user is not authorized. The box ended
     /// without a yes, and what waited is refused now.

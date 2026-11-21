@@ -21,7 +21,7 @@ const MAX_CONFIG_SIZE: u64 = 1 << 20;
 pub type Marks = HashMap<FileId, PathBuf>;
 
 /// Config must be root's and not writable by anyone else, or an unprivileged
-/// user could change what is protected (DESIGN 7.1).
+/// user could change what is protected (docs/subsystems/configuration.md).
 fn check_owner(path: &Path, meta: &fs::Metadata) -> io::Result<()> {
     if meta.uid() != 0 || meta.mode() & 0o022 != 0 {
         return Err(io::Error::new(
@@ -320,7 +320,7 @@ pub fn load(gate: &Gate, dir: &Path, old: &Policy, marks: &mut Marks) -> Policy 
 
 /// Every configured path that was marked still leads to its inode. A replaced
 /// file, a deleted path or a mark that failed makes this false, and the reload
-/// thread places the marks again (DESIGN 5.2).
+/// thread places the marks again (docs/subsystems/launch-gate.md).
 ///
 /// A path that was already missing or unusable at the last load does not force
 /// a full reload every time. The check still stats it, so a file that appears

@@ -1,4 +1,4 @@
-//! Screen locking through logind (DESIGN 5.4, 13.5).
+//! Screen locking through logind (docs/subsystems/launch-gate.md).
 //!
 //! Reads `LockedHint` and the start time of the users' graphical sessions,
 //! the latter for the autostart window (5.5). The property is what the Plasma
@@ -159,7 +159,7 @@ fn sweep_session(
         && let Some(start) = start_instant(timestamp)
     {
         // With more than one graphical session the newest start is the one
-        // the autostart window (DESIGN 5.5) should be measured from, and
+        // the autostart window (docs/subsystems/launch-gate.md) should be measured from, and
         // ListSessions has no defined order.
         let mut st = state.lock().unwrap();
         let newest = st.session_start(uid).is_none_or(|prev| start > prev);

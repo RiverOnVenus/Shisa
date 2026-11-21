@@ -10,7 +10,7 @@
 //! If this process dies the kernel allows every pending request and drops the
 //! marks.
 //!
-//! Decisions are logged at debug level only (DESIGN 13.8).
+//! Decisions are logged at debug level only (docs/subsystems/configuration.md).
 
 use bus::Msg;
 use events::{Event, Events};
@@ -460,7 +460,7 @@ fn auth_crowded(changes: &[PendingChange], unlocks: &[PendingUnlock], uid: u32) 
 }
 
 /// Let a group of held execs through and remember each caller as an instance,
-/// so its descendants count as the app while it is alive (DESIGN 5.4).
+/// so its descendants count as the app while it is alive (docs/subsystems/launch-gate.md).
 fn allow_held(
     state: &Mutex<State>,
     activity: &activity::Log,
@@ -648,7 +648,7 @@ fn main() {
                 result: Err(why.to_string()),
             });
         };
-        // What ran out of time is refused (DESIGN 6.2).
+        // What ran out of time is refused (docs/subsystems/authentication.md).
         for held in take(&mut pending, |p| p.deadline <= now) {
             activity.resolve(held.id, activity::TIMEOUT);
             held.deny();
@@ -883,7 +883,7 @@ fn main() {
         notify.stopping();
     }
     // Held requests are deliberately left unanswered: closing the fanotify
-    // descriptor lets the kernel allow them, as DESIGN 5.3 says. Forgetting
+    // descriptor lets the kernel allow them, as documented in docs/subsystems/launch-gate.md. Forgetting
     // them keeps their Drop from denying.
     mem::forget(pending);
     process::exit(0);

@@ -1,4 +1,4 @@
-//! Policy, tickets, instances and the exec decision (DESIGN 5.3, 5.4, 5.5, 6.2).
+//! Policy, tickets, instances and the exec decision (docs/subsystems/launch-gate.md, docs/subsystems/authentication.md).
 //!
 //! Nothing here touches the system directly. Process facts come through
 //! [`Procs`] and time is passed in, so the whole decision is unit tested.
@@ -15,7 +15,7 @@ pub const DEFAULT_GRACE: Duration = Duration::from_secs(shisa_core::config::DEFA
 pub const DEFAULT_PROMPT_TIMEOUT: Duration =
     Duration::from_secs(shisa_core::config::DEFAULT_PROMPT_TIMEOUT_SECONDS);
 /// Autostart launches count as exempt for this long after the session began
-/// (DESIGN 5.5).
+/// (docs/subsystems/launch-gate.md).
 pub const AUTOSTART_WINDOW: Duration = Duration::from_secs(30);
 /// How far up the process tree the instance check walks.
 const MAX_ANCESTORS: usize = 64;
@@ -26,7 +26,7 @@ pub struct AppPolicy {
     pub grace: Duration,
     pub autostart: bool,
     /// How long an allowed window may sit unfocused before it is hidden.
-    /// Zero turns this off (DESIGN 5.7).
+    /// Zero turns this off (docs/subsystems/window-management.md).
     pub relock: Duration,
     /// Paths from the config, including ones that could not be marked.
     pub paths: Vec<PathBuf>,
@@ -43,12 +43,12 @@ pub struct UserPolicy {
     /// Grace period for apps without their own entry, shown by `app_config`
     /// for apps the user has not protected yet.
     pub global_grace: Duration,
-    /// Drop the user's tickets when the screen locks (DESIGN 5.4, 7.1).
+    /// Drop the user's tickets when the screen locks (docs/subsystems/launch-gate.md, docs/subsystems/configuration.md).
     pub clear_on_lock: bool,
     pub apps: Vec<AppPolicy>,
 }
 
-/// A settings change, authenticated before it is written (DESIGN 7.2).
+/// A settings change, authenticated before it is written (docs/subsystems/configuration.md).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Change {
     Protected(bool),
@@ -187,7 +187,7 @@ pub struct State {
     instances: HashMap<Key, Vec<ProcId>>,
     /// Apps whose windows may stay visible. Unlike tickets, this survives the
     /// grace period. A screen lock or a manual `Lock` clears it, and an
-    /// authenticated launch or window activation sets it (DESIGN 5.7).
+    /// authenticated launch or window activation sets it (docs/subsystems/window-management.md).
     window_allowed: HashMap<u32, HashSet<String>>,
     /// When the user's graphical session began, for the autostart window.
     session_start: HashMap<u32, Instant>,
@@ -331,7 +331,7 @@ impl State {
 
     /// Drop one app's ticket without touching its window permission. A
     /// changed grace period applies to the next launch, and must not hide a
-    /// window that is still in use (DESIGN 7.1).
+    /// window that is still in use (docs/subsystems/configuration.md).
     pub fn drop_ticket(&mut self, uid: u32, app: &str) -> bool {
         self.tickets.remove(&(uid, app.to_string())).is_some()
     }
@@ -390,7 +390,7 @@ impl State {
         cleared
     }
 
-    /// Answer an exec request for `file` made by process `pid` (DESIGN 5.3).
+    /// Answer an exec request for `file` made by process `pid` (docs/subsystems/launch-gate.md).
     pub fn decide(&mut self, procs: &impl Procs, file: FileId, pid: i32, now: Instant) -> Decision {
         if !self.policy.covers(file) {
             return Decision::allow(Why::Unprotected);
@@ -398,7 +398,7 @@ impl State {
         let Some(uid) = procs.uid(pid) else {
             return Decision::allow(Why::CallerGone);
         };
-        // Several apps of one user may share a protected path (DESIGN 5.2).
+        // Several apps of one user may share a protected path (docs/subsystems/launch-gate.md).
         // They cannot be told apart at exec time, so any of them may allow.
         let apps: Vec<(String, bool)> = match self.policy.users.get(&uid) {
             Some(user) => user
@@ -473,8 +473,8 @@ impl State {
             .unwrap_or_default()
     }
 
-    /// The app whose autostart unit launched this process, if any (DESIGN
-    /// 5.5). The unit name can be forged by the same user, which the settings
+    /// The app whose autostart unit launched this process, if any. See docs/subsystems/launch-gate.md.
+    /// The unit name can be forged by the same user, which the settings
     /// UI has to say. Several apps can share a protected path, so the unit
     /// name, not the first app in the list, decides which instance is
     /// registered.
@@ -512,7 +512,7 @@ impl State {
     }
 
     /// Register the process that was just allowed to start as an instance.
-    /// Its descendants count as the app while it is alive (DESIGN 5.4).
+    /// Its descendants count as the app while it is alive (docs/subsystems/launch-gate.md).
     pub fn register_instance(&mut self, uid: u32, app: &str, pid: i32, procs: &impl Procs) {
         if let Some((_, start)) = procs.stat(pid) {
             let me = ProcId { pid, start };
@@ -538,7 +538,7 @@ impl State {
     }
 
     /// Issue a ticket after a successful authentication. The grace period
-    /// counts from now (DESIGN 13.6). Only an app the user protects has a
+    /// counts from now (docs/subsystems/launch-gate.md). Only an app the user protects has a
     /// ticket: a policy reload between the request and the answer drops it
     /// here instead of leaving one for an app that is no longer listed.
     pub fn grant(&mut self, uid: u32, app: &str, now: Instant) -> Option<Duration> {
@@ -548,7 +548,7 @@ impl State {
     /// A held exec was authenticated. For a zero grace period no ticket is
     /// stored: the event loop allows the waiting exec itself, and a one-shot
     /// ticket left in the table would let a second launch slip through
-    /// (DESIGN 5.4).
+    /// (docs/subsystems/launch-gate.md).
     pub fn grant_for_held_exec(&mut self, uid: u32, app: &str, now: Instant) -> Option<Duration> {
         self.grant_with(uid, app, now, GrantUse::HeldExec)
     }
