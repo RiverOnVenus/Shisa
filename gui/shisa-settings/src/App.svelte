@@ -16,7 +16,6 @@
     readable,
     reasonText,
     relockPresets,
-    seconds,
   } from "./format.js";
 
   const win = getCurrentWindow();
