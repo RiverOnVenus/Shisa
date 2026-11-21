@@ -17,7 +17,7 @@ cargo clippy --workspace --all-targets
 (cd gui/shisa-settings/src-tauri && cargo build --features custom-protocol)
 ```
 
-The settings crate is outside the workspace, so `cargo test --workspace` does not reach it. Its frontend rules are plain JavaScript tested with Node's built-in runner, and the Tauri shell has its own tests. The Arch package's `check()` runs all three suites.
+The settings crate is outside the workspace, so `cargo test --workspace` does not reach it. Its frontend rules are plain JavaScript tested with Node's built-in runner, its component tests mount the real window under jsdom with vitest, and the Tauri shell has its own tests. `npm test` runs both frontend suites. The Arch package's `check()` runs all of them.
 
 CI runs the workspace and frontend suites on every push and pull request (`.github/workflows/test.yml`). The Tauri suite needs the WebKitGTK build stack, so it stays in the Arch package check rather than the push workflow.
 
