@@ -1,10 +1,14 @@
 # Shisa
 
+[![Test](https://github.com/RiverOnVenus/Shisa/actions/workflows/test.yml/badge.svg)](https://github.com/RiverOnVenus/Shisa/actions/workflows/test.yml)
+
 English · [简体中文](README.zh-CN.md)
 
 Shisa is a desktop app lock for Arch Linux and KDE Plasma 6 on Wayland. It keeps private apps from being opened casually when someone else uses your desktop. Its main use is briefly lending your unlocked desktop: hide private windows, then require a separate password to restore them or launch apps through protected entry points.
 
 Shisa is not a screen lock and not a user isolation tool.
+
+![Shisa Settings](docs/images/settings.png)
 
 ## Installation
 
@@ -30,6 +34,8 @@ You can bind `shisa lock` to a KDE keyboard shortcut or enable **Hide when focus
 ## Protection scope
 
 Shisa guards against casually opening private apps. Launch authentication applies to active protected paths. Apps running under the same account can still read application data or interfere with window hiding. Hiding covers windows only, so notifications from hidden apps still appear and the notification history can still be opened. Enable Do Not Disturb before lending the desktop.
+
+See the [threat model](docs/architecture.md#threat-model) for the situations Shisa covers and the ones it does not.
 
 ## Development
 

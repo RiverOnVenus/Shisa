@@ -1,10 +1,14 @@
 # Shisa
 
+[![Test](https://github.com/RiverOnVenus/Shisa/actions/workflows/test.yml/badge.svg)](https://github.com/RiverOnVenus/Shisa/actions/workflows/test.yml)
+
 [English](README.md) · 简体中文
 
 Shisa 是 Arch Linux 和 KDE Plasma 6（Wayland）上的桌面应用锁。它能防止别人顺手打开你的隐私应用。主要用途是短时间把已解锁的桌面借给别人：收起聊天、邮件等私密窗口，并要求输入单独的应用锁密码才能恢复窗口或从受保护的入口启动应用。
 
 Shisa 不是屏幕锁，也不是用户隔离工具。
+
+![Shisa 设置](docs/images/settings-zh.png)
 
 ## 安装
 
@@ -30,6 +34,8 @@ systemctl --user enable --now shisa-agent.service
 ## 保护范围
 
 Shisa 适合防止别人顺手打开应用。启动认证仅覆盖实际生效的保护路径，应用数据不会加密，同一账号下的程序仍可能绕过窗口隐藏。隐藏只覆盖窗口，被隐藏的应用仍会弹出通知，通知历史也仍然可以打开。借出桌面之前建议开启勿扰模式。
+
+各种情况下的防护边界见[威胁模型](docs/architecture.md#threat-model)。
 
 ## 开发
 
