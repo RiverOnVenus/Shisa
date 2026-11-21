@@ -16,7 +16,7 @@ A later formal package with the same base `pkgrel` sorts below the local decimal
 
 ## GitHub Release packages
 
-The [Arch package workflow](../.github/workflows/arch-package.yml) builds the commit selected by a published `vX.Y.Z` Release. The tag must match the tagged `PKGBUILD` version. The build job runs `makepkg` and `check()` in a fresh Arch Linux image and checks the installed file list. The upload job attaches the x86_64 package and `SHA256SUMS` to that same Release. It preserves existing assets and reports a failure if an existing asset differs from the build.
+The [Arch package workflow](../.github/workflows/arch-package.yml) builds the commit selected by a published `vX.Y.Z` Release. The tag must match the tagged `PKGBUILD` version. The build job runs `makepkg` and `check()` in a fresh Arch Linux image and checks the installed file list. `check()` runs the Rust workspace tests, the settings window's Node and vitest suites, its Tauri tests, and the KWin script test. The upload job attaches the x86_64 package and `SHA256SUMS` to that same Release. It preserves existing assets and reports a failure if an existing asset differs from the build.
 
 Use **Actions → Build Arch package → Run workflow** to build an Actions artifact from a selected branch or tag. A manual run builds a test package and does not upload Release assets. The workflow assumes release assets can be added after publication.
 

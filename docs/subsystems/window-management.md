@@ -20,12 +20,15 @@ Left-clicking the tray opens the restore panel. Right-clicking offers Lock all a
 
 ## Implementation and verification
 
-| Step | Source and symbols |
-| --- | --- |
-| Start from the tray or CLI | [Session agent](../../crates/shisa-agent/src/main.rs), `action_loop`. [CLI](../../crates/shisa-cli/src/main.rs), `lock` and its session-bus `VerifyLock` call. |
-| Revoke daemon state | [System-bus handler](../../crates/shisad/src/bus.rs), `ManagerIface::lock`. [Policy](../../crates/shisad/src/policy.rs), `State::clear_tickets` and `State::lock_app`. |
-| Apply and acknowledge a window revision | [Window agent](../../crates/shisa-agent/src/window.rs), `Gate::sync`, `Gate::load`, and `windows_checked`. |
-| Report the result | [Session agent](../../crates/shisa-agent/src/main.rs), `verify_lock` and `lock_summary`. The test `lock_feedback_requires_all_matched_windows_to_be_concealed` checks that partial concealment is unconfirmed. |
+| Step                                    | Source and symbols                                                                                                                                                                                             |
+| --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Start from the tray or CLI              | [Session agent](../../crates/shisa-agent/src/main.rs), `action_loop`. [CLI](../../crates/shisa-cli/src/main.rs), `lock` and its session-bus `VerifyLock` call.                                                 |
+| Revoke daemon state                     | [System-bus handler](../../crates/shisad/src/bus.rs), `ManagerIface::lock`. [Policy](../../crates/shisad/src/policy.rs), `State::clear_tickets` and `State::lock_app`.                                         |
+| Apply and acknowledge a window revision | [Window agent](../../crates/shisa-agent/src/window.rs), `Gate::sync`, `Gate::load`, and `windows_checked`.                                                                                                     |
+| Run the KWin script                     | [Gate script template](../../crates/shisa-agent/src/gate-script.js), filled by `script_for` and written per generation.                                                                                        |
+| Report the result                       | [Session agent](../../crates/shisa-agent/src/main.rs), `verify_lock` and `lock_summary`. The test `lock_feedback_requires_all_matched_windows_to_be_concealed` checks that partial concealment is unconfirmed. |
+
+The script runs inside KWin, so its behavior is tested against a fake workspace in [gate_script.test.mjs](../../crates/shisa-agent/tests/gate_script.test.mjs). That covers matching by `desktopFileName` and `resourceClass`, concealment across the taskbar, switcher and pager, restoring a window an earlier generation hid, leaving a user-minimized window alone, focus reporting and state refreshes. Real KWin behavior still needs the live checks below.
 
 See [Tests and verification](../testing.md#window-and-authentication-verification) for coverage of real windows, missing acknowledgements, and focus-loss relocking.
 
