@@ -11,9 +11,9 @@ ExecStart=/usr/bin/shisad
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=always
 RestartSec=1
-# Each pending launch holds one fanotify event descriptor, capped at 256 per user.
-# systemd's default soft limit is 1024, so multi-user systems or abuse can exhaust
-# it, and a failed event read makes shisad exit.
+# Each pending launch holds one fanotify event descriptor, capped at 64 per app
+# and 256 per user. systemd's default soft limit is 1024, so multi-user systems
+# or abuse can exhaust it, and a failed event read makes shisad exit.
 LimitNOFILE=8192:524288
 # shisad writes configuration changes back to /etc/shisa/users/. Under
 # ProtectSystem=strict /etc is read-only and ConfigurationDirectory only creates
@@ -42,9 +42,7 @@ RestrictRealtime=yes
 LockPersonality=yes
 MemoryDenyWriteExecute=yes
 # @system-service does not include fanotify_init and fanotify_mark (they are in
-# @mount and @privileged), so allow just those two instead of opening all of
-# @mount. Verified 2026-11-15: the system bus, SIGHUP reload and interception
-# all work.
+# @privileged), so allow just those two instead of opening all of @privileged.
 SystemCallFilter=@system-service fanotify_init fanotify_mark
 # Filtered calls return EPERM instead of killing the process. The default action
 # is SIGSYS: a call outside the list would kill shisad, and the kernel would then

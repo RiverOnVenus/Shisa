@@ -1,4 +1,4 @@
 # Password holder for the Shisa application lock. The administrator sets the password after install:
 #   sudo passwd shisa-lock
-# The account cannot log in and has no home directory, it is used only for polkit authentication.
+# The account cannot log in and its home is /, it is used only for polkit authentication.
 u shisa-lock - "Shisa application lock" / /usr/bin/nologin

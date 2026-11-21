@@ -55,3 +55,5 @@ Already-open windows are handled by [window management](window-management.md). L
 ## Verification
 
 See [Tests and verification](../testing.md) for allow, deny, file replacement, and terminal entry-point checks. Live checks confirmed that execution from inside a Flatpak sandbox hits the host inode mark and that hard links and symlinks share coverage. See [Arch packaging](../packaging.md#installation-and-upgrade-verification) for the upgrade re-marking check.
+
+The service sandbox was verified on 2026-11-15: the system bus, SIGHUP reload, and interception all work under `SystemCallFilter=@system-service fanotify_init fanotify_mark` with `SystemCallErrorNumber=EPERM`. On systemd 262.2, `systemd-analyze syscall-filter` lists `fanotify_init` and `fanotify_mark` in `@privileged` only, not in `@mount`, so the unit has to name them explicitly.
