@@ -491,7 +491,7 @@ fn data_url(path: &std::path::Path) -> Option<String> {
 )]
 trait WindowAgent {
     fn hidden_apps(&self) -> zbus::Result<std::collections::HashMap<String, u32>>;
-    fn unlock_mask(&self, app: &str) -> zbus::Result<()>;
+    fn restore_window(&self, app: &str) -> zbus::Result<()>;
 }
 
 #[tauri::command]
@@ -514,7 +514,7 @@ async fn restore_hidden(app_id: String) -> R<()> {
     if !manager.window_states().await.map_err(err)?.contains(&app_id) {
         manager.unlock(&app_id).await.map_err(err)?;
     }
-    agent.unlock_mask(&app_id).await.map_err(err)
+    agent.restore_window(&app_id).await.map_err(err)
 }
 
 fn open_window(app: &tauri::AppHandle, restore: bool) -> Result<(), Box<dyn std::error::Error>> {

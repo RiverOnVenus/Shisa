@@ -85,7 +85,6 @@ impl Tracker {
 #[derive(Default)]
 struct Inventory {
     version: (u64, u64),
-    masks: String,
     counts: HashMap<String, u32>,
 }
 
@@ -158,28 +157,11 @@ impl WindowService {
         self.ready.desired.lock().unwrap().clone()
     }
 
-    fn hide_on_unfocus(&self) -> String {
-        let apps = self
-            .tracker
-            .lock()
-            .unwrap()
-            .relock
-            .iter()
-            .filter(|(_, delay)| **delay > 0)
-            .map(|(app, _)| app.clone())
-            .collect::<Vec<_>>();
-        js_list(&apps)
-    }
-
-    fn privacy_masks(&self) -> String {
-        self.ready.inventory.lock().unwrap().masks.clone()
-    }
-
     fn hidden_apps(&self) -> HashMap<String, u32> {
         self.ready.inventory.lock().unwrap().counts.clone()
     }
 
-    fn unlock_mask(&self, app: String) -> zbus::fdo::Result<()> {
+    fn restore_window(&self, app: String) -> zbus::fdo::Result<()> {
         self.actions
             .send(super::Action::Unlock(app))
             .map_err(|error| zbus::fdo::Error::Failed(error.to_string()))
@@ -193,7 +175,7 @@ impl WindowService {
         }
     }
 
-    fn hidden_windows(&self, generation: &str, sequence: &str, counts: &str, masks: String) {
+    fn hidden_windows(&self, generation: &str, sequence: &str, counts: &str) {
         let (Ok(generation), Ok(sequence)) = (generation.parse(), sequence.parse()) else {
             return;
         };
@@ -211,7 +193,6 @@ impl WindowService {
             }
             *current = Inventory {
                 version: (generation, sequence),
-                masks,
                 counts: counts.clone(),
             };
         }
@@ -762,7 +743,6 @@ let RESTORE = @RESTORE@;
 let hidden = [];
 let inventorySequence = 0;
 let lastSnapshot;
-let privacyMasks = [];
 
 function reportHiddenWindows() {
   const counts = new Map();
@@ -774,66 +754,11 @@ function reportHiddenWindows() {
     }
   }
   const snapshot = Array.from(counts, ([app, count]) => count + "\t" + app).join("\n");
-  const geometry = JSON.stringify(privacyMasks);
-  const report = JSON.stringify([generation, snapshot, geometry]);
+  const report = JSON.stringify([generation, snapshot]);
   if (report === lastSnapshot) return;
-  callDBus(SERVICE, PATH, IFACE, "HiddenWindows", String(generation), String(++inventorySequence), snapshot, geometry, function () {
+  callDBus(SERVICE, PATH, IFACE, "HiddenWindows", String(generation), String(++inventorySequence), snapshot, function () {
     lastSnapshot = report;
   });
-}
-
-function onCurrentDesktop(window) {
-  return (window.onAllDesktops || Array.from(window.desktops).includes(workspace.currentDesktop)) &&
-    (!window.activities.length || Array.from(window.activities).includes(workspace.currentActivity));
-}
-
-function subtract(rect, cover) {
-  const [left, top, right, bottom] = rect;
-  const cutLeft = Math.max(left, cover.x);
-  const cutTop = Math.max(top, cover.y);
-  const cutRight = Math.min(right, cover.x + cover.width);
-  const cutBottom = Math.min(bottom, cover.y + cover.height);
-  if (cutLeft >= cutRight || cutTop >= cutBottom) return [rect];
-  return [
-    [left, top, right, cutTop],
-    [left, cutBottom, right, bottom],
-    [left, cutTop, cutLeft, cutBottom],
-    [cutRight, cutTop, right, cutBottom],
-  ].filter(([x, y, endX, endY]) => endX > x && endY > y);
-}
-
-function geometry(window) {
-  const frame = window.frameGeometry || window;
-  return { x: frame.x, y: frame.y, width: frame.width, height: frame.height };
-}
-
-function updatePrivacyMasks(hideApps) {
-  const stack = Array.from(workspace.stackingOrder);
-  const active = workspace.activeWindow;
-  const visible = window => !window.deleted && !window.hidden && !window.minimized &&
-    window.opacity > 0 && onCurrentDesktop(window);
-  privacyMasks = [];
-  stack.forEach((window, index) => {
-    const app = appOf(window);
-    if (!window.normalWindow || window === active || !visible(window) ||
-        !app || !isAllowed(app) || hideApps.includes(app)) return;
-    const area = geometry(window);
-    let parts = [[area.x, area.y, area.x + area.width, area.y + area.height]];
-    for (const higher of stack.slice(index + 1)) {
-      if (higher.managed && higher.caption !== "Shisa Privacy Mask" && visible(higher)) {
-        const cover = geometry(higher);
-        const uncovered = [];
-        for (const part of parts) {
-          uncovered.push(...subtract(part, cover));
-        }
-        parts = uncovered;
-      }
-    }
-    parts.forEach(([x, y, right, bottom], part) => {
-      privacyMasks.push([String(window.internalId) + ":" + part, x, y, right - x, bottom - y]);
-    });
-  });
-  reportHiddenWindows();
 }
 
 function appOf(w) {
@@ -843,6 +768,17 @@ function appOf(w) {
   };
   if (known(w.desktopFileName)) return w.desktopFileName;
   if (known(w.resourceClass)) return w.resourceClass;
+  return "";
+}
+
+function focusedApp(window) {
+  const visited = new Set();
+  while (window && !visited.has(window)) {
+    visited.add(window);
+    const app = appOf(window);
+    if (app && PROTECTED.includes(app)) return app;
+    window = window.transientFor;
+  }
   return "";
 }
 
@@ -943,27 +879,22 @@ let activePid = "";
 function report(app, pid, event) {
   if (app) callDBus(SERVICE, PATH, IFACE, "WindowEvent", app, pid, event, function () {});
 }
-const initialWindow = workspace.activeWindow;
-if (initialWindow) {
-  const initialApp = appOf(initialWindow);
-  activeApp = initialApp;
-  activePid = initialApp ? "" + initialWindow.pid : "";
-  // A relock clock started before this load is cancelled for the window
-  // that has the focus now.
-  report(activeApp, activePid, "focused");
-}
-workspace.windowActivated.connect(function (w) {
-  const app = appOf(w);
-  if (app && PROTECTED.indexOf(app) >= 0 && !isAllowed(app)) {
-    hide(w);
-    return;
-  }
-  if (activeApp && activeApp !== app) {
-    report(activeApp, activePid, "unfocused");
-  }
+function syncFocus(w) {
+  const app = focusedApp(w);
+  if (app === activeApp) return;
+  report(activeApp, activePid, "unfocused");
   report(app, app ? "" + w.pid : "", "focused");
   activeApp = app;
   activePid = app ? "" + w.pid : "";
+}
+syncFocus(workspace.activeWindow);
+workspace.windowActivated.connect(function (w) {
+  const app = appOf(w);
+  if (app && PROTECTED.includes(app) && !isAllowed(app)) {
+    hide(w);
+    return;
+  }
+  if (w) syncFocus(w);
 });
 
 // Tell the agent this generation is running. It waits for this before
@@ -973,14 +904,12 @@ reconcile("");
 const timer = new QTimer();
 timer.interval = 250;
 timer.timeout.connect(function () {
-  callDBus(SERVICE, PATH, IFACE, "HideOnUnfocus", function (apps) {
-    if (apps) updatePrivacyMasks(JSON.parse(apps));
-  });
   callDBus(SERVICE, PATH, IFACE, "WindowState", function (payload) {
     if (!payload) return;
     const [owner, revision, protectedApps, allowedApps, restoreApps, foreground] = JSON.parse(payload);
     if (owner !== instance) return;
     if (revision <= generation) {
+      syncFocus(workspace.activeWindow);
       reportHiddenWindows();
       return;
     }
@@ -988,6 +917,7 @@ timer.timeout.connect(function () {
     PROTECTED = protectedApps;
     ALLOWED = allowedApps;
     RESTORE = restoreApps;
+    syncFocus(workspace.activeWindow);
     reconcile(foreground);
   });
 });
