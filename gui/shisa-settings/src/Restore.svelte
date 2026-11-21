@@ -22,6 +22,7 @@
   let opening = $state("");
   let error = $state("");
   let list;
+  const total = $derived(rows.reduce((sum, row) => sum + row.count, 0));
 
   function theme(dark) {
     if (dark !== null) document.documentElement.dataset.theme = dark ? "dark" : "light";
@@ -91,49 +92,91 @@
 <svelte:window onkeydown={keydown} />
 
 <main>
-  <header>
-    <h1>{t("restore.title")}</h1>
-    {#if rows.length}<span>{t("restore.windows", { count: rows.reduce((total, row) => total + row.count, 0) })}</span>{/if}
-  </header>
-  <div class="list" bind:this={list} aria-busy={loading || !!opening}>
+  <div class="scroll" bind:this={list} aria-busy={loading || !!opening}>
     {#if loading}
-      <p class="empty" role="status">{t("restore.loading")}</p>
-    {:else if !rows.length && !error}
-      <p class="empty">{t("restore.empty")}</p>
+      <div class="empty" role="status">{t("restore.loading")}</div>
+    {:else if !rows.length}
+      {#if !error}<div class="empty">{t("restore.empty")}</div>{/if}
     {:else}
-      {#each rows as row (row.id)}
-        <button type="button" disabled={!!opening} onclick={() => restore(row.id)}>
-          <span class="app-icon" aria-hidden="true">
-            {#if icons[row.icon]}
-              <img src={icons[row.icon]} alt="" />
-            {:else}
-              {row.name.slice(0, 1).toUpperCase()}
-            {/if}
-          </span>
-          <span class="name">{row.name}</span>
-          <span class="count">{opening === row.id ? t("restore.waiting") : t("restore.windows", { count: row.count })}</span>
-          <span class="arrow" aria-hidden="true">›</span>
-        </button>
-      {/each}
+      <section class="set">
+        <div class="label">{t("restore.windows", { count: total })}</div>
+        <div class="list">
+          {#each rows as row (row.id)}
+            <button
+              type="button"
+              class="prefrow click row"
+              disabled={!!opening}
+              onclick={() => restore(row.id)}
+            >
+              {#if icons[row.icon]}
+                <img class="app-ic" src={icons[row.icon]} alt="" />
+              {:else}
+                <span class="app-ic"></span>
+              {/if}
+              <span class="who">
+                <span class="name">{row.name}</span>
+                <span class="sub">{opening === row.id ? t("restore.waiting") : t("restore.windows", { count: row.count })}</span>
+              </span>
+              <svg class="chev" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+                <path d="m6 4 4 4-4 4" />
+              </svg>
+            </button>
+          {/each}
+        </div>
+      </section>
     {/if}
   </div>
-  {#if error}<p class="error" role="alert">{error}</p>{/if}
+  {#if error}
+    <div class="banner" role="alert">
+      <span>{error}</span>
+      <button class="text" onclick={() => (error = "")}>{t("common.close")}</button>
+    </div>
+  {/if}
 </main>
 
 <style>
-  main { display: flex; flex-direction: column; height: 100%; padding: 24px; background: var(--bg); color: var(--fg); font-family: var(--font); }
-  header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 18px; }
-  h1 { margin: 0; font-size: 21px; font-weight: 650; }
-  header span, .count { color: var(--ctl-fg); font-size: 12px; white-space: nowrap; }
-  .list { overflow: auto; min-height: 0; border-radius: 14px; }
-  button { display: flex; width: 100%; align-items: center; gap: 12px; padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--card); color: inherit; font: inherit; text-align: left; cursor: pointer; }
-  button + button { margin-top: 6px; }
-  button:hover, button:focus-visible { border-color: var(--accent); outline: none; }
-  button:disabled { cursor: wait; }
-  .app-icon { display: grid; place-items: center; flex: 0 0 34px; height: 34px; border-radius: 9px; background: var(--pill); color: var(--accent); font-weight: 650; }
-  img { width: 24px; height: 24px; object-fit: contain; }
-  .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; font-weight: 600; }
-  .arrow { color: var(--accent); font-size: 20px; line-height: 1; }
-  .empty { margin: 0; padding: 38px 12px; color: var(--ctl-fg); text-align: center; font-size: 14px; }
-  .error { margin: 12px 0 0; color: var(--red); font-size: 13px; }
+  main {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    padding: 10px 16px 16px;
+    background: var(--bg);
+    color: var(--fg);
+  }
+
+  .scroll {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+  }
+
+  .scroll > .empty {
+    text-align: center;
+  }
+
+  /* the row is the settings window's .prefrow, kept as a button */
+  .row {
+    width: 100%;
+  }
+
+  .row .who {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-width: 0;
+  }
+
+  .row:disabled {
+    cursor: wait;
+  }
+
+  .chev {
+    flex: none;
+    color: var(--muted);
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 1.5;
+  }
 </style>

@@ -8,7 +8,8 @@
   --line-2: #ececf0;
   --fg: #1c1c21;
   --fg-2: #4b4b53;
-  --muted: #85858d;
+  /* Secondary text still meets 4.5:1 on --pill, the darkest light ground. */
+  --muted: #6b6b73;
   --ctl-fg: #63636b;
   --accent: #4f46e5;
   --green: #189a58;
@@ -18,7 +19,10 @@
   --amber: #b45309;
   --amber-soft: #fbf0df;
   --seg-edge: 0 1px 2px rgba(0, 0, 0, 0.14), 0 0 0 0.5px rgba(0, 0, 0, 0.08);
-  --font: "Inter", "Noto Sans", "Noto Sans CJK SC", system-ui, sans-serif;
+  /* system-ui first: the system's UI face supplies both the Latin and the
+     Chinese glyphs. Naming Noto Sans first would swap the Latin for a
+     narrower face while the Chinese stayed on the CJK fallback. */
+  --font: system-ui, "Noto Sans CJK SC", sans-serif;
   --code:
     ui-monospace, "SF Mono", Menlo, Consolas, "Noto Sans Mono CJK SC", monospace;
   --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
@@ -37,7 +41,7 @@
   --line-2: #2c2c32;
   --fg: #ededf1;
   --fg-2: #b9b9c1;
-  --muted: #8b8b94;
+  --muted: #9c9ca6;
   --ctl-fg: #a1a1aa;
   --accent: #a5b4fc;
   --green: #6fd99b;
@@ -268,6 +272,13 @@ input:focus-visible {
   background: var(--pill);
 }
 
+/* the four filter words outgrow the sidebar in English, so the row wraps
+   instead of pushing past the narrow column */
+.segs.filters {
+  flex-wrap: wrap;
+  row-gap: 2px;
+}
+
 /* the chosen option carries the pill itself, sized to its word: a thumb
    sliding over content-sized options would sit on a label */
 .segs .opt {
@@ -346,10 +357,14 @@ input:focus-visible {
   font-weight: 500;
 }
 
-.sidebar .row img {
+.sidebar .row img,
+.sidebar .row svg {
   flex: none;
   width: 16px;
   height: 16px;
+}
+
+.sidebar .row img {
   object-fit: contain;
 }
 
@@ -569,10 +584,6 @@ input:focus-visible {
   margin: 2px 2px 6px;
 }
 
-.act-head .grow {
-  flex: 1;
-}
-
 /* the filter sits in the head, not at the sidebar's margin */
 .act-head .label {
   padding: 0;
@@ -580,6 +591,11 @@ input:focus-visible {
 
 .act-head .segs {
   margin: 0;
+}
+
+/* a row that is itself a button keeps the row's left alignment */
+button.prefrow {
+  text-align: left;
 }
 
 /* an audit row opens the app it names */

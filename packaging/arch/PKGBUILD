@@ -10,7 +10,6 @@ depends=('polkit' 'dbus' 'webkit2gtk-4.1' 'gtk3' 'hicolor-icon-theme')
 makedepends=('cargo' 'nodejs' 'npm')
 optdepends=(
     'noto-fonts-cjk: Chinese UI font'
-    'inter-font: Latin UI font'
 )
 install=shisa.install
 # The release tarball is built by make-source.sh from tag v$pkgver.

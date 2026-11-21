@@ -52,8 +52,7 @@ const zh = {
   "password.after": "，完成后重新打开这个窗口。",
 
   "general.grace.name": "默认宽限期",
-  "general.grace.sub":
-    "认证通过后这段时间内再打开不再询问。单个应用可以在自己的页面里改。",
+  "general.grace.sub": "认证通过后这段时间内再打开不再询问。",
   "general.clear.name": "锁屏时清除已通过的认证",
   "general.clear.sub":
     "开启时锁屏会收回已打开的受保护窗口，解锁后恢复要重新认证。关掉后锁屏不改变正在使用的窗口，只影响下一次启动。",
@@ -63,7 +62,6 @@ const zh = {
   "general.timeout.unit": "秒 · 5 到 85",
   "general.custom": "自定义",
   "general.language.name": "语言",
-  "general.language.sub": "界面语言。托盘和命令行也会跟着改变。",
 
   "diag.records": "诊断记录",
   "diag.view": "查看最近启动和拒绝原因",
@@ -99,17 +97,12 @@ const zh = {
   "app.unlockNow": "立即解锁",
   "app.failure": "最近一次启动失败",
   "app.protect.name": "启动前要求认证",
-  "app.protect.sub.on":
-    "打开这个应用时用应用锁密码验证一次。取消或超时就拒绝启动。",
-  "app.protect.sub.off":
-    "开启后打开这个应用要先验证应用锁密码，下面是它的宽限期、自启动和保护路径。",
+  "app.protect.sub.on": "取消或超时就拒绝启动。",
   "app.grace.name": "宽限期",
   "app.grace.sub.zero": "0 表示每次启动都要认证。",
-  "app.grace.sub":
-    "认证通过后这段时间内再打开不再询问。锁屏是否清除看通用页的开关。",
+  "app.grace.sub": "认证通过后这段时间内再打开不再询问。",
   "app.relock.name": "失焦后隐藏",
-  "app.relock.sub":
-    "失焦达到设定时长后收起窗口，恢复时需要认证。选择关闭时，失焦不会收起窗口。",
+  "app.relock.sub": "失焦达到设定时长后收起窗口，恢复时需要认证。",
   "app.advanced": "高级设置",
   "app.customRelock": "自定义失焦时长",
   "app.autostart.name": "自启动",
@@ -121,11 +114,10 @@ const zh = {
     "未生效，当前没有被监视。检查文件是否存在，或者它是不是 shell、解释器。",
   "app.path.keep":
     "至少保留一条保护路径。要放开这个应用，请关掉上面的保护开关。",
-  "app.path.none": "还没有路径，下面加一个。",
+  "app.path.none": "还没有路径。",
   "app.path.placeholder": "/usr/bin/程序 或 /opt/游戏/启动器",
   "app.coverage.name": "覆盖情况",
-  "app.coverage.sub":
-    "下面列出从 desktop 文件解析出的入口。实际保护路径可在高级设置中查看。",
+  "app.coverage.sub": "从 desktop 文件解析出的入口。",
   "app.windows.name": "已打开的窗口",
   "app.windows.sub":
     "锁屏后隐藏，再次打开需要认证。窗口层以用户身份运行，同账号的程序可以绕过。",
@@ -219,7 +211,7 @@ const en = {
 
   "general.grace.name": "Default grace period",
   "general.grace.sub":
-    "After a successful authentication, launches in this period do not ask again. Each app can change this on its own page.",
+    "After a successful authentication, launches in this period do not ask again.",
   "general.clear.name": "Clear authentication on screen lock",
   "general.clear.sub":
     "When on, locking the screen hides protected windows, and restoring them asks again after unlock. When off, the screen lock leaves windows in use alone and only affects the next launch.",
@@ -229,8 +221,6 @@ const en = {
   "general.timeout.unit": "seconds · 5 to 85",
   "general.custom": "Custom",
   "general.language.name": "Language",
-  "general.language.sub":
-    "Interface language. The tray and command line follow it too.",
 
   "diag.records": "Diagnostic records",
   "diag.view": "View recent launches and refusals",
@@ -270,17 +260,14 @@ const en = {
   "app.unlockNow": "Unlock now",
   "app.failure": "Last launch failed",
   "app.protect.name": "Require authentication before launch",
-  "app.protect.sub.on":
-    "Opening this app asks for the app-lock password once. Cancelling or timing out refuses the launch.",
-  "app.protect.sub.off":
-    "When on, opening this app first asks for the app-lock password. Its grace period, autostart and protected paths are below.",
+  "app.protect.sub.on": "Cancelling or timing out refuses the launch.",
   "app.grace.name": "Grace period",
   "app.grace.sub.zero": "0 means every launch asks for authentication.",
   "app.grace.sub":
-    "After a successful authentication, launches in this period do not ask again. Whether a screen lock clears it is set on the General page.",
+    "After a successful authentication, launches in this period do not ask again.",
   "app.relock.name": "Hide when focus is lost",
   "app.relock.sub":
-    "After this long without focus the window is hidden, and restoring it asks for authentication. Off leaves the window visible when focus is lost.",
+    "After this long without focus the window is hidden, and restoring it asks for authentication.",
   "app.advanced": "Advanced settings",
   "app.customRelock": "Custom focus-loss delay",
   "app.autostart.name": "Autostart",
@@ -292,11 +279,10 @@ const en = {
     "Inactive and not monitored. Check that the file exists and is not a shell or interpreter.",
   "app.path.keep":
     "Keep at least one protected path. To release this app, turn off protection above.",
-  "app.path.none": "No paths yet. Add one below.",
+  "app.path.none": "No paths yet.",
   "app.path.placeholder": "/usr/bin/program or /opt/game/launcher",
   "app.coverage.name": "Coverage",
-  "app.coverage.sub":
-    "Entries resolved from the desktop file are listed below. The effective protected paths are in Advanced settings.",
+  "app.coverage.sub": "Entries resolved from the desktop file.",
   "app.windows.name": "Open windows",
   "app.windows.sub":
     "Hidden after a lock, and asks for authentication when reopened. The window layer runs as the user, so programs under the same account can bypass it.",

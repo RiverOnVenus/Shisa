@@ -91,6 +91,15 @@ test("renders the installed apps and the daemon state", async () => {
   expect(calls).toContainEqual(["app_config", { appId: "org.kde.kate" }]);
 });
 
+test("the General row draws its own gear instead of asking the icon theme", async () => {
+  await render();
+  // `preferences-system` lives outside apps/ in several themes, and its
+  // colours are the theme's rather than the row's.
+  const general = document.querySelector(".side-foot button.row");
+  expect(general.querySelector("svg")).not.toBeNull();
+  expect(calls).not.toContainEqual(["icon", { name: "preferences-system" }]);
+});
+
 test("the search narrows the sidebar", async () => {
   await render();
   const search = document.querySelector('input[aria-label="Search apps"]');
@@ -118,6 +127,31 @@ test("selecting an app loads its settings", async () => {
     expect(calls).toContainEqual(["app_config", { appId: "org.kde.dolphin" }]),
   );
   expect(document.querySelector(".crumb b").textContent).toBe("Dolphin");
+});
+
+test("the settings search is case-insensitive and covers the language card", async () => {
+  await render();
+  document.querySelector(".side-foot button.row").click();
+  await vi.waitFor(() =>
+    expect(document.body.textContent).toContain("Default grace period"),
+  );
+  const cardWith = (text) =>
+    [...document.querySelectorAll(".set")].find((card) =>
+      card.textContent.includes(text),
+    );
+  const language = cardWith("Language");
+  const grace = cardWith("Default grace period");
+  const search = document.querySelector(".top-q");
+
+  search.value = "LANGUAGE";
+  search.dispatchEvent(new Event("input", { bubbles: true }));
+  await vi.waitFor(() => expect(language.hidden).toBe(false));
+  expect(grace.hidden).toBe(true);
+
+  search.value = "zzz";
+  search.dispatchEvent(new Event("input", { bubbles: true }));
+  await vi.waitFor(() => expect(language.hidden).toBe(true));
+  expect(document.querySelector(".set-none").hidden).toBe(false);
 });
 
 test("choosing a language saves it and retitles the window", async () => {

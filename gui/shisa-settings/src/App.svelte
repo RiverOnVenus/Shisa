@@ -73,13 +73,15 @@
   let busyLabel = $state("");
   let error = $state("");
   let icons = $state({});
-  let gear = $state(null);
   // Whether shisad answered the last list request. The sidebar foot says it.
   let daemon = $state(false);
   // The general page's search narrows the cards to those whose words it
   // holds. It reads the rendered cards, so it cannot drift from what the page
   // says.
   let settingsQuery = $state("");
+  // The language card renders before the daemon answers, so the search reads
+  // it separately from the cards below it.
+  let languageCard = $state(null);
   // The element the general page's cards live in, for the search filter.
   let settingsRoot = $state(null);
 
@@ -114,11 +116,18 @@
   );
 
   function filterSettings() {
-    if (!settingsRoot) return;
-    const needle = settingsQuery.trim();
+    // The language card renders before the daemon answers, so it is searched
+    // with the cards the daemon fills in. Comparisons ignore case so an
+    // English query matches a capitalised label.
+    const cards = [
+      languageCard,
+      ...(settingsRoot?.querySelectorAll(".set") ?? []),
+    ].filter(Boolean);
+    if (!cards.length) return;
+    const needle = settingsQuery.trim().toLowerCase();
     let shown = 0;
-    for (const card of settingsRoot.querySelectorAll(".set")) {
-      const hit = !needle || card.textContent.includes(needle);
+    for (const card of cards) {
+      const hit = !needle || card.textContent.toLowerCase().includes(needle);
       card.hidden = !hit;
       if (hit) shown++;
     }
@@ -193,14 +202,18 @@
   }
 
   async function loadIcons(rows) {
-    for (const row of rows) {
-      if (!row.icon || row.id in icons) continue;
-      try {
-        icons[row.id] = await invoke("icon", { name: row.icon });
-      } catch {
-        icons[row.id] = null;
-      }
-    }
+    // Each lookup runs on the shell's blocking pool. Asking for all of them
+    // at once keeps a long app list from painting its icons one by one.
+    await Promise.all(
+      rows.map(async (row) => {
+        if (!row.icon || row.id in icons) return;
+        try {
+          icons[row.id] = await invoke("icon", { name: row.icon });
+        } catch {
+          icons[row.id] = null;
+        }
+      }),
+    );
   }
 
   async function select(id) {
@@ -289,6 +302,9 @@
       global = { grace, clearOnLock, promptTimeout };
       graceGlobal = !isPreset(grace);
       globalReady = true;
+      // The cards render after this assignment. Wait for them so the first
+      // search, possibly typed while the daemon was answering, reaches them.
+      await tick();
       filterSettings();
     } catch (e) {
       if (page === "general") fail(e);
@@ -537,7 +553,6 @@
   onMount(() => {
     (async () => {
       try {
-        gear = await invoke("icon", { name: "preferences-system" });
         await refresh();
         await loadDiag();
         if (apps.length) await select(apps[0].id);
@@ -646,7 +661,7 @@
         bind:value={query}
       />
 
-      <div class="segs">
+      <div class="segs filters">
         {#each filters as key}
           <button class="opt" class:on={filter === key} onclick={() => (filter = key)}>{t(`filters.${key}`)}</button>
         {/each}
@@ -680,7 +695,13 @@
 
     <div class="side-foot">
       <button class="row" class:on={page === "general"} onclick={selectGeneral}>
-        {#if gear}<img src={gear} alt="" />{:else}<span class="icon-gap"></span>{/if}
+        <!-- Drawn here rather than looked up as `preferences-system`: the
+             theme lookup only scans apps/ and can miss, and the file's own
+             colours would not follow the row's. -->
+        <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M7.22 3.06L6.95 1.38A6.7 6.7 0 0 1 9.05 1.38L8.78 3.06A5 5 0 0 1 11.89 4.85L13.21 3.78A6.7 6.7 0 0 1 14.25 5.6L12.67 6.21A5 5 0 0 1 12.67 9.79L14.25 10.4A6.7 6.7 0 0 1 13.21 12.22L11.89 11.15A5 5 0 0 1 8.78 12.94L9.05 14.62A6.7 6.7 0 0 1 6.95 14.62L7.22 12.94A5 5 0 0 1 4.11 11.15L2.79 12.22A6.7 6.7 0 0 1 1.75 10.4L3.33 9.79A5 5 0 0 1 3.33 6.21L1.75 5.6A6.7 6.7 0 0 1 2.79 3.78L4.11 4.85A5 5 0 0 1 7.22 3.06Z" />
+          <circle cx="8" cy="8" r="2.2" />
+        </svg>
         <span class="who"><span class="name">{t("sidebar.general")}</span></span>
       </button>
       <div class="gw" class:off={!daemon}><i></i><span>{daemon ? t("daemon.online") : t("daemon.offline")}</span></div>
@@ -707,13 +728,18 @@
         />
       {/if}
       <div class="actions">
-        {#if page === "app" && current}
-          <button class="text" onclick={lockAll}>{t("top.lockAll")}</button>
+        {#if page === "activity" || (page === "app" && current)}
+          <button class="icon" aria-label={t("top.lockAll")} title={t("top.lockAll")} onclick={lockAll}>
+            <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <rect x="3.5" y="7" width="9" height="6.5" rx="1.2" />
+              <path d="M5.5 7V5.2a2.5 2.5 0 0 1 5 0V7" />
+            </svg>
+          </button>
         {/if}
-        <button class="icon" aria-label={t("top.minimize")} onclick={() => win.minimize()}>
+        <button class="icon" aria-label={t("top.minimize")} title={t("top.minimize")} onclick={() => win.minimize()}>
           <svg viewBox="0 0 16 16" width="14" height="14"><path d="M3.5 8h9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
         </button>
-        <button class="icon winclose" aria-label={t("top.close")} onclick={() => win.close()}>
+        <button class="icon winclose" aria-label={t("top.close")} title={t("top.close")} onclick={() => win.close()}>
           <svg viewBox="0 0 16 16" width="10" height="10"><path d="M4 4l8 8M12 4l-8 8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
         </button>
       </div>
@@ -739,12 +765,11 @@
       {#if page === "general"}
         <!-- The language is a local preference, so it stays usable while the
              daemon is down and the rest of this page cannot load. -->
-        <section class="set">
+        <section class="set" bind:this={languageCard}>
           <div class="list">
             <div class="prefrow">
               <div class="who">
                 <div class="name">{t("general.language.name")}</div>
-                <div class="sub">{t("general.language.sub")}</div>
               </div>
               <div class="segs two">
                 {#each languages as [tag, name]}
@@ -875,8 +900,6 @@
             <button class="opt" class:on={activityFilter === "all"} onclick={() => (activityFilter = "all")}>{t("activity.all")}</button>
             <button class="opt" class:on={activityFilter === "denied"} onclick={() => (activityFilter = "denied")}>{t("activity.denied")}</button>
           </div>
-          <span class="grow"></span>
-          <button class="text" onclick={lockAll}>{t("top.lockAll")}</button>
         </div>
         {#if activityNote}
           <div class="empty">{activityNote}</div>
@@ -892,18 +915,14 @@
           <section class="set">
           <div class="list">
             {#each activityRows as row (row.id)}
-              <div
-                class="prefrow click"
-                role="button"
-                tabindex="0"
-                title={apps.some((a) => a.id === row.app) ? t("activity.open") : ""}
+              {@const openable = apps.some((app) => app.id === row.app)}
+              <button
+                type="button"
+                class="prefrow"
+                class:click={openable}
+                disabled={!openable}
+                title={openable ? t("activity.open") : undefined}
                 onclick={() => openApp(row.app)}
-                onkeydown={(e) => {
-                  if (e.key === "Enter" || e.key === " ") {
-                    e.preventDefault();
-                    openApp(row.app);
-                  }
-                }}
               >
                 {#if icons[row.app]}
                   <img class="app-ic" src={icons[row.app]} alt="" />
@@ -915,7 +934,7 @@
                   <div class="sub">{detail(row, Date.now(), t)}</div>
                 </div>
                 <span class="outcome {outcomeClass(row.kind)}">{kindText(row.kind, t)}<span class="why">{reasonText(row.kind, t)}</span></span>
-              </div>
+              </button>
             {:else}
               <div class="prefrow">
                 <div class="who">
@@ -951,9 +970,13 @@
         </section>
 
         {#if failure && !activityNote}
-          <div class="prefrow"><div class="who"><div class="name">{t("app.failure")}</div>
-            <div class="sub">{ago(failure.at, Date.now(), t)} · {reasonText(failure.kind, t)}</div>
-          </div></div>
+          <section class="set">
+            <div class="list">
+              <div class="prefrow"><div class="who"><div class="name">{t("app.failure")}</div>
+                <div class="sub">{ago(failure.at, Date.now(), t)} · {reasonText(failure.kind, t)}</div>
+              </div></div>
+            </div>
+          </section>
         {/if}
         {#if config.ready}
           <section class="set">
@@ -961,7 +984,7 @@
               <div class="prefrow">
                 <div class="who">
                   <div class="name">{t("app.protect.name")}</div>
-                  <div class="sub">{config.protected ? t("app.protect.sub.on") : t("app.protect.sub.off")}</div>
+                  {#if config.protected}<div class="sub">{t("app.protect.sub.on")}</div>{/if}
                 </div>
                 <button
                   class="lib-switch"
