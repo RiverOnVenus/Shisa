@@ -15,7 +15,7 @@ install=shisa.install
 # The release tarball is built by make-source.sh from tag v$pkgver.
 source=("$pkgname-$pkgver.tar.gz::$url/releases/download/v$pkgver/$pkgname-$pkgver.tar.gz")
 # prepare-build.sh or release.sh fills this from the source archive.
-sha256sums=('25f5b5eafd26300a217ab780add52c4443cc1cc269904eee6257ee70dac55dc9')
+sha256sums=('b48e3621841c64b1a27f2240348a02a4b9f8f8b81b02c43cec78fa3cb26203aa')
 
 prepare() {
     cd "$pkgname-$pkgver"
