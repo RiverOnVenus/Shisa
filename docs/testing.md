@@ -10,6 +10,8 @@ cargo clippy --workspace --all-targets
 (cd gui/shisa-settings/src-tauri && cargo build --features custom-protocol)
 ```
 
+`shisa-agent`'s test `the_manager_supplies_wayland_display_when_the_agent_lacks_it` needs a live systemd user manager that exports `WAYLAND_DISPLAY`. It skips itself in containers and CI, which have no user manager, so verify that path in a desktop session with `env -u WAYLAND_DISPLAY -u DISPLAY cargo test -p shisa-agent manager`.
+
 ## Daemon regression tests
 
 After changing `shisad`, also run `tests/gate.sh`, `tests/auth.sh`, and `tests/settings.sh`. All three require sudo, so obtain approval before running them. Use a time limit for the test daemon, use `tests/fake-polkit`, and mark only temporary files or KWrite. Keep the user's open browser, terminal, and shell outside the test and keep real passwords out of scripts. Report which fanotify and polkit paths the tests exercised.

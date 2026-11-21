@@ -621,6 +621,11 @@ fn relock_loop(conn: &Connection, tracker: &Arc<Mutex<window::Tracker>>) -> ! {
 /// (`gtk::rt::init` fails), so the missing values are copied from the manager
 /// onto the child.
 fn display_env() -> Vec<(String, String)> {
+    select_display_vars(manager_environment(), |key| env::var_os(key).is_some())
+}
+
+/// The whole environment the session's systemd user manager exports.
+fn manager_environment() -> Vec<String> {
     let Ok(connection) = Connection::session() else {
         return Vec::new();
     };
@@ -632,10 +637,9 @@ fn display_env() -> Vec<(String, String)> {
     ) else {
         return Vec::new();
     };
-    let Ok(variables) = manager.get_property::<Vec<String>>("Environment") else {
-        return Vec::new();
-    };
-    select_display_vars(variables, |key| env::var_os(key).is_some())
+    manager
+        .get_property::<Vec<String>>("Environment")
+        .unwrap_or_default()
 }
 
 /// Keep the manager's display variables that `present` does not already
@@ -756,15 +760,21 @@ mod tests {
         );
     }
 
-    // Meaningful only when the test runs without a display, which is how the
-    // tray-launched settings used to crash. Run it with:
+    // Meaningful only in a desktop session: it checks that the user manager's
+    // exported environment reaches the settings process. Without a user
+    // manager (CI containers have none) there is nothing to observe, and with
+    // an exported WAYLAND_DISPLAY there is nothing to copy. Run it with:
     //   env -u WAYLAND_DISPLAY -u DISPLAY cargo test -p shisa-agent manager
     #[test]
     fn the_manager_supplies_wayland_display_when_the_agent_lacks_it() {
-        if env::var_os("WAYLAND_DISPLAY").is_some() {
+        let variables = manager_environment();
+        let manager_exports_it = variables
+            .iter()
+            .any(|entry| entry.starts_with("WAYLAND_DISPLAY="));
+        if env::var_os("WAYLAND_DISPLAY").is_some() || !manager_exports_it {
             return;
         }
-        let picked = display_env();
+        let picked = select_display_vars(variables, |key| env::var_os(key).is_some());
         assert!(
             picked.iter().any(|(key, _)| key == "WAYLAND_DISPLAY"),
             "the user manager did not report WAYLAND_DISPLAY: {picked:?}"
