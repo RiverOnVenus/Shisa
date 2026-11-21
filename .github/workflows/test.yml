@@ -32,6 +32,8 @@ jobs:
           cargo fmt --all -- --check
           cargo fmt --manifest-path gui/shisa-settings/src-tauri/Cargo.toml -- --check
           cargo fmt --manifest-path fuzz/Cargo.toml -- --check
+      - name: Lint
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Workspace tests
         run: cargo test --workspace --locked
 
