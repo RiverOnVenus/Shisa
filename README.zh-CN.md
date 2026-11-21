@@ -9,7 +9,7 @@ Shisa 是 Arch Linux 和 KDE Plasma 6（Wayland）上的桌面应用锁。临时
 在 [GitHub Releases](https://github.com/RiverOnVenus/Shisa/releases) 下载可用的 x86_64 Arch 包，或[在本地构建测试包](docs/packaging.md#build-a-local-test-package)。然后安装并完成首次设置：
 
 ```sh
-sudo pacman -U ./shisa-0.1.1-1-x86_64.pkg.tar.zst
+sudo pacman -U ./shisa-0.1.2-1-x86_64.pkg.tar.zst
 sudo passwd shisa-lock
 sudo systemctl enable --now shisad.service
 systemctl --user enable --now shisa-agent.service

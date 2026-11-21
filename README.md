@@ -9,7 +9,7 @@ Shisa is a desktop app lock for Arch Linux and KDE Plasma 6 on Wayland. When len
 Download the x86_64 Arch package from [GitHub Releases](https://github.com/RiverOnVenus/Shisa/releases) when available, or [build a local test package](docs/packaging.md#build-a-local-test-package). Install the package and complete the initial setup:
 
 ```sh
-sudo pacman -U ./shisa-0.1.1-1-x86_64.pkg.tar.zst
+sudo pacman -U ./shisa-0.1.2-1-x86_64.pkg.tar.zst
 sudo passwd shisa-lock
 sudo systemctl enable --now shisad.service
 systemctl --user enable --now shisa-agent.service
