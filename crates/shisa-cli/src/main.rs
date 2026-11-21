@@ -1,12 +1,5 @@
 //! shisa: command line client.
 //!
-//! usage: shisa unlock <app-id>
-//!        shisa status
-//!        shisa lock [<app-id>]
-//!        shisa resolve <app-id>
-//!        shisa protect <app-id>
-//!        shisa unprotect <app-id>
-//!
 //! `unlock` asks shisad for a ticket over the system bus. shisad asks polkit,
 //! which shows the desktop's authentication dialog or, through the
 //! `pkttyagent` this program starts, prompts in the terminal. `protect` and
@@ -268,8 +261,6 @@ fn unlock_command(args: Vec<std::ffi::OsString>) -> i32 {
     unlock_dbus(&app)
 }
 
-/// Ask shisad for a ticket over the system bus. The terminal agent makes
-/// polkit prompt here instead of on the desktop.
 fn unlock_dbus(app: &str) -> i32 {
     let _agent = PtyAgent::start();
     let manager = match manager() {

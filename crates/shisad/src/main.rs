@@ -648,7 +648,6 @@ fn main() {
                 result: Err(why.to_string()),
             });
         };
-        // What ran out of time is refused (docs/subsystems/authentication.md).
         for held in take(&mut pending, |p| p.deadline <= now) {
             activity.resolve(held.id, activity::TIMEOUT);
             held.deny();

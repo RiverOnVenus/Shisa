@@ -1,8 +1,8 @@
 //! Screen locking through logind (docs/subsystems/launch-gate.md).
 //!
 //! Reads `LockedHint` and the start time of the users' graphical sessions,
-//! the latter for the autostart window (5.5). The property is what the Plasma
-//! lock screen sets, so this needs no help from the session agent.
+//! the latter for the autostart window (docs/subsystems/launch-gate.md#autostart).
+//! The Plasma lock screen sets `LockedHint` directly.
 //!
 //! logind announces every change with a signal, and each signal triggers one
 //! look at the sessions. A slow timer does the same in case a signal is ever
@@ -70,11 +70,6 @@ fn poll(state: Shared, notify: Sender<Msg>) {
         }
     };
     let mut interval = if subscribed { FALLBACK } else { POLL };
-    // Sessions seen at the last look. A user counts as locked only when every
-    // active graphical session is locked, so one locked session does not clear
-    // the tickets of someone working in another one. The transition out of
-    // that state is what tells the agent to reapply the window layer, because
-    // KWin ignores window changes made while the screen is locked.
     let mut seen = Sessions::new();
     loop {
         if let Err(e) = sweep(&conn, &state, &notify, &mut seen) {
