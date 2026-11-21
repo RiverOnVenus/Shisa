@@ -235,6 +235,8 @@ input:focus-visible {
   width: 100%;
   height: 26px;
   padding: 0 9px;
+  appearance: none;
+  -webkit-appearance: none;
   border-radius: 0;
   border: 1px solid var(--line);
   background: var(--card);
@@ -243,8 +245,16 @@ input:focus-visible {
   outline: none;
 }
 
-.search:focus {
+.search::-webkit-search-decoration,
+.search::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+}
+
+.search:focus,
+.search:focus-visible {
   border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+  outline: none;
 }
 
 /* the filter: a segmented control, a white thumb on a pill track */
@@ -703,6 +713,51 @@ input:focus-visible {
 
 .prefrow + .prefrow {
   border-top: 1px solid var(--line-2);
+}
+
+.advanced {
+  border-top: 1px solid var(--line-2);
+}
+
+.adv-toggle {
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+}
+
+.adv-toggle::-webkit-details-marker {
+  display: none;
+}
+
+.adv-toggle:hover {
+  background: var(--pill);
+}
+
+.adv-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.adv-toggle .chev {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin-left: auto;
+  fill: none;
+  stroke: var(--muted);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.5;
+  transition: transform 0.12s var(--ease);
+}
+
+.advanced[open] .adv-toggle .chev {
+  transform: rotate(180deg);
+}
+
+.num:focus-visible,
+.add input:focus-visible {
+  outline: none;
 }
 
 .prefrow .who {

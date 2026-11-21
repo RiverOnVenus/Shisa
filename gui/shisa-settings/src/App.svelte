@@ -1013,7 +1013,13 @@
                     {#if relockApp}<span class="unit">{config.relock} 秒</span>{/if}
                   </div>
                 </div>
-                <details><summary class="prefrow">高级设置</summary>
+                <details class="advanced">
+                <summary class="prefrow adv-toggle">
+                  <span class="name">高级设置</span>
+                  <svg class="chev" viewBox="0 0 16 16" aria-hidden="true">
+                    <path d="m4 6 4 4 4-4" />
+                  </svg>
+                </summary>
                 <div class="prefrow"><label>自定义失焦时长
                   <input class="num" type="number" min="0" max="86400" value={config.relock}
                     onchange={(e) => setNumber(e.currentTarget, config.relock, setRelock)} /> 秒

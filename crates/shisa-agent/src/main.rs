@@ -33,42 +33,28 @@ mod window;
 enum Action {
     LockAll,
     VerifyLock,
-    Lock(String),
     Unlock(String),
     HiddenWindows((u64, u64), HashMap<String, u32>),
     OpenSettings,
     OpenRestore,
 }
 
-/// How long a missing desktop file is left alone before the names are looked
-/// up again.
-const NAME_RETRY: Duration = Duration::from_secs(300);
-
-/// Display names for the protected apps, filled lazily from the desktop
-/// files. `tried` remembers when an app's name was last looked for, so a
-/// desktop file that appears later is picked up on a later refresh.
-#[derive(Default)]
-struct Names {
-    map: HashMap<String, String>,
-    tried: HashMap<String, Instant>,
-}
-
-/// Whether a name lookup is due. A found name is in the map and never comes
-/// here again. A miss is retried after [`NAME_RETRY`].
-fn name_is_due(tried: Option<Instant>, now: Instant) -> bool {
-    tried.is_none_or(|at| now.saturating_duration_since(at) >= NAME_RETRY)
-}
-
 const OFFLINE_ICON: &str = "shisa-tray-offline-symbolic";
+/// How long the desktop keeps a lock result notification on screen.
+const NOTIFY_TIMEOUT_MS: i32 = 5_000;
 
 struct TrayState {
-    /// Protected apps and whether their windows are allowed to show.
-    apps: Vec<(String, bool)>,
+    protected_count: usize,
     hidden_windows: ((u64, u64), HashMap<String, u32>),
-    names: Arc<Mutex<Names>>,
     last_lock: Option<String>,
     offline: bool,
     actions: Sender<Action>,
+}
+
+impl TrayState {
+    fn hidden_count(&self) -> u64 {
+        self.hidden_windows.1.values().map(|&count| u64::from(count)).sum()
+    }
 }
 
 impl Tray for TrayState {
@@ -105,17 +91,12 @@ impl Tray for TrayState {
         let mut description = if self.offline {
             "shisad 不在线，保护暂停".to_string()
         } else {
-            format!("{} 个应用受保护", self.apps.len())
+            format!("{} 个应用受保护", self.protected_count)
         };
         if let Some(last_lock) = &self.last_lock {
             description.push_str(&format!("\n上次上锁：{last_lock}"));
         }
-        let hidden: u64 = self
-            .hidden_windows
-            .1
-            .values()
-            .map(|count| u64::from(*count))
-            .sum();
+        let hidden = self.hidden_count();
         if hidden > 0 {
             description.push_str(&format!("\nShisa 已隐藏 {hidden} 个窗口"));
         }
@@ -139,76 +120,20 @@ impl Tray for TrayState {
                 let _ = actions.send(action.clone());
             }) as Box<dyn Fn(&mut TrayState)>
         };
-        let mut items: Vec<MenuItem<Self>> = Vec::new();
-        if self.offline {
-            items.push(
-                StandardItem {
-                    label: "shisad 不在线".into(),
-                    enabled: false,
-                    ..Default::default()
-                }
-                .into(),
-            );
-        } else {
-            items.push(
-                StandardItem {
-                    label: "全部上锁".into(),
-                    activate: send(Action::LockAll),
-                    ..Default::default()
-                }
-                .into(),
-            );
-            if let Some(last_lock) = &self.last_lock {
-                items.push(
-                    StandardItem {
-                        label: format!("上次上锁：{last_lock}"),
-                        enabled: false,
-                        ..Default::default()
-                    }
-                    .into(),
-                );
-            }
-            if !self.apps.is_empty() {
-                let names = self.names.lock().unwrap();
-                items.push(Separator);
-                // Plasma opens DBusMenu submenus as their own popup, offset
-                // from the hovered row and with a larger font, and both
-                // directions listed the same apps while everything was
-                // locked. The apps live in the top-level menu instead.
-                for (id, unlocked) in &self.apps {
-                    let name = names.map.get(id).cloned().unwrap_or_else(|| id.clone());
-                    let (verb, action) = if *unlocked {
-                        ("上锁", Action::Lock(id.clone()))
-                    } else {
-                        ("恢复", Action::Unlock(id.clone()))
-                    };
-                    let label = match self.hidden_windows.1.get(id) {
-                        Some(count) if *count > 0 => {
-                            format!("{verb} {name}（隐藏 {count} 个窗口）")
-                        }
-                        _ => format!("{verb} {name}"),
-                    };
-                    items.push(
-                        StandardItem {
-                            label,
-                            activate: send(action),
-                            ..Default::default()
-                        }
-                        .into(),
-                    );
-                }
-                items.push(Separator);
-            }
-            items.push(
-                StandardItem {
-                    label: "打开设置".into(),
-                    activate: send(Action::OpenSettings),
-                    ..Default::default()
-                }
-                .into(),
-            );
-        }
-        items
+        vec![
+            StandardItem {
+                label: "全部上锁".into(),
+                enabled: !self.offline,
+                activate: send(Action::LockAll),
+                ..Default::default()
+            }.into(),
+            Separator,
+            StandardItem {
+                label: "打开设置".into(),
+                activate: send(Action::OpenSettings),
+                ..Default::default()
+            }.into(),
+        ]
     }
 }
 
@@ -227,11 +152,9 @@ fn main() -> std::process::ExitCode {
     // the unix socket service, the refresh and the tray's unlock.
     let gate: Arc<Mutex<Option<window::Gate>>> = Arc::default();
     let tracker: Arc<Mutex<window::Tracker>> = Arc::default();
-    let names = Arc::new(Mutex::new(Names::default()));
     let service = TrayService::new(TrayState {
-        apps: Vec::new(),
+        protected_count: 0,
         hidden_windows: Default::default(),
-        names: names.clone(),
         last_lock: None,
         offline: true,
         actions: actions_tx.clone(),
@@ -285,15 +208,14 @@ fn main() -> std::process::ExitCode {
     {
         let conn = conn.clone();
         let handle = handle.clone();
-        let names = names.clone();
         let gate = gate.clone();
         let tracker = tracker.clone();
         thread::Builder::new()
             .name("signals".into())
-            .spawn(move || signal_loop(&conn, &handle, &names, &gate, &tracker))
+            .spawn(move || signal_loop(&conn, &handle, &gate, &tracker))
             .expect("signals thread");
     }
-    supervise(&conn, &handle, &names, &gate, &tracker);
+    supervise(&conn, &handle, &gate, &tracker);
 }
 
 /// Claim the session name and serve the focus reporter. None when the
@@ -335,7 +257,6 @@ fn owner_changes(conn: &Connection) -> zbus::Result<MessageIterator> {
 fn supervise(
     conn: &Connection,
     handle: &Handle<TrayState>,
-    names: &Arc<Mutex<Names>>,
     gate: &Arc<Mutex<Option<window::Gate>>>,
     tracker: &Arc<Mutex<window::Tracker>>,
 ) -> ! {
@@ -372,7 +293,7 @@ fn supervise(
                         handle.update(|tray| tray.offline = false);
                     }
                     if let Ok(manager) = ManagerProxyBlocking::new(conn) {
-                        refresh(handle, &manager, names, gate, tracker);
+                        refresh(handle, &manager, gate, tracker);
                     }
                 }
                 Err(e) => warn!("register: {e}"),
@@ -411,7 +332,6 @@ fn name_has_owner(conn: &Connection) -> bool {
 fn signal_loop(
     conn: &Connection,
     handle: &Handle<TrayState>,
-    names: &Arc<Mutex<Names>>,
     gate: &Arc<Mutex<Option<window::Gate>>>,
     tracker: &Arc<Mutex<window::Tracker>>,
 ) {
@@ -450,7 +370,7 @@ fn signal_loop(
         if member == "StateChanged"
             && let Ok(manager) = ManagerProxyBlocking::new(conn)
         {
-            refresh(handle, &manager, names, gate, tracker);
+            refresh(handle, &manager, gate, tracker);
         }
         if member == "SessionUnlocked" {
             // KWin drops the window changes the script makes while the lock
@@ -460,14 +380,13 @@ fn signal_loop(
             info!("screen unlocked, reapplying the window gate");
             let gate = gate.clone();
             let handle = handle.clone();
-            let names = names.clone();
             let tracker = tracker.clone();
             let conn = conn.clone();
             thread::spawn(move || {
                 for delay in [Duration::from_millis(300), Duration::from_millis(1200)] {
                     thread::sleep(delay);
                     if let Ok(manager) = ManagerProxyBlocking::new(&conn) {
-                        refresh(&handle, &manager, &names, &gate, &tracker);
+                    refresh(&handle, &manager, &gate, &tracker);
                     }
                     if let Some(gate) = gate.lock().unwrap().as_mut() {
                         gate.force();
@@ -482,7 +401,6 @@ fn signal_loop(
 fn refresh(
     handle: &Handle<TrayState>,
     manager: &ManagerProxyBlocking<'_>,
-    names: &Arc<Mutex<Names>>,
     gate: &Arc<Mutex<Option<window::Gate>>>,
     tracker: &Arc<Mutex<window::Tracker>>,
 ) {
@@ -505,7 +423,7 @@ fn refresh(
     // A failed call is not "nothing is allowed". Keep the window layer as it
     // is rather than hiding every protected window on a transient error.
     let mut gate = gate.lock().unwrap();
-    let rows: Vec<(String, bool)> = match manager.window_states() {
+    match manager.window_states() {
         Ok(allowed) => {
             // A window that is not allowed any more is hidden. A relock clock
             // started before the lock must not survive it, or it would hide
@@ -514,10 +432,6 @@ fn refresh(
             if let Some(gate) = gate.as_mut() {
                 gate.sync(&protected, &allowed, false);
             }
-            protected
-                .iter()
-                .map(|id| (id.clone(), allowed.contains(id)))
-                .collect()
         }
         Err(e) => {
             warn!("window states: {e}");
@@ -525,35 +439,7 @@ fn refresh(
         }
     };
     drop(gate);
-    // A protected app can appear after startup, from the settings window or
-    // the CLI. Look its name up before the menu shows the bare id. The scan
-    // runs outside the map lock because it reads the desktop files. A name
-    // that is still missing is looked for again after NAME_RETRY, so an app
-    // installed while the agent runs eventually gets its name.
-    let now = Instant::now();
-    let missing: Vec<String> = {
-        let names = names.lock().unwrap();
-        rows.iter()
-            .filter(|(id, _)| {
-                !names.map.contains_key(id)
-                    && name_is_due(names.tried.get(id).copied(), now)
-            })
-            .map(|(id, _)| id.clone())
-            .collect()
-    };
-    if !missing.is_empty() {
-        let env = shisa_core::desktop::Env::current();
-        let mut names = names.lock().unwrap();
-        let now = Instant::now();
-        for app in shisa_core::desktop::installed(&env) {
-            names.tried.insert(app.id.clone(), now);
-            names.map.insert(app.id, app.name);
-        }
-        for id in missing {
-            names.tried.insert(id, now);
-        }
-    }
-    handle.update(|tray| tray.apps = rows);
+    handle.update(|tray| tray.protected_count = protected.len());
 }
 
 fn action_loop(
@@ -568,11 +454,6 @@ fn action_loop(
                 Err(e) => notify_lock(handle, &format!("全部上锁失败：{e}")),
             },
             Action::VerifyLock => verify_lock(gate, handle),
-            Action::Lock(app) => {
-                if let Err(e) = lock(&app) {
-                    warn!("lock {app}: {e}");
-                }
-            }
             Action::Unlock(app) => unlock(&app, gate),
             Action::HiddenWindows(version, counts) => handle.update(|tray| {
                 if version > tray.hidden_windows.0 {
@@ -652,7 +533,7 @@ fn notify(message: &str) {
                 message,
                 Vec::<String>::new(),
                 hints,
-                10_000i32,
+                NOTIFY_TIMEOUT_MS,
             ),
         )
     })();
@@ -823,46 +704,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tray_app_label_shows_current_state_and_click_requests_the_opposite() {
+    fn tray_menu_shows_three_actions_and_counts_hidden_windows() {
         let (actions, requests) = mpsc::channel();
         let mut tray = TrayState {
             hidden_windows: ((1, 1), HashMap::from([("org.kde.kate".into(), 2)])),
-            apps: vec![
-                ("org.kde.kwrite".into(), true),
-                ("org.kde.kate".into(), false),
-            ],
-            names: Arc::new(Mutex::new(Names {
-                map: HashMap::from([
-                    ("org.kde.kwrite".into(), "KWrite".into()),
-                    ("org.kde.kate".into(), "Kate".into()),
-                ]),
-                ..Default::default()
-            })),
-            last_lock: None,
+            protected_count: 2,
+            last_lock: Some("已收起 2 个窗口".into()),
             offline: false,
             actions,
         };
         let menu = tray.menu();
         let [
-            _,
-            _,
-            MenuItem::Standard(kwrite),
-            MenuItem::Standard(kate),
-            _,
-            _,
+            MenuItem::Standard(lock_all),
+            MenuItem::Separator,
+            MenuItem::Standard(settings),
         ] = menu.as_slice()
         else {
-            panic!("expected two top-level application rows");
+            panic!("expected lock and settings with a separator");
         };
 
-        assert_eq!(kwrite.label, "上锁 KWrite");
-        (kwrite.activate)(&mut tray);
-        assert!(matches!(requests.try_recv(), Ok(Action::Lock(id)) if id == "org.kde.kwrite"));
-
-        assert_eq!(kate.label, "恢复 Kate（隐藏 2 个窗口）");
         assert!(tray.tool_tip().description.contains("已隐藏 2 个窗口"));
-        (kate.activate)(&mut tray);
-        assert!(matches!(requests.try_recv(), Ok(Action::Unlock(id)) if id == "org.kde.kate"));
+        (lock_all.activate)(&mut tray);
+        assert!(matches!(requests.try_recv(), Ok(Action::LockAll)));
+        (settings.activate)(&mut tray);
+        assert!(matches!(requests.try_recv(), Ok(Action::OpenSettings)));
     }
 
     #[test]
@@ -871,14 +736,6 @@ mod tests {
         assert!(lock_summary(Some((2, 2))).contains("已收起 2"));
         assert_eq!(lock_summary(Some((2, 1))), lock_summary(None));
         assert!(lock_summary(None).contains("未确认"));
-    }
-
-    #[test]
-    fn a_missing_desktop_file_is_tried_again_after_a_while() {
-        let now = Instant::now();
-        assert!(name_is_due(None, now));
-        assert!(!name_is_due(Some(now), now + Duration::from_secs(299)));
-        assert!(name_is_due(Some(now), now + Duration::from_secs(300)));
     }
 
     #[test]
