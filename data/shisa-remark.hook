@@ -7,5 +7,5 @@ Target = opt/*
 [Action]
 Description = Shisa: re-reading protected paths
 When = PostTransaction
-# try- 在服务停止时直接成功返回，不会让每次系统升级都报 hook 失败。
+# try- returns success immediately when the service is stopped, so every system upgrade does not report a hook failure.
 Exec = /usr/bin/systemctl try-reload-or-restart shisad.service
