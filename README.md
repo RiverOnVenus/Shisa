@@ -2,11 +2,13 @@
 
 English · [简体中文](README.zh-CN.md)
 
-Shisa is a desktop app lock for Arch Linux and KDE Plasma 6 on Wayland. When lending someone your unlocked desktop, you can hide private windows and require a separate password to restore them or launch apps through protected entry points.
+Shisa is a desktop app lock for Arch Linux and KDE Plasma 6 on Wayland. It keeps private apps from being opened casually when someone else uses your desktop. Its main use is briefly lending your unlocked desktop: hide private windows, then require a separate password to restore them or launch apps through protected entry points.
+
+Shisa is not a screen lock and not a user isolation tool.
 
 ## Installation
 
-Download the x86_64 Arch package from [GitHub Releases](https://github.com/RiverOnVenus/Shisa/releases) when available, or [build a local test package](docs/packaging.md#build-a-local-test-package). Install the package and complete the initial setup:
+Download the x86_64 Arch package from [GitHub Releases](https://github.com/RiverOnVenus/Shisa/releases), or [build a local test package](docs/packaging.md#build-a-local-test-package). Install the package and complete the initial setup:
 
 ```sh
 sudo pacman -U ./shisa-0.1.2-1-x86_64.pkg.tar.zst
@@ -25,11 +27,9 @@ Replace the example package filename with the file you downloaded or built. The 
 
 You can bind `shisa lock` to a KDE keyboard shortcut or enable **Hide when focus is lost** per app.
 
-The interface follows your desktop locale. To use the other language, open **General** and choose **简体中文** or **English** under **Language**. The tray, notifications and `shisa` commands follow the same choice.
-
 ## Protection scope
 
-Shisa guards against casually opening private apps. Launch authentication applies to active protected paths. Apps running under the same account can still read application data or interfere with window hiding. Use separate system accounts when you need to isolate app data and files.
+Shisa guards against casually opening private apps. Launch authentication applies to active protected paths. Apps running under the same account can still read application data or interfere with window hiding. Hiding covers windows only, so notifications from hidden apps still appear and the notification history can still be opened. Enable Do Not Disturb before lending the desktop.
 
 ## Development
 
