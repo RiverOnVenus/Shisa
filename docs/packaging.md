@@ -20,6 +20,8 @@ The [Arch package workflow](../.github/workflows/arch-package.yml) builds the co
 
 Use **Actions → Build Arch package → Run workflow** to build an Actions artifact from a selected branch or tag. A manual run builds a test package and does not upload Release assets. The workflow assumes release assets can be added after publication.
 
+On 2026-11-21, the v0.1.1 release build failed twice in the container: one test required a systemd user manager to export `WAYLAND_DISPLAY`, and another resolved `/usr/bin/flatpak` from the host. Both tests no longer depend on the host, and the rebuilt release attached `shisa-0.1.1-1-x86_64.pkg.tar.zst` and `SHA256SUMS`.
+
 For manual AUR preparation, `packaging/arch/release.sh` still creates the tagged source archive, updates the hash, and writes `.SRCINFO`. That source archive can be uploaded separately when needed.
 
 ## Installation and upgrade verification
