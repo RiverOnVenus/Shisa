@@ -22,6 +22,8 @@ Use **Actions → Build Arch package → Run workflow** to build an Actions arti
 
 On 2026-11-21, the v0.1.1 release build failed twice in the container: one test required a systemd user manager to export `WAYLAND_DISPLAY`, and another resolved `/usr/bin/flatpak` from the host. Both tests no longer depend on the host, and the rebuilt release attached `shisa-0.1.1-1-x86_64.pkg.tar.zst` and `SHA256SUMS`.
 
+On 2026-11-21, v0.1.2 built and passed `check()` in the release container. The release attached `shisa-0.1.2-1-x86_64.pkg.tar.zst`, `SHA256SUMS` and `shisa-0.1.2.tar.gz`. The downloaded package and source archive matched their checksums, and the package lists the four binaries, both systemd units and the polkit action and rule.
+
 For manual AUR preparation, `packaging/arch/release.sh` still creates the tagged source archive, updates the hash, and writes `.SRCINFO`. That source archive can be uploaded separately when needed.
 
 ## Installation and upgrade verification
