@@ -669,7 +669,7 @@ dependencies = [
 
 [[package]]
 name = "shisa-agent"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "ksni",
  "shisa-core",
@@ -680,7 +680,7 @@ dependencies = [
 
 [[package]]
 name = "shisa-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "libc",
  "shisa-core",
@@ -689,7 +689,7 @@ dependencies = [
 
 [[package]]
 name = "shisa-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "libc",
  "serde",
@@ -699,7 +699,7 @@ dependencies = [
 
 [[package]]
 name = "shisad"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "futures-channel",
  "libc",

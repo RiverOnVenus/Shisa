@@ -1,7 +1,7 @@
 # Maintainer: RiverOnVenus <aur@zhui.dev>
 pkgname=shisa
-pkgver=0.1.0
-pkgrel=5
+pkgver=0.1.1
+pkgrel=1
 pkgdesc="Application lock for Linux desktops, enforced at exec time through fanotify"
 arch=('x86_64')
 url="https://github.com/RiverOnVenus/Shisa"
@@ -15,7 +15,8 @@ optdepends=(
 install=shisa.install
 # The release tarball is built by make-source.sh from tag v$pkgver.
 source=("$pkgname-$pkgver.tar.gz::$url/releases/download/v$pkgver/$pkgname-$pkgver.tar.gz")
-sha256sums=('75f9cd2752e423bbf6f907dfae19c6118ef0195bd630bec7bb4fbebe76369002')
+# prepare-build.sh or release.sh fills this from the source archive.
+sha256sums=()
 
 prepare() {
     cd "$pkgname-$pkgver"
