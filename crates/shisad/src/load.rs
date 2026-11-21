@@ -281,7 +281,19 @@ fn load_with(
             return old.clone();
         }
     };
-    let mut files: Vec<PathBuf> = entries.filter_map(|e| Some(e.ok()?.path())).collect();
+    let mut files: Vec<PathBuf> = Vec::new();
+    for entry in entries {
+        match entry {
+            Ok(entry) => files.push(entry.path()),
+            Err(e) => {
+                // Without this entry, a user's file may be skipped and the
+                // protection it lists would go away. Treat it like an
+                // unreadable directory and wait for the next reload.
+                error!("config directory {}: {e}", dir.display());
+                return old.clone();
+            }
+        }
+    }
     files.sort();
     for path in files {
         if path.extension().and_then(|e| e.to_str()) != Some("toml") {
@@ -291,7 +303,17 @@ fn load_with(
             continue;
         };
         let Some(uid) = uid_of(name) else {
-            warn!("{}: no such user, ignored", path.display());
+            // The account may be gone, or the lookup may have failed (NSS
+            // down, a transient error). Without an answer the user is not
+            // known to have no configuration, so keep what the previous
+            // policy had for this name. Protection only grows here.
+            match old.users.iter().find(|(_, user)| user.name == name) {
+                Some((uid, previous)) => {
+                    warn!("{name}: cannot resolve the account, keeping the previous policy");
+                    policy.users.insert(*uid, previous.clone());
+                }
+                None => warn!("{}: no such user, ignored", path.display()),
+            }
             continue;
         };
         let parsed = read_config_with(&path, owner)
@@ -841,18 +863,13 @@ mod tests {
         fs::write(&bin, "x").unwrap();
         write_config(&dir, &name, &bin);
         let marker = FakeMarker::new(false);
-        let first = load_with(
-            &marker,
-            &dir,
-            &Policy::default(),
-            &mut Marks::new(),
-            permissive,
-        );
+        let mut marks = Marks::new();
+        let first = load_with(&marker, &dir, &Policy::default(), &mut marks, permissive);
         let before = &first.users[&uid];
         assert_eq!(before.apps[0].files, vec![FileId { dev: 1, ino: 10 }]);
 
         fs::write(dir.join(format!("{name}.toml")), "this is not toml").unwrap();
-        let second = load_with(&marker, &dir, &first, &mut Marks::new(), permissive);
+        let second = load_with(&marker, &dir, &first, &mut marks, permissive);
         assert!(
             second.users.contains_key(&uid),
             "a broken config dropped the previous policy"
@@ -861,6 +878,15 @@ mod tests {
         assert_eq!(after.apps[0].id, "app");
         assert_eq!(after.apps[0].files, before.apps[0].files);
         assert_eq!(after.apps[0].effective, before.apps[0].effective);
+        // The old inode stays marked, which is what keeps the app protected
+        // until the config is fixed.
+        let keep: HashSet<FileId> = second
+            .users
+            .values()
+            .flat_map(|user| user.apps.iter().flat_map(|app| app.files.iter().copied()))
+            .collect();
+        drop_stale_marks(&marker, &mut marks, &keep);
+        assert!(marks.contains_key(&FileId { dev: 1, ino: 10 }));
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -928,6 +954,11 @@ mod tests {
 
     #[test]
     fn a_directory_not_owned_by_root_keeps_the_previous_policy() {
+        // As root every temp directory passes the check, so the test would be
+        // vacuous.
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
         let (dir, name, uid) = config_dir("owner");
         let bin = dir.join("bin");
         fs::write(&bin, "x").unwrap();
@@ -946,7 +977,63 @@ mod tests {
             second.users.contains_key(&uid),
             "a config directory owned by the user dropped the previous policy"
         );
-        assert_eq!(second.users[&uid].apps[0].id, "app");
+        assert_eq!(
+            second.users[&uid].apps[0].files,
+            first.users[&uid].apps[0].files
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_config_file_not_owned_by_root_is_refused() {
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let (dir, name, _) = config_dir("file-owner");
+        let path = dir.join(format!("{name}.toml"));
+        fs::write(&path, "").unwrap();
+        let err = read_config_with(&path, check_owner).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_name_that_cannot_be_resolved_keeps_the_previous_policy() {
+        let (dir, _, _) = config_dir("unknown-user");
+        let name = "shisa-test-missing-user";
+        // The file exists but no account has this name, which is the same
+        // answer a failed lookup gives.
+        fs::write(dir.join(format!("{name}.toml")), "").unwrap();
+        let previous = UserPolicy {
+            name: name.into(),
+            prompt_timeout: Duration::from_secs(60),
+            global_grace: Duration::from_secs(300),
+            clear_on_lock: true,
+            apps: vec![AppPolicy {
+                id: "app".into(),
+                grace: Duration::from_secs(300),
+                autostart: false,
+                relock: Duration::ZERO,
+                paths: vec!["/usr/bin/app".into()],
+                effective: vec!["/usr/bin/app".into()],
+                files: vec![FileId { dev: 1, ino: 10 }],
+            }],
+        };
+        let uid = 4242;
+        let old = Policy {
+            users: HashMap::from([(uid, previous)]),
+        };
+        let marker = FakeMarker::new(false);
+        let policy = load_with(&marker, &dir, &old, &mut Marks::new(), permissive);
+        assert!(
+            policy.users.contains_key(&uid),
+            "an unresolvable account dropped the previous policy"
+        );
+        assert_eq!(policy.users[&uid].apps[0].id, "app");
+        assert_eq!(
+            policy.users[&uid].apps[0].files,
+            vec![FileId { dev: 1, ino: 10 }]
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
