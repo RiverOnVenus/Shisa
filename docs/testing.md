@@ -19,7 +19,7 @@ cargo clippy --workspace --all-targets
 
 The settings crate is outside the workspace, so `cargo test --workspace` does not reach it. Its frontend rules are plain JavaScript tested with Node's built-in runner, its component tests mount the real window under jsdom with vitest, and the Tauri shell has its own tests. `npm test` runs both frontend suites. The Arch package's `check()` runs every test suite above.
 
-CI runs the workspace, settings window and KWin script suites on every push and pull request (`.github/workflows/test.yml`). The Tauri suite needs the WebKitGTK build stack, so it stays in the Arch package check rather than the push workflow.
+CI runs the formatting check, the workspace, settings window and KWin script suites on every push and pull request (`.github/workflows/test.yml`). The Tauri suite needs the WebKitGTK build stack, so it stays in the Arch package check rather than the push workflow.
 
 The owner-check tests in `crates/shisad/tests/config_owner.rs` cannot create root-owned files as the normal user, so each re-executes itself under `unshare --user --map-root-user`. They print a skip when user namespaces are unavailable instead of passing a different check.
 

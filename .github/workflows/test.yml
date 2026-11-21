@@ -22,11 +22,16 @@ jobs:
         with:
           persist-credentials: false
       - name: Install Rust stable
-        run: rustup toolchain install stable --profile minimal --no-self-update
+        run: rustup toolchain install stable --profile minimal --component rustfmt --no-self-update
       - name: Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libdbus-1-dev pkg-config
+      - name: Check formatting
+        run: |
+          cargo fmt --all -- --check
+          cargo fmt --manifest-path gui/shisa-settings/src-tauri/Cargo.toml -- --check
+          cargo fmt --manifest-path fuzz/Cargo.toml -- --check
       - name: Workspace tests
         run: cargo test --workspace --locked
 
