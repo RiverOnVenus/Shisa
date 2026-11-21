@@ -1203,13 +1203,15 @@ mod tests {
         let base = root.join("app/org.example.App/current/active");
         fs::create_dir_all(base.join("files/bin")).unwrap();
         fs::write(base.join("metadata"), "[Application]\nname=org.example.App\ncommand=example\n").unwrap();
+        // Name `flatpak` through the fixture PATH: an absolute /usr/bin path
+        // would make the test depend on the host's Flatpak installation.
         binary(&fx, "flatpak");
         fs::rename(fx.dir.join("flatpak"), fx.env.path[0].join("flatpak")).unwrap();
         fs::write(base.join("files/bin/example"), "#!/bin/sh\n").unwrap();
         app(
             &fx,
             "org.example.App",
-            "[Desktop Entry]\nName=Example\nExec=/usr/bin/flatpak run --branch=stable --arch=x86_64 org.example.App\n",
+            "[Desktop Entry]\nName=Example\nExec=flatpak run --branch=stable --arch=x86_64 org.example.App\n",
         );
         let mut env = fx.env.clone();
         env.flatpak_roots = vec![root];
@@ -1220,7 +1222,7 @@ mod tests {
         app(
             &fx,
             "org.example.App",
-            "[Desktop Entry]\nName=Example\nExec=/usr/bin/flatpak --user run --branch=stable org.example.App\n",
+            "[Desktop Entry]\nName=Example\nExec=flatpak --user run --branch=stable org.example.App\n",
         );
         assert_eq!(
             resolve("org.example.App", &env).unwrap().paths,
