@@ -5,8 +5,11 @@ toolchain and `cargo-fuzz`:
 
 ```sh
 rustup toolchain install nightly --profile minimal
-cargo install cargo-fuzz
+cargo install cargo-fuzz --version 0.13.2 --locked
 ```
+
+CI uses the same cargo-fuzz version. A newer libFuzzer may report a different
+crash, so reproduce an uploaded artifact with this one.
 
 Run one target for a bounded time:
 
