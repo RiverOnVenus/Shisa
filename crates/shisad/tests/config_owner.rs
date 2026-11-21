@@ -8,12 +8,13 @@
 //! the same pair the daemon sees. When user namespaces are unavailable the
 //! test reports a skip instead of silently passing as a different check.
 
+use shisa_core::config::UserConfig;
 use shisad::load::{self, Marker, Marks};
 use shisad::policy::{AppPolicy, Policy, UserPolicy};
 use shisad::procfs::FileId;
 use std::collections::HashMap;
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -169,5 +170,58 @@ fn a_group_writable_directory_keeps_the_previous_policy() {
         .get(&uid)
         .expect("the previous policy must stay");
     assert_eq!(kept.apps[0].id, "previous");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_root_owned_config_reads_back_for_settings() {
+    if !enter_namespace("a_root_owned_config_reads_back_for_settings") {
+        return;
+    }
+    let (dir, user) = config_dir("settings-read");
+    write_config(&dir, &user, 0o644);
+    let config = load::read_user(&dir, &user).expect("the root-owned file must read");
+    assert_eq!(config.apps[0].id, "app");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_group_writable_config_is_an_error_for_settings() {
+    if !enter_namespace("a_group_writable_config_is_an_error_for_settings") {
+        return;
+    }
+    let (dir, user) = config_dir("settings-mode");
+    write_config(&dir, &user, 0o664);
+    assert!(load::read_user(&dir, &user).is_err());
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_missing_config_reads_as_the_default() {
+    if !enter_namespace("a_missing_config_reads_as_the_default") {
+        return;
+    }
+    let (dir, user) = config_dir("settings-missing");
+    let config = load::read_user(&dir, &user).expect("a missing file is not an error");
+    assert_eq!(config, UserConfig::default());
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn writing_settings_leaves_a_root_owned_file_that_reads_back() {
+    if !enter_namespace("writing_settings_leaves_a_root_owned_file_that_reads_back") {
+        return;
+    }
+    let (dir, user) = config_dir("settings-write");
+    let config = UserConfig::parse(
+        "[[apps]]\nid = \"app\"\npaths = [\"/usr/bin/app\"]\nautostart = \"allow\"\n",
+    )
+    .unwrap();
+    load::write_user(&dir, &user, &config).expect("write as namespace root");
+    let path = dir.join(format!("{user}.toml"));
+    let mode = fs::metadata(&path).unwrap().mode() & 0o777;
+    assert_eq!(mode, 0o644);
+    assert!(!dir.join(format!(".{user}.toml.new")).exists());
+    assert_eq!(load::read_user(&dir, &user).unwrap(), config);
     let _ = fs::remove_dir_all(&dir);
 }
