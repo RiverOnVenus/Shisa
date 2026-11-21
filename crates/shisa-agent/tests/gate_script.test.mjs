@@ -9,15 +9,18 @@ import vm from "node:vm";
 // focus reporting.
 const template = readFileSync(new URL("../src/gate-script.js", import.meta.url), "utf8");
 
-function render({ locked = [], allowed = [], restore = [], generation = 1 }) {
-  return template
+function render({ locked = [], allowed = [], restore = [], generation = 1, foreground = "" }) {
+  const script = template
     .replace('"@SERVICE@"', JSON.stringify("svc"))
     .replace('"@PATH@"', JSON.stringify("/window"))
     .replace('"@IFACE@"', JSON.stringify("iface"))
     .replace("/* @PROTECTED@ */ []", JSON.stringify(locked))
     .replace("/* @ALLOWED@ */ []", JSON.stringify(allowed))
     .replace("/* @RESTORE@ */ []", JSON.stringify(restore))
-    .replace("/* @GENERATION@ */ 0", String(generation));
+    .replace("/* @GENERATION@ */ 0", String(generation))
+    .replace('/* @FOREGROUND@ */ ""', JSON.stringify(foreground));
+  assert.ok(!script.includes("@"), "the template has an unreplaced placeholder");
+  return script;
 }
 
 function makeWindow(desktopFileName, resourceClass, pid = 100) {
@@ -110,6 +113,12 @@ test("resourceClass matches when desktopFileName does not", () => {
   boot({ locked: ["org.kde.kate"], windows: [window] });
   assert.equal(window.opacity, 0);
   assert.equal(window.minimized, true);
+});
+
+test("an app id with a quote still runs", () => {
+  const window = makeWindow('a"b', 'a"b');
+  boot({ locked: ['a"b'], windows: [window] });
+  assert.equal(window.opacity, 0);
 });
 
 test("a window hidden by an earlier generation is restored", () => {

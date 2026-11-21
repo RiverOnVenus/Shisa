@@ -500,8 +500,8 @@ impl Gate {
             self.instance = self.generation;
             self.publish_state(protected, allowed, restore);
             let path = self.directory.join(format!("kwin-gate-{}.js", self.generation));
-            let source = script_for(protected, allowed, restore, self.generation)
-                .replace("reconcile(\"\");", &format!("reconcile({});", js_string(&self.foreground)));
+            let source =
+                script_for_foreground(protected, allowed, restore, self.generation, &self.foreground);
             write_script(&path, &source).map_err(LoadError::Other)?;
             let plugin = format!(
                 "shisa-window-gate-{}-{}",
@@ -691,11 +691,26 @@ fn write_script(path: &Path, script: &str) -> Result<(), String> {
 /// The script the agent writes for KWin. The arrays and the generation are
 /// the only values that change between loads. `restore` holds apps that were
 /// protected at the previous load and whose windows may still be hidden.
+/// The script with no restart foreground. Only the tests need this shape.
+#[cfg(test)]
 fn script_for(
     protected: &[String],
     allowed: &[String],
     restore: &[String],
     generation: u64,
+) -> String {
+    script_for_foreground(protected, allowed, restore, generation, "")
+}
+
+/// `foreground` is the app that had focus when the agent restarted. The
+/// first reconcile raises its window, and later polls pass the daemon's
+/// value instead.
+fn script_for_foreground(
+    protected: &[String],
+    allowed: &[String],
+    restore: &[String],
+    generation: u64,
+    foreground: &str,
 ) -> String {
     TEMPLATE
         .replace("\"@SERVICE@\"", &js_string(WINDOW_BUS_NAME))
@@ -705,6 +720,7 @@ fn script_for(
         .replace("/* @ALLOWED@ */ []", &js_list(allowed))
         .replace("/* @RESTORE@ */ []", &js_list(restore))
         .replace("/* @GENERATION@ */ 0", &generation.to_string())
+        .replace("/* @FOREGROUND@ */ \"\"", &js_string(foreground))
 }
 
 fn js_list(ids: &[String]) -> String {
@@ -773,6 +789,13 @@ mod tests {
     fn app_ids_are_escaped_for_the_script() {
         assert_eq!(js_string("a\"b\\c"), r#""a\"b\\c""#);
         assert_eq!(js_string("a\nb"), r#""a\nb""#);
+    }
+
+    #[test]
+    fn the_restart_foreground_reaches_the_first_reconcile() {
+        let source = script_for_foreground(&[], &[], &[], 3, "org.kde.kate");
+        assert!(source.contains(r#"reconcile("org.kde.kate");"#));
+        assert!(script_for(&[], &[], &[], 3).contains(r#"reconcile("");"#));
     }
 
     #[test]
