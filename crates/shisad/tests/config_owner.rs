@@ -225,3 +225,34 @@ fn writing_settings_leaves_a_root_owned_file_that_reads_back() {
     assert_eq!(load::read_user(&dir, &user).unwrap(), config);
     let _ = fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn a_planted_temp_symlink_is_removed_not_followed() {
+    if !enter_namespace("a_planted_temp_symlink_is_removed_not_followed") {
+        return;
+    }
+    let (dir, user) = config_dir("settings-symlink");
+    let victim = dir.join("victim");
+    fs::write(&victim, "safe").unwrap();
+    let temp = dir.join(format!(".{user}.toml.new"));
+    std::os::unix::fs::symlink(&victim, &temp).unwrap();
+    let config = UserConfig::parse("[[apps]]\nid = \"app\"\npaths = [\"/usr/bin/app\"]\n").unwrap();
+    load::write_user(&dir, &user, &config).expect("the planted link must not block the write");
+    assert_eq!(fs::read_to_string(&victim).unwrap(), "safe");
+    assert!(!temp.exists());
+    assert_eq!(load::read_user(&dir, &user).unwrap(), config);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_group_writable_directory_is_refused_for_writes() {
+    if !enter_namespace("a_group_writable_directory_is_refused_for_writes") {
+        return;
+    }
+    let (dir, user) = config_dir("settings-dir-mode");
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o775)).unwrap();
+    let config = UserConfig::parse("[[apps]]\nid = \"app\"\npaths = [\"/usr/bin/app\"]\n").unwrap();
+    assert!(load::write_user(&dir, &user, &config).is_err());
+    assert!(!dir.join(format!("{user}.toml")).exists());
+    let _ = fs::remove_dir_all(&dir);
+}

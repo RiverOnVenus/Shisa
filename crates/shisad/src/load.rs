@@ -110,19 +110,45 @@ pub fn read_user(dir: &Path, name: &str) -> Result<UserConfig, String> {
 
 /// Write one user's config as root: 0644, atomic rename.
 pub fn write_user(dir: &Path, name: &str, config: &UserConfig) -> io::Result<()> {
+    write_user_with(dir, name, config, check_owner)
+}
+
+/// `owner` is a parameter so tests can write to a directory the current user
+/// owns. Production always passes [`check_owner`].
+fn write_user_with(
+    dir: &Path,
+    name: &str,
+    config: &UserConfig,
+    owner: fn(&Path, &fs::Metadata) -> io::Result<()>,
+) -> io::Result<()> {
     fs::create_dir_all(dir)?;
+    // This file is written as root. A directory that is not root's, or that
+    // another account can write, would let that account choose what gets
+    // truncated. Check it before chmod, which would otherwise follow a
+    // symlinked directory.
+    owner(dir, &fs::metadata(dir)?)?;
     fs::set_permissions(dir, fs::Permissions::from_mode(0o755))?;
     let text = config
         .to_toml()
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
     let path = dir.join(format!("{name}.toml"));
     let temp = dir.join(format!(".{name}.toml.new"));
+    // A temp file left by a crash is removed before the retry, which also
+    // removes a planted symlink instead of following it.
+    match fs::remove_file(&temp) {
+        Ok(()) => {}
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+    }
     // A failed write must not leave a half-written temp file behind: the
     // next attempt would overwrite it, but it would sit there until then.
     // The data is synced before the rename. Otherwise a crash shortly after
     // could leave an empty file under the final name, and an empty config
     // parses as "nothing protected".
-    let written = fs::File::create(&temp)
+    let written = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temp)
         .and_then(|mut file| {
             file.write_all(text.as_bytes())?;
             file.set_permissions(fs::Permissions::from_mode(0o644))?;
@@ -759,7 +785,7 @@ mod tests {
     fn a_written_config_reads_back() {
         let dir = std::env::temp_dir().join(format!("shisad-write-ok-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
-        write_user(&dir, "u", &sample()).unwrap();
+        write_user_with(&dir, "u", &sample(), permissive).unwrap();
         let text = fs::read_to_string(dir.join("u.toml")).unwrap();
         assert_eq!(UserConfig::parse(&text).unwrap(), sample());
         assert!(!dir.join(".u.toml.new").exists());
@@ -777,7 +803,7 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         // A directory where the config file should be makes the rename fail.
         fs::create_dir_all(dir.join("u.toml")).unwrap();
-        assert!(write_user(&dir, "u", &sample()).is_err());
+        assert!(write_user_with(&dir, "u", &sample(), permissive).is_err());
         assert!(!dir.join(".u.toml.new").exists(), "temp file left behind");
         let _ = fs::remove_dir_all(&dir);
     }
