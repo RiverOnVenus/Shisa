@@ -1,23 +1,29 @@
-# 开发规范
+# Code standards
 
-## 编码规范
+## Code
 
-- 沿用所在模块的命名、类型和错误处理方式。修改行为前先看调用方和已有测试，保留任务范围外的接口行为。修复缺陷时，若现有测试覆盖不到触发条件，补一个能捕捉该回归的测试。
-- Rust 代码用 `cargo fmt --all -- --check` 检查格式。处理系统调用和 D-Bus 错误时，保留能定位操作失败原因的上下文，避免在守护进程的请求路径上对可预期的失败使用 `unwrap()`。
+- Follow the module's naming, types, and error handling. Read callers and existing tests before changing behavior. Preserve interface behavior outside the change's scope.
+- Trace changes from their normal user entry point to the resulting state, side effects, and feedback. When callers share an operation, keep the shared contract consistent and check each affected caller. Document entry-point-specific feedback where it matters.
+- Run `cargo fmt --all -- --check` for Rust changes. Preserve useful context on system call and D-Bus errors. Avoid `unwrap()` for expected failures on daemon request paths.
 
-## 注释规范
+## Comments
 
-- 新增或修改的代码注释统一用英文，包括 Rust 文档注释、前端代码和脚本注释。公开接口的文档注释说明调用方需要遵守的条件，以及重要的失败行为。
-- 优先解释从代码中看不出的原因，例如为什么取消认证必须复用原来的总线连接。行为变化时同步更新相关注释。Rust 的 `unsafe` 块用英文 `// SAFETY:` 注释说明调用点如何满足安全前提。
+- Write new and updated comments in English, including Rust documentation comments, frontend code, and scripts. Document caller requirements and important failure behavior on public interfaces.
+- Explain constraints that are hard to infer from the code, such as why polkit cancellation must reuse the original bus connection. Update affected comments when behavior changes. Use a `// SAFETY:` comment to explain why each Rust `unsafe` block meets its safety requirements.
 
-## 提交规范
+## Tests
 
-- 新提交的标题和正文统一用英文。标题用祈使句写明具体改动，例如 `Wait for KWin to acknowledge the new script before unloading the old one`。需要正文时，说明改动原因及其对行为的影响。
-- 每个提交聚焦一个可单独审查的改动，相关测试和文档随改动一起提交。提交前检查 `git diff --cached`，确认暂存内容符合本次任务范围。提交信息不加 AI 署名。
+- When existing coverage misses a bug, add a regression test. Check that it fails on the old behavior for the expected reason and passes with the fix.
+- When changing defaults, config readers, or migrations, cover old configurations that omit the field and configurations with an explicit user value, including explicit values such as zero or false when supported.
+- Use [Tests and verification](testing.md) to pick checks for the affected paths. Report automated, isolated-session, and live desktop results separately when applicable. Identify relevant checks that were skipped.
 
+## Commits
 
-## 文档同步
+- Write commit subjects and bodies in English. Use an imperative subject that names the change, for example `Wait for KWin to acknowledge the new script before unloading the old one`. Use the body to explain the reason and effect when needed.
+- Keep each commit independently reviewable and focused on one change. Include related tests and documentation. Check `git diff --cached` before committing.
 
-- 每次改动现行行为时，同步更新涉及的子系统文档。改动用户入口、保护范围或使用方法时，同步更新 [README](../README.md)。跨组件的行为约定写在[架构总览](architecture.md)。
-- 用[测试与验收](testing.md)选择与改动相关的检查。汇报时分别记录自动测试、隔离会话和真实桌面验收的结果，说明仍待人工核查的项目。
-- README 的图须兼容 Mermaid 9，边标签避开顿号和中文逗号。
+## Documentation
+
+- Write developer documentation in English. Keep the root [README](../README.md) and its [Simplified Chinese version](../README.zh-CN.md) aligned when user-facing behavior changes.
+- Update the responsible subsystem reference in the same change when its interface, state transitions, user-visible behavior, compatibility, or failure handling changes. Put cross-component guarantees in the [architecture overview](architecture.md) and link to them from related pages.
+- Link important behavior to source files, named symbols, and existing tests. Prefer stable file links with symbol names in the text. Keep README diagrams compatible with Mermaid 9.

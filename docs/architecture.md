@@ -1,95 +1,83 @@
-# Shisa 架构
+# Shisa architecture
 
-## 定位与边界
+## Scope
 
-Shisa 面向 Arch Linux、KDE Plasma 6、Wayland 和 systemd。首要场景是短时借用已经解锁的桌面。机主把电脑递给别人选照片或改文档时，希望对方能继续手头的工作，同时收起聊天、邮件等私人窗口，防止别人顺手点开。离席且无人需要使用桌面时，整机锁屏更直接。长期共用设备且需要隔离数据时，应使用独立系统账号。
+Shisa targets Arch Linux, KDE Plasma 6, Wayland, and systemd. Its primary use is briefly lending an unlocked desktop while keeping private apps out of casual reach. Use the screen lock when nobody needs the desktop and separate system accounts when people need isolated data. GNOME and X11 are outside the v1 scope.
 
-借出前，机主从托盘执行「全部上锁」。shisad 清除该用户的启动凭证和窗口放行状态，会话代理与 KWin 负责隐藏受保护窗口，应用继续运行。拿回电脑后，机主可按需认证并恢复一个应用。失焦隐藏由用户按应用选用，适合希望切走后自动收起窗口的人。
+Before lending the desktop, the owner selects Lock all. The daemon revokes launch tickets and window allowance. The session agent and KWin hide protected windows while leaving their processes running. The owner can later authenticate to restore an app. Apps can also be configured individually to hide on focus loss.
 
-启动和窗口两层都属于核心体验。启动层在受保护 inode 的 exec 许可点判断，覆盖实际执行该文件的菜单、终端、文件关联等入口。窗口层处理已经运行的应用。宽限期到期只影响下次启动，手动上锁会同时撤销两种放行状态。设置界面应让用户看得出应用的实际覆盖范围。
+Launch gating checks execution of protected inodes through menus, terminals, file associations, and other entry points. Window management handles already-open windows. Ticket expiry affects subsequent launches. Manual locking revokes both launch tickets and window allowance. Settings shows which paths are effectively protected.
 
-认证由桌面的 polkit 代理完成。独立的 `shisa-lock` 密码让知道登录密码的人也需要单独认证。保护范围限于应用入口和桌面窗口，同账号进程仍可读取数据或干预窗口层，有 root 权限或可用 sudo 凭据的人也可以停止服务。覆盖边界见下方威胁模型。GNOME 和 X11 不在 v1 范围内。
+## Design principles
 
-## 设计原则
+1. Use the desktop polkit agent for authentication. The password passes from the agent to polkit's helper and stays outside shisad.
+2. Make the launch decision at the kernel exec permission event. Every entry point that executes the same protected inode uses that decision.
+3. Keep policy and tickets in a root-owned daemon. Changing the policy or stopping the daemon requires elevated privileges.
+4. Leave desktop entries, application binaries, processes, and the user's home directory untouched.
+5. Resume authorized launches with the original arguments, environment, terminal, and cgroup.
+6. Explain refusals and provide a way to authenticate. Show the actual coverage for each app.
 
-1. 认证复用 polkit，不保存密码，不自己实现密码库，也不自己画认证框。密码只在桌面的认证代理和 polkit 的 helper 之间传递，不经过 shisad。
-2. 判断发生在内核的 exec 许可点上，与入口无关。图标、终端、文件关联、D-Bus 激活走同一条路径。
-3. 策略和解锁凭证放在 root 守护进程里，同账号的普通进程改不了，也停不掉它。
-4. 不改写 .desktop，不注入应用进程，不修改应用二进制。Shisa 在用户目录里不留文件。
-5. 应用以原本的参数、终端和 cgroup 启动。Shisa 只决定放不放行，不代为启动。
-6. 被拦住时给出原因和认证入口。
-7. 设置界面如实显示每个应用的覆盖情况，覆盖不到的不假装覆盖。
+## Terminology
 
-## 术语
+| Term | Meaning |
+| --- | --- |
+| App ID | Desktop file ID without the `.desktop` suffix, such as `org.kde.dolphin`. |
+| Protected app | App selected in settings and identified by its app ID. |
+| Protected path | Executable covered by an inode mark. An app can have several. |
+| Launch ticket | A time-limited authorization for one user and app, called `Ticket` in the code. |
+| Grace period | A ticket's lifetime. Launches within it can reuse authorization. |
+| Instance | A running app admitted by the launch gate. The record lasts until its root process exits. |
+| Authentication agent | The desktop polkit agent that displays the prompt and collects the password. |
+| Session agent | `shisa-agent`, which runs in the graphical session and handles the tray and KWin. |
 
-| 术语       | 含义                                                                            |
-| ---------- | ------------------------------------------------------------------------------- |
-| 应用 id    | desktop 文件 id 去掉 `.desktop` 后缀，例如 `org.kde.dolphin`                    |
-| 受保护应用 | 用户在设置里勾选的应用，用应用 id 标识                                          |
-| 保护路径   | 一个受保护应用对应的可执行文件，可以有多个，按 inode 监视                       |
-| 解锁凭证   | 一次成功认证的结果，按用户和应用记录，带过期时间。代码里叫 `Ticket`             |
-| 宽限期     | 解锁凭证的有效期，期内再次启动不重复认证                                        |
-| 实例       | 一份已放行、正在运行的应用。没有过期时间，根进程退出后移除                    |
-| shisad     | root 守护进程，持有策略、解锁凭证和实例，回答 exec 许可请求，向 polkit 请求认证 |
-| 认证代理   | 桌面自带的 polkit 代理，显示对话框、收集密码、执行 PAM                          |
-| 会话代理   | `shisa-agent`，运行在用户会话里，显示托盘、接收状态变化                         |
-
-## 架构
+## Architecture
 
 ```mermaid
 flowchart TB
-  entry["图标 / 终端 / 文件关联 / D-Bus 激活"] -->|execve| kernel["内核 exec 许可点"]
-  kernel -->|许可请求| daemon["shisad（root）"]
-  daemon -->|放行或拒绝| kernel
-  kernel --> app["受保护应用"]
-  daemon --- state[("策略、解锁凭证、实例、窗口放行")]
+  entry["Menu / terminal / file association / D-Bus activation"] -->|execve| kernel["Kernel exec permission"]
+  kernel -->|permission event| daemon["shisad (root)"]
+  daemon -->|allow or deny| kernel
+  kernel --> app["Protected app"]
+  daemon --- state[("Policy / tickets / instances / window allowance")]
   daemon -->|CheckAuthorization| polkit["polkitd"]
-  polkit -->|委托| agent["桌面的认证代理"]
+  polkit --> agent["Desktop authentication agent"]
   agent -->|PAM| pam[("PAM")]
   settings["shisa-settings"] -->|system D-Bus| daemon
   cli["shisa CLI"] -->|system D-Bus| daemon
   tray["shisa-agent"] -->|system D-Bus| daemon
-  tray -->|装载脚本| kwin["KWin 脚本"]
-  kwin -->|隐藏和显示| windows["受保护应用的窗口"]
-  kwin -->|失焦提示| tray
+  tray -->|load script| kwin["KWin script"]
+  kwin -->|hide or restore| windows["Protected app windows"]
+  kwin -->|focus and window reports| tray
 ```
 
-| 组件             | 语言                  | 运行身份 | 职责                                                        |
-| ---------------- | --------------------- | -------- | ----------------------------------------------------------- |
-| `shisad`         | Rust                  | root     | fanotify 许可判断、策略、解锁凭证、实例、polkit、system bus |
-| `shisa-agent`    | Rust                  | 用户     | 注册、接收状态变化、托盘、装载窗口脚本                      |
-| `shisa-settings` | Rust / Tauri + Svelte | 用户     | 设置界面，应用列表、宽限期、覆盖情况                        |
-| `shisa`          | Rust                  | 用户     | 命令行，查状态、上锁、终端里认证                            |
-| `shisa-core`     | Rust                  | -        | 配置、desktop 文件解析、保护路径解析、共享类型              |
+| Component | Runtime identity | Responsibility |
+| --- | --- | --- |
+| `shisad` | Root | fanotify decisions, policy, tickets, instances, polkit, and system-bus API. |
+| `shisa-agent` | User | Tray, session state, and KWin script lifecycle. |
+| `shisa-settings` | User | Tauri and Svelte UI for app coverage and configuration. |
+| `shisa` | User | CLI for status, locking, configuration, and terminal authentication. |
+| `shisa-core` | Library | Configuration, desktop entry and path resolution, shared D-Bus types. |
 
-## 威胁模型
+## Threat model
 
-| 场景                           | 结论               | 说明                                                                               |
-| ------------------------------ | ------------------ | ---------------------------------------------------------------------------------- |
-| 点图标、菜单、KRunner 启动     | 能防               | 最终都是 execve 保护路径                                                           |
-| 终端直接运行                   | 能防               | 同上，没有延迟，应用不会闪现                                                       |
-| 文件关联、D-Bus 激活、自启动   | 能防               | 同上                                                                               |
-| 停掉 shisad 或改配置           | 能防               | 需要 root                                                                          |
-| 知道登录密码并能取得 root      | 不能               | 直接用 sudo 停掉 shisad 或改配置                                                   |
-| sudo 或 polkit 凭据缓存未过期  | 不能               | 已有提权凭据可能允许停止 shisad                         |
-| 在设置里取消保护               | 能防               | 每项改动单独认证，解锁凭证不能代替，见[应用锁密码](subsystems/authentication.md#细节)                                         |
-| 知道登录密码但不掌握 root 的人 | 设了应用锁密码能防 | 独立的应用锁密码由管理员设置，见[应用锁密码](subsystems/authentication.md#细节)                                               |
-| 已经打开的窗口                 | 部分               | 手动上锁、锁屏或启用失焦隐藏时收起，窗口层以用户身份运行，见[窗口管理](subsystems/window-management.md)                                      |
-| 复制二进制到别处运行           | 不能               | 新文件是新 inode                                                                   |
-| 直接调用共享运行时             | 不能               | Electron 类应用只标记各自的包装脚本                                                |
-| 用解释器直接读包装脚本         | 不能               | `sh 脚本` 不是 exec 打开，同上                                                     |
-| 读取应用数据文件               | 不能               | 别的程序可以直接读，详见[启动拦截](subsystems/launch-gate.md)                                         |
-| 伪造密码框                     | 有风险             | 同账号的程序可以画一个相似的窗口骗取密码，polkit 对话框也一样                      |
-| shisad 崩溃                    | 保护失效           | 内核放行未回答的请求，systemd 重启后恢复                                           |
-| shisad 挂死                    | 短暂卡住后同崩溃   | systemd 看门狗超时后重启                                                       |
-| fanotify 队列溢出 | 保护可能失效 | 内核丢弃的许可事件无法由守护进程拒绝 |
-| polkit 不可用 | 认证失败 | 需要认证的请求被拒绝 |
-| 同账号修改窗口脚本或属性 | 无法阻止 | 窗口层在用户会话运行 |
-| root 用户或离线读盘 | 无法阻止 | Shisa 不提供数据隔离 |
+| Situation | Coverage |
+| --- | --- |
+| App menu, terminal, file association, D-Bus activation, or autostart | Launch gating applies when the entry point executes a marked inode. Explicitly allowed autostart is exempt. |
+| Ordinary user attempts to stop shisad or change root-owned configuration | Requires elevated privileges. |
+| Settings change during the launch grace period | Requires separate polkit authorization. |
+| A person knows the login password | The separate app-lock password still applies. Root or usable elevation credentials can override protection. |
+| Already-open window | Manual locking, configured screen locking, or optional focus-loss hiding can conceal it. The script runs under the user's account. |
+| Copied executable, direct invocation of a shared runtime, or reading a wrapper through its interpreter | These paths can avoid a protected inode's exec event. |
+| Reading app data, root access, or offline disk access | Outside Shisa's protection scope. |
+| Lookalike password prompt or same-account interference with KWin | Same-account processes can imitate a prompt or modify window properties. |
+| shisad exits or crashes | The kernel releases pending requests and removes marks. systemd restarts the daemon after a crash. |
+| shisad hangs | Protected execs can stall until the systemd watchdog restarts the daemon. |
+| fanotify queue overflows | The kernel may allow discarded permission events without a daemon decision. |
+| polkit unavailable | Requests that need authentication are refused. |
 
-## 子系统
+## Subsystems
 
-- [启动拦截](subsystems/launch-gate.md)
-- [认证](subsystems/authentication.md)
-- [窗口管理](subsystems/window-management.md)
-- [配置与接口](subsystems/configuration.md)
+- [Launch gating](subsystems/launch-gate.md)
+- [Authentication](subsystems/authentication.md)
+- [Window management](subsystems/window-management.md)
+- [Configuration and interfaces](subsystems/configuration.md)

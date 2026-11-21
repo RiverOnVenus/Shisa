@@ -1,12 +1,11 @@
-# Shisa 开发文档
+# Shisa developer documentation
 
-
-- [架构总览与威胁模型](architecture.md)
-- [开发规范](code-standards.md)
-- [测试与验收](testing.md)
-- [Arch 打包与安装验证](packaging.md)
-- 子系统
-  - [启动拦截](subsystems/launch-gate.md)
-  - [认证](subsystems/authentication.md)
-  - [窗口管理](subsystems/window-management.md)
-  - [配置与接口](subsystems/configuration.md)
+- [Architecture and threat model](architecture.md)
+- [Code standards](code-standards.md)
+- [Tests and verification](testing.md)
+- [Arch packaging and installation verification](packaging.md)
+- Subsystems
+  - [Launch gating](subsystems/launch-gate.md)
+  - [Authentication](subsystems/authentication.md)
+  - [Window management](subsystems/window-management.md)
+  - [Configuration and interfaces](subsystems/configuration.md)

@@ -1,9 +1,8 @@
-# Arch 打包与安装验证
+# Arch packaging and installation verification
 
+## Build a test package
 
-## 构建测试包
-
-从维护工作区的 `packaging/arch/` 执行。该目录的打包文件单独维护，源码检出只提供应用源码和本文。脚本依赖仓库根目录和 `v$pkgver` 标签。先确认标签指向要验证的提交。
+Run these commands from a maintainer checkout with the separately maintained `packaging/arch/` files. The scripts require the repository root and the `v$pkgver` tag. Check that the tag points to the commit you intend to verify.
 
 ```sh
 cd packaging/arch
@@ -11,10 +10,10 @@ cd packaging/arch
 SRCDEST="$PWD" makepkg -f
 ```
 
-`release.sh` 调用 `make-source.sh` 从标签生成源码包，更新 `PKGBUILD` 的校验和并生成 `.SRCINFO`。`SRCDEST="$PWD"` 让 makepkg 使用本地生成的归档，发布后还要从 release 的下载地址复验。发布的详细维护记录在打包工作区的 `packaging-notes.md`。
+`release.sh` calls `make-source.sh` to archive the tagged sources, updates the checksum in `PKGBUILD`, and writes `.SRCINFO`. `SRCDEST="$PWD"` lets makepkg use the local archive. After publication, repeat the build using the release download URL to verify the published archive. The maintainer checkout has publishing details in `packaging/arch/packaging-notes.md`.
 
-## 安装和升级验证
+## Installation and upgrade verification
 
-征得同意后用 `pacman -U` 安装实际生成的包文件。升级后按确认流程重启系统单元 `shisad.service` 和用户单元 `shisa-agent.service`，再重新打开设置窗口。首次安装需要设置独立的应用锁密码，步骤见 [README](../README.md#安装)。用 `pacman -Qkk shisa` 核对已安装文件，然后按[测试与验收](testing.md)核查改动涉及的行为。
+With approval, install the generated package using `pacman -U`. After upgrading, restart `shisad.service` and the user unit `shisa-agent.service` through the same approval process, then reopen the settings window. Set a separate app-lock password on first install as shown in the [README](../README.md#installation). Inspect the installed files with `pacman -Qkk shisa` and follow [Tests and verification](testing.md) for the affected behavior.
 
-2026-11-17 用临时 Arch 包替换受保护文件，确认 pacman 的事务后 hook 重新标记了新 inode，且在 30 秒定时核对前完成。2026-11-18 用 `extra-x86_64-build` 在干净 chroot 中完成构建。
+On 2026-11-17, upgrading a temporary Arch package replaced a protected file and the post-transaction hook marked the new inode before the 30-second polling interval elapsed. On 2026-11-18, the package built with `extra-x86_64-build` in a clean chroot.

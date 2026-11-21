@@ -1,82 +1,57 @@
-# 启动拦截
+# Launch gating
 
-## 机制
+## Mechanism
 
-shisad 用 fanotify 的 `FAN_OPEN_EXEC_PERM` 事件。内核在一个文件即将被 execve 打开时暂停调用方，把请求交给 shisad，等它回答放行或拒绝。这个事件从 Linux 5.0 起可用，需要 `CAP_SYS_ADMIN`。
+shisad uses fanotify `FAN_OPEN_EXEC_PERM`. The kernel pauses the caller while opening an executable and waits for the daemon's decision. This event has been available since Linux 5.0 and requires `CAP_SYS_ADMIN`.
 
-shisad 只在保护路径的 inode 上加标记，不标记整个文件系统。没有被保护的程序不产生任何事件，系统其余部分的 exec 不经过 shisad。
+Marks apply to the inodes of protected files. Unmarked applications launch without involving Shisa. Before marking an open descriptor, shisad checks that it refers to a regular file and excludes shells, interpreters, systemd, and Shisa executables. The check and the mark refer to the same inode even if the path is replaced in between.
 
-fanotify 的事件队列有内核上限。队列满时内核丢弃新的许可事件并生成一个 `FAN_Q_OVERFLOW` 通知。被丢弃的 exec 没有回答的机会，内核不会替 shisad 拒绝，调用方继续。正常启动远到不了这个量，行为边界见[架构总览](../architecture.md#威胁模型)。shisad 读到 overflow 通知时在 journal 里写一条 error。
+Symlinks and hard links to the same inode are covered. A copied binary has a different inode. If the bounded fanotify queue overflows, Linux can allow discarded permission events without a decision. The daemon logs `FAN_Q_OVERFLOW`. See the [threat model](../architecture.md#threat-model).
 
-标记前会在已打开的描述符上再检查一次：必须是普通文件，且不能是 shell、解释器或 Shisa 自己的程序。检查和标记针对同一个 inode，路径在两步之间被换成别的文件也不会把标记带过去。
+## Protected path resolution
 
-inode 标记跟着 inode 走，和路径无关。符号链接和硬链接指向同一个 inode，所以都被覆盖。把二进制复制一份得到的是新 inode，不被覆盖。
+shisa-core derives protected paths from an app's desktop entry. Settings lists the result and lets the user edit it.
 
-## 保护路径的解析
+- Native apps use the executable from each `Exec` line, including desktop actions. Resolve it through `PATH` and then resolve the filesystem path.
+- Wrapper scripts are marked at the script inode. Executing the wrapper triggers the event. Passing it as a file argument to an interpreter does not.
+- Shared runtimes such as Electron are left unmarked to avoid locking unrelated apps. The resolver marks app-specific wrappers and settings reports the coverage gap for direct runtime invocation.
+- Flatpak resolution reads the app command from deployment metadata and marks the entry executable. The shared `flatpak` executable stays unmarked. Global options such as `--user` and `--installation` can precede `run`. Stored paths preserve the `current/active` symlinks across updates. Inode marks also apply inside the sandbox's mount namespace.
+- For `env VAR=value program`, skip `env` and its assignments when locating the executable.
+- Desktop entries that launch the same executable can share a protected path. To distinguish a shared runtime, compare the first argument that is neither an option nor a desktop field code, together with any `env` assignments. Different `app.asar` arguments are one example. Entries shadowed by an earlier data directory for the same desktop ID do not count as separate apps. Entry points that execute different inodes require separate marks.
 
-勾选一个应用时，shisa-core 从它的 desktop 文件算出保护路径，结果显示在设置界面里，用户可以增删。
+The resolver reads `XDG_DATA_HOME`, `XDG_DATA_DIRS`, `PATH`, and `LANG`/`LC_ALL` from the user's systemd manager process and falls back to standard directories if the manager is missing. A scan reads at most 8,192 entries and 8 MiB of text. It follows symlinked desktop files and skips symlinked directories. For localized `Name[locale]` it tries `lang_COUNTRY` before `lang`.
 
-- 原生应用：取每个 `Exec` 行的第一个词，包括 `[Desktop Action ...]` 分组里的，在 `PATH` 里找到后解析成真实路径。
-- 包装脚本：`Exec` 指向脚本时，标记脚本本身。内核执行脚本时会先以 exec 方式打开脚本文件，事件在这一步触发。把脚本当参数交给解释器，例如 `sh 脚本路径`，是普通的读打开，不触发。所以只有脚本这一个保护路径的应用，覆盖范围和共享运行时的情况相同。
-- 共享运行时：多个 Electron 应用可能共用一个 Electron 二进制，这个文件不能标记，否则它们全部被锁。这类应用只标记各自的包装脚本，设置界面注明“直接调用运行时不经过脚本，覆盖不到”。
-- Flatpak：`Exec` 是 `flatpak run <id>`，`/usr/bin/flatpak` 也是共享的。标记部署目录下应用自己的入口二进制，入口名从应用的 metadata 里读。`--user`、`--installation` 这类全局选项可以写在 `run` 之前。配置里存的路径保留 `current/active` 这两级符号链接，不解析成带提交哈希的真实路径，否则应用一更新路径就失效。inode 标记不区分 mount namespace，沙箱内的 exec 应当同样触发。
-- `Exec` 以 `env VAR=值 程序` 开头时，跳过 `env` 和赋值，解析后面的程序。
-- 多个 desktop 文件指向同一个二进制时，它们共用保护路径，从哪个入口进都会被拦。VSCodium 的 `codium` 和 `codium-wayland` 是这种情况。判断一个二进制是不是共用运行时，看的是各个入口让它运行的东西是否不同，也就是命令后第一个既不是选项也不是字段代码的参数，加上 `env` 前缀里的赋值。Electron 的各个入口带不同的 `app.asar`，所以算共用。同一应用的几个入口只是选项不同，不算。同一个应用 id 的多个 desktop 文件里只有数据目录顺序靠前的那个生效，被遮蔽的副本不算第二个应用。如果两个入口最终执行不同的 inode，就要分别保护。
+The daemon checks protected paths every 30 seconds and refreshes marks when an inode changes or a missing path reappears. A path that remains unavailable does not cause repeated full reloads. This covers Flatpak deployments and manual file replacement. The Arch package also ships a post-transaction hook that reloads a running daemon after a pacman upgrade.
 
-软件包升级会替换文件，新文件是新 inode，旧标记失效。shisad 每 30 秒核对一次每条保护路径当前指向的 inode，和上次不同就重新加标记。上一次加载时就不存在或不可用的路径不会让核对每次都完整重载，它重新出现时仍会被发现。这覆盖了 Flatpak 更新和手工替换文件。包里另带一个 pacman hook，在事务结束后让 shisad 重新解析一遍（服务没在运行时什么也不做），所以 pacman 升级没有这 30 秒的空档。
+## Launch decisions
 
-用户环境里的 `XDG_DATA_HOME`、`XDG_DATA_DIRS`、`PATH` 和 `LANG`/`LC_ALL` 从该用户的 systemd 管理器进程读取，所以解析顺序和桌面菜单一致。找不到管理器时退回标准目录。一次扫描最多 8192 个条目、8 MiB 文本，不跟随符号链接目录，符号链接的 desktop 文件仍然读取。桌面文件里的 `Name[locale]` 按调用方的语言取，先试 `lang_COUNTRY`，再试 `lang`。
+Before exec completes, `/proc/<pid>/exe` still identifies the caller's old process image.
 
-shell、解释器、systemd 和 Shisa 自己的程序不能成为保护路径，shisad 拒绝这样的设置。保护它们会让整个会话或认证本身无法工作。
+1. Look up the app by the executable inode. Allow unknown inodes and apps unprotected for the caller's UID.
+2. Allow execution from an existing app instance or when the caller's current image is itself a protected executable of the same app.
+3. For a valid ticket, allow the launch and register an instance.
+4. Otherwise, suspend the request and ask polkit. Authorization issues a ticket, registers an instance, and resumes the original exec with its original arguments, environment, terminal, and cgroup. Refusal, cancellation, and timeout return `EPERM` to the caller.
 
-## 判断流程
+Waiting callers sleep in exec and can be killed by a signal. The default wait is 60 seconds. The event loop answers every event and delegates authentication to separate work. Excess pending launches are refused once they reach 64 per app or 256 per user.
 
-收到许可请求时，shisad 已知被执行的文件和调用方进程。调用方此时还没有完成 exec，`/proc/<pid>/exe` 是它原来的映像。
+On daemon exit the kernel releases pending events and removes marks. systemd uses `Restart=always`, and the tray reports daemon availability. The service uses `Type=notify` and `WatchdogSec=10` with a heartbeat every five seconds to recover from event-loop stalls. Root can temporarily disable launch protection by stopping `shisad` from a TTY.
 
-1. 由文件的 inode 查出应用 id。查不到就放行。
-2. 读调用方的 uid。该用户没有保护这个应用就放行。
-3. 调用方自己的映像已经是这个应用的保护路径，或者它的祖先进程属于这个应用的某个实例，放行。浏览器重新 exec 自己来创建子进程属于这种情况。
-4. 该用户对这个应用有未过期的解锁凭证，放行，登记一个新实例。
-5. 以上都不满足，把请求挂起，向 polkit 请求授权。成功则发解锁凭证、登记实例、放行。拒绝、取消或超时则拒绝，调用方的 execve 返回 `EPERM`。
+## Tickets and instances
 
-挂起期间调用方停在 execve 里，可以被信号杀死，不占 CPU。默认等 60 秒。认证通过后应用带着原来的参数、环境、终端和 cgroup 继续启动，不需要保存参数再重新拉起。
+Tickets are stored in memory by user and app. The grace period starts on authorization. A zero grace period allows the pending launch once. An explicit `shisa unlock` without a pending launch issues a one-use ticket that expires after the configured wait limit.
 
-每个事件必须有回答。shisad 的事件循环不做任何阻塞操作，认证在独立任务里跑，挂起的请求有独立的超时。同一应用同时挂起的启动请求超过 64 个，或同一用户超过 256 个时，多余的直接拒绝：每个挂起的调用者都占着一个 fanotify 事件描述符，本机进程可以不断发起受保护应用的启动，不能让它们把守护进程的描述符耗光。shisad 退出时内核自动放行所有未回答的请求并撤掉标记，所以它崩溃后的行为是保护失效，不是系统卡死。systemd 单元设 `Restart=always`，会话代理在 shisad 不在线时用托盘图标提示。
+Manual locking revokes tickets and window allowance. When all active graphical sessions for a user are locked, shisad clears both states unless `clear_on_screen_lock` is disabled. It reacts to logind signals and checks `LockedHint` every 30 seconds as a fallback. Daemon restart clears tickets. Ticket expiry alone affects subsequent launches and leaves existing window allowance in place.
 
-shisad 挂死但不退出是另一种情况。这时未回答的请求一直挂着，受保护应用启动不了，`Restart=always` 也不会触发。所以单元设 `Type=notify` 和 `WatchdogSec=10`，事件循环每 5 秒向 systemd 报一次活。循环卡住超过 10 秒，systemd 杀掉 shisad 并重启，挂死就变成了上一段的崩溃情况。
+An instance records the PID and start time of the admitted process. Its descendants qualify while that process is alive. Grace-period expiry and screen locking leave instances intact. After a daemon restart the instance table is empty, but an already-running app can still execute its own protected image.
 
-需要临时停用保护时，root 在 TTY 下执行 `systemctl stop shisad`。标记随进程退出撤销，所有应用恢复正常启动。Shisa 不另设暂停命令。
+## Autostart
 
-## 解锁凭证与实例
+Protected autostart apps prompt by default. With `autostart = "allow"`, the daemon allows a matching `app-<id>@autostart.service` cgroup during the first 30 seconds of the session, using systemd escaping such as `\x2d` for hyphens. Settings explains that processes under the same account can imitate this unit name.
 
-解锁凭证记在 shisad 的内存里，键是用户和应用 id。
+## Coverage limits
 
-- 认证成功时发放，有效期是该应用的宽限期。宽限期为 0 时解锁凭证只用于放行当前这一次请求。`shisa unlock` 没有挂起的请求，它发的一次性凭证在第一次启动时用掉，最多保留一个等待上限。
-- 该用户所有活动的图形会话都锁上时，清空该用户的全部解锁凭证，除非用户把 `clear_on_screen_lock` 关掉。shisad 订阅 logind 的信号，收到后读每个会话的 `LockedHint`，另有一个 30 秒的定时检查兜底。只有一个会话锁上、另一个还开着时不清，避免本机锁屏把远程桌面里的工作窗口一起收掉。
-- 凭证被清掉后，会话代理把该应用已经打开的窗口隐藏。窗口不再出现，恢复走托盘、设置里的解锁或重新启动。
-- `shisa lock` 或托盘菜单手动清除。
-- shisad 重启后解锁凭证清空。
+Already-open windows are handled by [window management](window-management.md). Launch gating covers executions of marked inodes. Copied binaries, direct runtime invocation, app data access, and Steam game executables without configured protected paths fall outside that coverage. Use separate system accounts to isolate application data.
 
-实例记录的是放行时调用方的 pid 和启动时间。这个进程活着的时候，它的后代都算这个实例。它退出后实例消失，留下的子进程不再属于它，再启动同一个应用要重新认证。实例不受宽限期和锁屏影响，所以锁屏不会让正在运行的应用出问题。
+## Verification
 
-shisad 重启后实例表是空的。此时已经在运行的受保护应用如果再 exec 自己，会命中 判断流程第 3 步的第一个条件，仍然放行。
-
-## 自启动
-
-登录时自启动的受保护应用默认也要认证，每个应用弹一次。用户刚输过登录密码，这样做有些重复，所以每个应用可以设 `autostart = "allow"`。shisad 据此放行会话开始后 30 秒内、调用方 cgroup 是 `app-<id>@autostart.service` 的请求，其中 id 按 systemd 的单元名规则转义，连字符写成 `\x2d`。这个单元名同账号可以伪造，设置界面在选项旁边写明。
-
-## 不在拦截范围
-
-- 已经在运行的应用的窗口。启动拦截管不到，[窗口层](window-management.md)在锁屏和失焦时隐藏。
-- 把二进制复制到别处再运行。
-- 直接调用共享运行时来加载应用。
-- 应用的数据文件。别的程序可以直接读浏览器的配置目录。
-- Steam 启动的游戏。游戏不对应 desktop 文件，用户可以手动把游戏的可执行文件加进保护路径。
-
-Shisa 的保护范围限于启动入口和桌面窗口。应用数据隔离需要独立的系统账号等机制。
-
-## 验证
-
-启动、拒绝、文件替换和终端入口的检查见[测试与验收](../testing.md)。
-
-实测确认，Flatpak 沙箱内执行受保护文件时会触发宿主的 inode 标记。符号链接和硬链接指向同一 inode，仍受保护。文件替换后需要重新标记，Arch 包升级的实测见[打包指南](../packaging.md#安装和升级验证)。
+See [Tests and verification](../testing.md) for allow, deny, file replacement, and terminal entry-point checks. Live checks confirmed that execution from inside a Flatpak sandbox hits the host inode mark and that hard links and symlinks share coverage. See [Arch packaging](../packaging.md#installation-and-upgrade-verification) for the upgrade re-marking check.

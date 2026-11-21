@@ -1,10 +1,12 @@
 # Shisa
 
-Shisa 是 Arch Linux 和 KDE Plasma 6（Wayland）上的桌面应用锁。临时把电脑借给别人时，可以收起聊天、邮件等窗口，并要求输入应用锁密码才能恢复窗口或从受保护的入口启动应用。
+English · [简体中文](README.zh-CN.md)
 
-## 安装
+Shisa is a desktop app lock for Arch Linux and KDE Plasma 6 on Wayland. When lending someone your unlocked desktop, you can hide private windows and require a separate password to restore them or launch apps through protected entry points.
 
-Shisa 目前提供本地构建的 Arch 包。有包文件后，安装并完成首次设置：
+## Installation
+
+Shisa currently uses a locally built Arch package. Once you have the package, install it and complete the initial setup:
 
 ```sh
 sudo pacman -U ./shisa-0.1.0-1-x86_64.pkg.tar.zst
@@ -13,26 +15,26 @@ sudo systemctl enable --now shisad.service
 systemctl --user enable --now shisa-agent.service
 ```
 
-请把第一行的包文件名换成实际文件名。应用锁密码与登录密码分开。升级后重启这两个服务，再重新打开设置窗口。
+Replace the example package filename with the file you built. The app-lock password is separate from your login password. After upgrading, restart both services and reopen the settings window.
 
-## 使用
+## Usage
 
-1. 打开 **Shisa 设置**，给需要保护的应用开启「启动前要求认证」。
-2. 借出电脑前，右键点击 Shisa 托盘图标，选择「全部上锁」，查看通知确认窗口已收起。
-3. 拿回电脑后，左键点击托盘图标，在「恢复窗口」面板选择应用并认证。原窗口和未保存的内容会保留。
+1. Open **Shisa Settings** and enable **Require authentication before launch** (启动前要求认证) for the apps you want to protect.
+2. Before lending your desktop, right-click the Shisa tray icon and choose **Lock all** (全部上锁). Check the notification to confirm that the protected windows were hidden.
+3. When you get your desktop back, left-click the tray icon, select an app in **Restore windows** (恢复窗口), and authenticate. The original window and unsaved content are preserved.
 
-可以在 KDE 的快捷键设置中绑定 `shisa lock`，也可以按应用设置「失焦后隐藏」。
+You can bind `shisa lock` to a KDE keyboard shortcut or enable **Hide on focus loss** (失焦后隐藏) per app.
 
-## 保护范围
+## Protection scope
 
-Shisa 适合防止别人顺手打开应用。启动认证仅覆盖实际生效的保护路径，应用数据不会加密，同一账号下的程序仍可能绕过窗口隐藏。需要隔离文件和应用数据时，请使用独立的系统账号。
+Shisa guards against casually opening private apps. Launch authentication applies to active protected paths. Apps running under the same account can still read application data or interfere with window hiding. Use separate system accounts when you need to isolate app data and files.
 
-## 开发
+## Development
 
-运行 `cargo test --workspace` 检查 Rust 工作区。构建设置程序时，先在 `gui/shisa-settings` 运行 `npm ci` 和 `npm run build`，再在 `gui/shisa-settings/src-tauri` 运行 `cargo build --release --features custom-protocol`。
+Run `cargo test --workspace` to check the Rust workspace. To build the settings app, run `npm ci` and `npm run build` in `gui/shisa-settings`, then run `cargo build --release --features custom-protocol` in `gui/shisa-settings/src-tauri`.
 
-架构、开发规范和测试入口见[开发文档](docs/README.md)。Arch 构建与升级验证见[打包指南](docs/packaging.md)。
+See the [developer documentation](docs/README.md) for architecture, coding standards, and testing, and the [packaging guide](docs/packaging.md) for Arch builds and upgrade verification.
 
-## 许可证
+## License
 
 [GPL-3.0-or-later](LICENSE)

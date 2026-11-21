@@ -1,38 +1,34 @@
-# 窗口管理
+# Window management
 
-## 隐藏与恢复
+## Hiding and restoring windows
 
-这一节补的是 exec 许可管不到的部分，即已经打开的窗口。
+The session agent and its KWin script manage windows that are already open. The script matches protected apps by `desktopFileName` first and `resourceClass` second. It minimizes locked windows, sets their opacity to zero, and removes them from the taskbar, switcher, and pager. Restoration affects windows Shisa hid and preserves ordinary user minimization. When the last app is unprotected, the agent restores its windows before unloading the script.
 
-做法是一段 KWin 脚本加会话代理。脚本按 `desktopFileName` 认出受保护应用的窗口，需要上锁时把窗口最小化、透明度设为 0、从任务栏、切换器和分页器里去掉，窗口重新放行后恢复。KWin 脚本只能访问 session bus，所以它和 shisa-agent 通信，由代理读 shisad 的窗口放行状态并计时，认证仍由托盘、设置或重新启动发起。
+The agent builds versioned window state from `ListApps` and `WindowStates`. The script reads it over the session bus every 250 milliseconds and applies visibility and activation changes in place. Initial startup or loss of contact can trigger a fresh `loadScript` and `run`. The agent uses separate session-bus connections for KWin calls and acknowledgements, assigns a unique plugin name, and waits for the new script's acknowledgement before unloading the old one.
 
-会话代理用 `ListApps` 和 `WindowStates` 生成带版本号的窗口状态。常驻脚本每 250 毫秒通过会话 D-Bus 读取版本变化，在同一实例内处理隐藏、恢复和前台激活。全部上锁请求新的版本并等待实际窗口计数回执。代理首次启动或脚本失联时才通过 `loadScript` 和 `run` 装载脚本。装载仍使用独立的会话总线连接和唯一插件名，等新脚本回执后再卸旧脚本。KWin 重启或脚本被卸载时，代理在下次刷新检测并恢复。
+Window allowance is separate from a launch ticket. Ticket expiry affects the next launch. Manual `Lock` and the configured screen-lock policy revoke both states. A successful authenticated launch, `shisa unlock`, or allowed autostart sets window allowance. A daemon restart clears it, and an agent restart reads it back from the daemon.
 
-窗口放行状态和解锁凭证是两件事。凭证过期只影响下一次启动，正在用的窗口继续保持。锁屏、手动 `Lock` 才清掉窗口放行状态。认证通过的启动和 `shisa unlock` 都会放行窗口，`autostart = "allow"` 的启动也会。这样宽限期短的设置不会在使用中途把窗口藏起来。shisad 重启后窗口放行状态和凭证一样清空，正在运行的受保护窗口会重新隐藏并要求认证。会话代理重启不受影响，窗口状态在 shisad 里。
+The script reports focus changes. The agent times focus loss using `RelockSeconds`, cancels the timer on refocus or lock, and checks focus again before calling `Lock`. `StateChanged` triggers synchronization. The setting defaults to off. A value of 0 disables it and 1 means immediate hiding. Screen-lock handling is controlled by `clear_on_screen_lock` and applies when all active graphical sessions for that user are locked.
 
-常驻脚本按应用上报焦点变化。会话代理按 `RelockSeconds` 计时，应用重新聚焦或已上锁时取消计时。到期后代理复查焦点，再通过 `Lock` 撤销启动凭证和窗口放行状态。`StateChanged` 触发窗口状态同步，常驻脚本按新状态隐藏窗口。默认关闭，0 表示不启用，1 表示立即。
+The window layer runs as the user. Processes under the same account can interfere with the script or window properties. The tray omits a quit action that could reveal locked windows, and idle apps remain running to preserve unsaved work.
 
-脚本在装载、收到新状态和窗口新增时按应用策略处理窗口。恢复时只处理脚本识别为由 Shisa 收起的窗口，保留用户手动最小化的状态。最后一个应用取消保护时，代理先同步恢复状态，再卸载脚本。窗口匹配优先使用 `desktopFileName`，其次使用 `resourceClass`。
+## Lock all and its result
 
-窗口层以用户身份运行，同账号进程可以干预脚本或窗口属性。托盘没有退出项，避免通过退出操作恢复上锁窗口。
+The tray and bare `shisa lock` share the system-bus `Lock("")` contract. Success from the daemon means it revoked launch tickets and window allowance. The tray requests a fresh window check, including on repeated lock operations. The CLI requests the same check when a session bus is available. A script load acknowledgement establishes that a script ran. The window acknowledgement reports how many windows matched and how many were actually hidden. A missing or incomplete result is reported as unconfirmed.
 
-触发时机有两个：
+Left-clicking the tray opens the restore panel. Right-clicking offers Lock all and settings. The tray displays the last lock result in its tooltip, and the CLI can ask the agent to verify the same operation. After polkit authentication, the resident script restores the original window and attempts to activate it. Before opening settings, the agent fills missing display variables from the systemd user manager's `Environment`.
 
-- 屏幕解锁后。所有活动图形会话都锁上期间，解锁凭证已清空，解锁后已打开的受保护窗口全部隐藏（受 `clear_on_screen_lock` 控制）。恢复走托盘、设置里的解锁或重新启动应用。默认开启。
-- 失焦超时。受保护窗口失去焦点超过 N 秒后自动隐藏，恢复同样要重新认证。1 表示立即（不是一秒），默认关闭，因为频繁切换窗口的人会被反复打断。
+## Implementation and verification
 
-应用闲置后自动关闭不做。关掉应用可能丢失未保存的内容，隐藏窗口已经起到同样的遮挡作用。
+| Step | Source and symbols |
+| --- | --- |
+| Start from the tray or CLI | [Session agent](../../crates/shisa-agent/src/main.rs), `action_loop`. [CLI](../../crates/shisa-cli/src/main.rs), `lock` and its session-bus `VerifyLock` call. |
+| Revoke daemon state | [System-bus handler](../../crates/shisad/src/bus.rs), `ManagerIface::lock`. [Policy](../../crates/shisad/src/policy.rs), `State::clear_tickets` and `State::lock_app`. |
+| Apply and acknowledge a window revision | [Window agent](../../crates/shisa-agent/src/window.rs), `Gate::sync`, `Gate::load`, and `windows_checked`. |
+| Report the result | [Session agent](../../crates/shisa-agent/src/main.rs), `verify_lock` and `lock_summary`. The test `lock_feedback_requires_all_matched_windows_to_be_concealed` checks that partial concealment is unconfirmed. |
 
-## 全部上锁与结果反馈
+See [Tests and verification](../testing.md#window-and-authentication-verification) for coverage of real windows, missing acknowledgements, and focus-loss relocking.
 
-系统总线的 `Lock` 成功表示守护进程已撤销放行。托盘和 CLI 的全部上锁操作还会请当前会话重新核对窗口。收到脚本装载回执说明脚本已执行，实际收起数量由窗口状态回执确认。没有收到窗口回执时，提示「窗口状态未确认」。重复上锁也要重新核对。
+On 2026-11-21, 64Gram passed live Plasma Wayland verification on KWin 6.8.3 with Shisa 0.1.0-14. Lock all hid it from the desktop, taskbar, switcher, and Overview while an ordinary window remained usable. Cancelling authentication kept it hidden. Successful authentication returned it to the foreground with its conversation and draft intact. Repeating the operation gave the same result.
 
-托盘左键打开恢复窗口面板，右键提供全部上锁和打开设置。最近一次全部上锁的结果保留在托盘悬浮提示里。恢复操作经 polkit 认证后，由常驻脚本恢复原窗口并尝试激活。打开设置前，会话代理从 systemd 用户管理器的 `Environment` 属性补齐缺失的显示变量。
-
-## 验证
-
-实际窗口、回执缺失和失焦重锁的验收见[测试与验收](../testing.md)。
-
-2026-11-21 在 Plasma Wayland（KWin 6.8.3、Shisa 0.1.0-14）用 64Gram 完成真机验收。全部上锁后，64Gram 从桌面、任务栏、切换器和概览中收起，普通窗口仍可用。取消认证后 64Gram 继续隐藏，认证成功后原窗口回到前台，聊天位置和草稿保留。重复操作结果一致。
-
-上锁前、隐藏后和恢复后的 KWin `internalId` 一致。多次上锁收到实际隐藏回执，KWin 仍报告验收前装载的插件在运行，支持常驻脚本在验收期间复用。
+KWin reported the same `internalId` before locking, while hidden, and after restoration. Multiple lock operations received window acknowledgements, and KWin still reported the pre-existing plugin loaded, supporting reuse of the resident script during the test.
