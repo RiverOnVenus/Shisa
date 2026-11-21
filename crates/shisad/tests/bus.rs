@@ -316,6 +316,7 @@ fn a_registered_agent_receives_state_changes() {
     let _serial = ONE_BUS.lock().unwrap_or_else(|e| e.into_inner());
     let _bus = PrivateBus::start("agent");
     let state = state();
+    let control = state.clone();
     state.lock().unwrap().allow_window(uid(), "app");
     let (_events, _tx) = start_daemon(state);
 
@@ -323,20 +324,34 @@ fn a_registered_agent_receives_state_changes() {
     let register = ManagerProxyBlocking::new(&observer).unwrap();
     register.register_agent().unwrap();
     let (ready_tx, ready_rx) = mpsc::channel();
+    let (signal_tx, signal_rx) = mpsc::channel();
     let watcher = std::thread::spawn(move || {
         let agent = ManagerProxyBlocking::new(&observer).unwrap();
         let mut signals = agent.receive_state_changed().unwrap();
         ready_tx.send(()).unwrap();
-        let signal = signals.next().unwrap();
-        let args = signal.args().unwrap();
-        (args.app_id, args.unlocked)
+        let seen = signals.next().map(|signal| {
+            let args = signal.args().unwrap();
+            (args.app_id, args.unlocked)
+        });
+        let _ = signal_tx.send(seen);
     });
     ready_rx.recv_timeout(Duration::from_secs(5)).unwrap();
-    // Let the match rule reach the bus before the daemon emits.
-    std::thread::sleep(Duration::from_millis(200));
 
     let caller = Connection::system().unwrap();
     let manager = ManagerProxyBlocking::new(&caller).unwrap();
-    manager.lock("app").unwrap();
-    assert_eq!(watcher.join().unwrap(), ("app".to_string(), false));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    // The match rule reaches the bus asynchronously. Repeat the state change
+    // until the observer sees it instead of sleeping for a fixed time.
+    let seen = loop {
+        control.lock().unwrap().allow_window(uid(), "app");
+        manager.lock("app").unwrap();
+        match signal_rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(Some(seen)) => break seen,
+            Ok(None) => panic!("the signal stream ended"),
+            Err(mpsc::RecvTimeoutError::Timeout) if Instant::now() < deadline => continue,
+            Err(e) => panic!("no StateChanged arrived: {e}"),
+        }
+    };
+    assert_eq!(seen, ("app".to_string(), false));
+    watcher.join().unwrap();
 }
