@@ -20,8 +20,8 @@ zbus = { version = "5.19", default-features = false, features = ["async-io", "bl
 shisa-core = { path = "crates/shisa-core" }
 
 # A panic in shisad must end the process: the kernel then allows every pending
-# exec request and drops the marks (DESIGN 5.3). Unwinding could leave a thread
-# dead while requests stay unanswered.
+# exec request and drops the marks (docs/architecture.md#threat-model). Unwinding
+# could leave a thread dead while requests stay unanswered.
 [profile.dev]
 panic = "abort"
 
