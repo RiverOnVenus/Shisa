@@ -22,6 +22,8 @@ The [launch gate resolver](launch-gate.md#protected-path-resolution) fills in `p
 
 `grace_seconds` is capped at 31,536,000 (one year) to keep expiry arithmetic bounded. `prompt_timeout_seconds` must be between 5 and 85. A protected app must have at least one path. `SetOption` rejects out-of-range values before prompting. When loading a file edited by root, shisad clamps the grace period and wait limit. Use `SetProtected` to remove protection entirely.
 
+A reload is fail-closed. If the config directory cannot be read, or a user's file cannot be read or parsed, shisad keeps the policy it already had instead of treating the user as unprotected. A missing file is the only case that means the user has no configuration yet.
+
 ## System D-Bus
 
 The service is `io.github.RiverOnVenus.Shisa`, at `/io/github/RiverOnVenus/Shisa/Manager`. It derives the caller's identity from bus connection credentials and scopes state and settings to that user.

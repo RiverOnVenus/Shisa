@@ -1,5 +1,9 @@
 # Tests and verification
 
+- Write down a result only after the run that produced it has ended. Say what was run and what it printed. List each check that was not run as not run, and name each failure instead of calling it unrelated to the change.
+- A test stops everything it starts. Stop or join every daemon, thread, and timer before the test returns. Run daemon tests on the private bus with `tests/fake-polkit`, and leave the user's configuration, `/etc`, and `/run` untouched.
+- Leave a timing test room on both sides. Do not bound a test by a wall-clock duration a loaded machine can exceed, and keep fixtures far from the timeout they exercise. Reproduce a timing failure by injecting the delay, not by rerunning until it fails.
+
 ## Rust and the settings app
 
 ```sh
