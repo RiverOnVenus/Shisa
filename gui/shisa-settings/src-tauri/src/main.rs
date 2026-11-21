@@ -342,6 +342,12 @@ fn current_theme() -> String {
     let Ok(text) = std::fs::read_to_string(home.join(".config/kdeglobals")) else {
         return "breeze".into();
     };
+    kde_icon_theme(&text).unwrap_or_else(|| "breeze".into())
+}
+
+/// The `[Icons] Theme=` value. An unreadable or incomplete file means KDE's
+/// default, so `None` keeps `current_theme`'s fallback in one place.
+fn kde_icon_theme(text: &str) -> Option<String> {
     let mut in_icons = false;
     for line in text.lines() {
         let line = line.trim();
@@ -353,10 +359,10 @@ fn current_theme() -> String {
             && let Some(theme) = line.strip_prefix("Theme=")
             && !theme.is_empty()
         {
-            return theme.to_string();
+            return Some(theme.to_string());
         }
     }
-    "breeze".into()
+    None
 }
 
 /// Themes named in the current theme's index.theme, in order.
@@ -365,26 +371,30 @@ fn inherited(theme: &str) -> Vec<String> {
         let Ok(text) = std::fs::read_to_string(root.join(theme).join("index.theme")) else {
             continue;
         };
-        let mut in_icon_theme = false;
-        let mut chain = Vec::new();
-        for line in text.lines() {
-            let line = line.trim();
-            if line.starts_with('[') {
-                in_icon_theme = line == "[Icon Theme]";
-                continue;
-            }
-            if in_icon_theme && let Some(list) = line.strip_prefix("Inherits=") {
-                for name in list.split(',') {
-                    let name = name.trim();
-                    if !name.is_empty() {
-                        chain.push(name.to_string());
-                    }
+        return inherited_themes(&text);
+    }
+    Vec::new()
+}
+
+fn inherited_themes(text: &str) -> Vec<String> {
+    let mut in_icon_theme = false;
+    let mut chain = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            in_icon_theme = line == "[Icon Theme]";
+            continue;
+        }
+        if in_icon_theme && let Some(list) = line.strip_prefix("Inherits=") {
+            for name in list.split(',') {
+                let name = name.trim();
+                if !name.is_empty() {
+                    chain.push(name.to_string());
                 }
             }
         }
-        return chain;
     }
-    Vec::new()
+    chain
 }
 
 /// Size order for icon lookup. Rows draw icons at 16 and 22px, so the small
@@ -587,4 +597,48 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("shisa-settings failed to start");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use zbus::zvariant::{OwnedValue, Value};
+
+    fn owned(value: Value<'_>) -> OwnedValue {
+        value.try_into().unwrap()
+    }
+
+    #[test]
+    fn the_portal_scheme_maps_to_dark_and_light() {
+        assert_eq!(appearance::scheme(owned(Value::from(1u32))), Some(true));
+        assert_eq!(appearance::scheme(owned(Value::from(2u32))), Some(false));
+        assert_eq!(appearance::scheme(owned(Value::from(0u32))), None);
+        assert_eq!(appearance::scheme(owned(Value::from(3u32))), None);
+        // A value of another type is no preference, not a panic.
+        assert_eq!(appearance::scheme(owned(Value::from("dark"))), None);
+    }
+
+    #[test]
+    fn the_theme_comes_from_the_icons_group() {
+        assert_eq!(
+            kde_icon_theme("[General]\nTheme=x\n[Icons]\nTheme=Breeze\n"),
+            Some("Breeze".into())
+        );
+        assert_eq!(kde_icon_theme("[Other]\nTheme=Breeze\n"), None);
+        assert_eq!(kde_icon_theme("[Icons]\nTheme=\n"), None);
+        assert_eq!(kde_icon_theme(""), None);
+    }
+
+    #[test]
+    fn only_the_icon_theme_group_names_inherited_themes() {
+        assert_eq!(
+            inherited_themes("[Icon Theme]\nInherits=hicolor, breeze,  ,Papirus\n"),
+            vec!["hicolor", "breeze", "Papirus"]
+        );
+        assert_eq!(
+            inherited_themes("[Other]\nInherits=hicolor\n"),
+            Vec::<String>::new()
+        );
+        assert_eq!(inherited_themes(""), Vec::<String>::new());
+    }
 }
