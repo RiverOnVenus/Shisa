@@ -129,6 +129,8 @@ mod tests {
             let shadow = format!("{ADMIN_USER}:{field}:19000::::::\n");
             assert!(!password_set(&shadow, ADMIN_USER), "{field:?}");
         }
+        // Another account's line is skipped, and a missing line is not ready.
+        assert!(!password_set("root:$y$j9T$abc:19000::::::\n", ADMIN_USER));
         assert!(!password_set(ADMIN_USER, ADMIN_USER));
     }
 
