@@ -20,17 +20,61 @@ fn usage() -> ! {
     process::exit(2);
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum Command {
+    Unlock(String),
+    Status,
+    /// An empty app id locks every app of the caller.
+    Lock(String),
+    Resolve(String),
+    Protect {
+        app: String,
+        on: bool,
+    },
+}
+
+/// One argument, or `None` when the command took a different number.
+fn one_arg(args: &[std::ffi::OsString]) -> Option<String> {
+    match args {
+        [one] => Some(one.to_string_lossy().into_owned()),
+        _ => None,
+    }
+}
+
+/// Parse the command line. `None` means the arguments do not match any
+/// command and the caller prints the usage.
+fn parse_command(args: &[std::ffi::OsString]) -> Option<Command> {
+    let (command, rest) = args.split_first()?;
+    Some(match command.to_string_lossy().as_ref() {
+        "unlock" => Command::Unlock(one_arg(rest)?),
+        "status" if rest.is_empty() => Command::Status,
+        "lock" => match rest {
+            [] => Command::Lock(String::new()),
+            [one] => Command::Lock(one.to_string_lossy().into_owned()),
+            _ => return None,
+        },
+        "resolve" => Command::Resolve(one_arg(rest)?),
+        "protect" => Command::Protect {
+            app: one_arg(rest)?,
+            on: true,
+        },
+        "unprotect" => Command::Protect {
+            app: one_arg(rest)?,
+            on: false,
+        },
+        _ => return None,
+    })
+}
+
 fn main() {
-    let mut args: Vec<std::ffi::OsString> = env::args_os().skip(1).collect();
-    let command = args.first().map(|c| c.to_string_lossy().into_owned());
-    let code = match command.as_deref() {
-        Some("unlock") => unlock_command(args.split_off(1)),
-        Some("status") => status(),
-        Some("lock") => lock(args.split_off(1)),
-        Some("resolve") => resolve(args.split_off(1)),
-        Some("protect") => protect(args.split_off(1), true),
-        Some("unprotect") => protect(args.split_off(1), false),
-        _ => usage(),
+    let args: Vec<std::ffi::OsString> = env::args_os().skip(1).collect();
+    let code = match parse_command(&args) {
+        Some(Command::Unlock(app)) => unlock_command(app),
+        Some(Command::Status) => status(),
+        Some(Command::Lock(app)) => lock(app),
+        Some(Command::Resolve(app)) => resolve(app),
+        Some(Command::Protect { app, on }) => protect(app, on),
+        None => usage(),
     };
     process::exit(code);
 }
@@ -88,20 +132,9 @@ fn status() -> i32 {
         }
     };
     match manager.list_apps() {
-        Ok(apps) if apps.is_empty() => {
-            println!("no protected apps for this user");
-            0
-        }
         Ok(apps) => {
-            for (id, unlocked, paths, effective) in apps {
-                println!("{:<4} {id}", if unlocked { "open" } else { "lock" });
-                for path in paths {
-                    if effective.contains(&path) {
-                        println!("       {path}");
-                    } else {
-                        println!("       {path}  (未生效)");
-                    }
-                }
+            for line in status_lines(&apps) {
+                println!("{line}");
             }
             0
         }
@@ -112,13 +145,32 @@ fn status() -> i32 {
     }
 }
 
+/// Lines `shisa status` prints. A path without a mark says so, because
+/// settings would otherwise show protection that does not hold.
+fn status_lines(apps: &[shisa_core::dbus::AppRow]) -> Vec<String> {
+    if apps.is_empty() {
+        return vec!["no protected apps for this user".into()];
+    }
+    let mut lines = Vec::new();
+    for (id, unlocked, paths, effective) in apps {
+        lines.push(format!(
+            "{:<4} {id}",
+            if *unlocked { "open" } else { "lock" }
+        ));
+        for path in paths {
+            if effective.contains(path) {
+                lines.push(format!("       {path}"));
+            } else {
+                lines.push(format!("       {path}  (未生效)"));
+            }
+        }
+    }
+    lines
+}
+
 /// Protect or unprotect an app. shisad authenticates the change through
 /// polkit before it writes it (docs/subsystems/configuration.md).
-fn protect(args: Vec<std::ffi::OsString>, on: bool) -> i32 {
-    let app = match args.as_slice() {
-        [one] => one.to_string_lossy().into_owned(),
-        _ => usage(),
-    };
+fn protect(app: String, on: bool) -> i32 {
     let _agent = PtyAgent::start();
     let manager = match manager() {
         Ok(m) => m,
@@ -144,11 +196,7 @@ fn protect(args: Vec<std::ffi::OsString>, on: bool) -> i32 {
 /// daemon resolves them with the user's session environment, the same one
 /// protection uses. The local scan is only a fallback when the daemon is not
 /// available.
-fn resolve(args: Vec<std::ffi::OsString>) -> i32 {
-    let app = match args.as_slice() {
-        [one] => one.to_string_lossy().into_owned(),
-        _ => usage(),
-    };
+fn resolve(app: String) -> i32 {
     let env = shisa_core::desktop::Env::current();
     if let Ok(manager) = manager() {
         match manager.resolve_app(&app) {
@@ -198,22 +246,23 @@ fn resolve(args: Vec<std::ffi::OsString>) -> i32 {
 /// The daemon could not answer this method: it is not running, or it is too
 /// old to know it. Either way the local scan can stand in.
 fn unavailable(e: &zbus::Error) -> bool {
-    matches!(e, zbus::Error::MethodError(name, _, _)
-        if matches!(
-            name.as_str(),
-            "org.freedesktop.DBus.Error.UnknownMethod"
-                | "org.freedesktop.DBus.Error.UnknownInterface"
-                | "org.freedesktop.DBus.Error.ServiceUnknown"
-                | "org.freedesktop.DBus.Error.NameHasNoOwner"
-        ))
+    match e {
+        zbus::Error::MethodError(name, _, _) => unavailable_name(name.as_str()),
+        _ => false,
+    }
 }
 
-fn lock(args: Vec<std::ffi::OsString>) -> i32 {
-    let app = match args.as_slice() {
-        [] => String::new(),
-        [one] => one.to_string_lossy().into_owned(),
-        _ => usage(),
-    };
+fn unavailable_name(name: &str) -> bool {
+    matches!(
+        name,
+        "org.freedesktop.DBus.Error.UnknownMethod"
+            | "org.freedesktop.DBus.Error.UnknownInterface"
+            | "org.freedesktop.DBus.Error.ServiceUnknown"
+            | "org.freedesktop.DBus.Error.NameHasNoOwner"
+    )
+}
+
+fn lock(app: String) -> i32 {
     let manager = match manager() {
         Ok(m) => m,
         Err(e) => {
@@ -253,11 +302,7 @@ fn lock(args: Vec<std::ffi::OsString>) -> i32 {
     }
 }
 
-fn unlock_command(args: Vec<std::ffi::OsString>) -> i32 {
-    let app = match args.as_slice() {
-        [one] => one.to_string_lossy().into_owned(),
-        _ => usage(),
-    };
+fn unlock_command(app: String) -> i32 {
     unlock_dbus(&app)
 }
 
@@ -279,5 +324,106 @@ fn unlock_dbus(app: &str) -> i32 {
             eprintln!("shisa: {e}");
             1
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::OsString;
+
+    fn args(items: &[&str]) -> Vec<OsString> {
+        items.iter().map(OsString::from).collect()
+    }
+
+    #[test]
+    fn each_command_takes_its_own_arity() {
+        assert_eq!(
+            parse_command(&args(&["unlock", "app"])),
+            Some(Command::Unlock("app".into()))
+        );
+        assert_eq!(parse_command(&args(&["unlock"])), None);
+        assert_eq!(parse_command(&args(&["unlock", "a", "b"])), None);
+
+        assert_eq!(parse_command(&args(&["status"])), Some(Command::Status));
+        assert_eq!(parse_command(&args(&["status", "x"])), None);
+
+        assert_eq!(
+            parse_command(&args(&["lock"])),
+            Some(Command::Lock(String::new()))
+        );
+        assert_eq!(
+            parse_command(&args(&["lock", "app"])),
+            Some(Command::Lock("app".into()))
+        );
+        assert_eq!(parse_command(&args(&["lock", "a", "b"])), None);
+
+        assert_eq!(
+            parse_command(&args(&["resolve", "app"])),
+            Some(Command::Resolve("app".into()))
+        );
+        assert_eq!(parse_command(&args(&["resolve"])), None);
+
+        assert_eq!(
+            parse_command(&args(&["protect", "app"])),
+            Some(Command::Protect {
+                app: "app".into(),
+                on: true
+            })
+        );
+        assert_eq!(
+            parse_command(&args(&["unprotect", "app"])),
+            Some(Command::Protect {
+                app: "app".into(),
+                on: false
+            })
+        );
+        assert_eq!(parse_command(&args(&["unprotect"])), None);
+
+        assert_eq!(parse_command(&args(&[])), None);
+        assert_eq!(parse_command(&args(&["nonsense"])), None);
+    }
+
+    #[test]
+    fn status_marks_paths_without_a_mark() {
+        let apps = vec![
+            (
+                "app".into(),
+                false,
+                vec!["/usr/bin/app".into(), "/opt/missing".into()],
+                vec!["/usr/bin/app".into()],
+            ),
+            (
+                "other".into(),
+                true,
+                vec!["/usr/bin/other".into()],
+                vec!["/usr/bin/other".into()],
+            ),
+        ];
+        assert_eq!(
+            status_lines(&apps),
+            vec![
+                "lock app",
+                "       /usr/bin/app",
+                "       /opt/missing  (未生效)",
+                "open other",
+                "       /usr/bin/other",
+            ]
+        );
+        assert_eq!(status_lines(&[]), vec!["no protected apps for this user"]);
+    }
+
+    #[test]
+    fn only_a_missing_method_or_service_falls_back_to_the_local_scan() {
+        for name in [
+            "org.freedesktop.DBus.Error.UnknownMethod",
+            "org.freedesktop.DBus.Error.UnknownInterface",
+            "org.freedesktop.DBus.Error.ServiceUnknown",
+            "org.freedesktop.DBus.Error.NameHasNoOwner",
+        ] {
+            assert!(unavailable_name(name), "{name}");
+        }
+        assert!(!unavailable_name("org.freedesktop.DBus.Error.AccessDenied"));
+        assert!(!unavailable_name(""));
     }
 }
