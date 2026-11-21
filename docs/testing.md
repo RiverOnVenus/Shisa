@@ -23,6 +23,18 @@ CI runs the workspace and frontend suites on every push and pull request (`.gith
 
 The owner-check tests in `crates/shisad/tests/config_owner.rs` cannot create root-owned files as the normal user, so each re-executes itself under `unshare --user --map-root-user`. They print a skip when user namespaces are unavailable instead of passing a different check.
 
+## Fuzzing
+
+The fuzz targets cover the config file parser, the desktop `Exec` splitter and the fanotify record decoder. They need a nightly toolchain and `cargo-fuzz`, and run for a bounded time, so they are not part of `cargo test`:
+
+```sh
+cargo +nightly fuzz run config_parse -- -max_total_time=60
+cargo +nightly fuzz run exec_split -- -max_total_time=60
+cargo +nightly fuzz run fanotify_event -- -max_total_time=60
+```
+
+CI runs all three weekly and on demand (`.github/workflows/fuzz.yml`). See [fuzz/README.md](../fuzz/README.md) for the inputs and how to reproduce an artifact.
+
 `shisa-agent`'s test `the_manager_supplies_wayland_display_when_the_agent_lacks_it` needs a live systemd user manager that exports `WAYLAND_DISPLAY`. It skips itself in containers and CI, which have no user manager, so verify that path in a desktop session with `env -u WAYLAND_DISPLAY -u DISPLAY cargo test -p shisa-agent manager`.
 
 ## Daemon regression tests

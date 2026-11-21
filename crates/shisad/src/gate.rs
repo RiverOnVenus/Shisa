@@ -287,6 +287,13 @@ fn parse_event(buf: &[u8]) -> io::Result<(usize, Parsed)> {
     ))
 }
 
+/// Decode one record for the fuzz target. Behind a feature so a normal build
+/// does not publish a function no daemon code calls.
+#[cfg(feature = "fuzz")]
+pub fn fuzz_parse_event(buf: &[u8]) -> bool {
+    parse_event(buf).is_ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

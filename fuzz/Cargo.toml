@@ -1,0 +1,38 @@
+[package]
+name = "shisa-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+shisa-core = { path = "../crates/shisa-core" }
+shisad = { path = "../crates/shisad", features = ["fuzz"] }
+
+[[bin]]
+name = "config_parse"
+path = "fuzz_targets/config_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "exec_split"
+path = "fuzz_targets/exec_split.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fanotify_event"
+path = "fuzz_targets/fanotify_event.rs"
+test = false
+doc = false
+bench = false
+
+# A separate workspace so `cargo test --workspace` at the root does not pull
+# the fuzz build, which needs nightly and a sanitizer.
+[workspace]

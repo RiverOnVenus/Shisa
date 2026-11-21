@@ -14,6 +14,11 @@ futures-channel.workspace = true
 zbus.workspace = true
 shisa-core.workspace = true
 
+# Exports the fanotify record decoder to the fuzz crate. No normal build
+# enables this.
+[features]
+fuzz = []
+
 [[bin]]
 name = "shisad"
 path = "src/main.rs"
