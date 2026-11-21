@@ -32,6 +32,7 @@ jobs:
           mkdir "$out"
           docker run --rm \
             -e MAKEFLAGS="-j$(nproc)" \
+            -e CARGO_BUILD_JOBS="$(nproc)" \
             -e PACKAGER="Shisa GitHub Actions" \
             -v "$RUNNER_TEMP/shisa-arch-input:/input:ro" \
             -v "$PWD/.github/scripts/build-arch.sh:/build-arch.sh:ro" \
