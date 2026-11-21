@@ -160,7 +160,6 @@ impl Gate {
     /// no longer be trusted and the daemon should exit, which makes the kernel
     /// allow everything that is pending.
     pub fn drain(&self, mut handle: impl FnMut(Request)) -> io::Result<()> {
-        const META: usize = mem::size_of::<libc::fanotify_event_metadata>();
         let mut buf = [0u8; 4096];
         loop {
             let n = unsafe { libc::read(self.fan, buf.as_mut_ptr().cast(), buf.len()) };
@@ -177,31 +176,81 @@ impl Gate {
                 return Ok(());
             }
             let mut off = 0;
-            while off + META <= n {
-                let ev: libc::fanotify_event_metadata =
-                    unsafe { std::ptr::read_unaligned(buf.as_ptr().add(off).cast()) };
-                let len = ev.event_len as usize;
-                if ev.vers != libc::FANOTIFY_METADATA_VERSION || len < META || off + len > n {
-                    return Err(io::Error::new(io::ErrorKind::InvalidData, "bad fanotify event"));
+            while off < n {
+                let (len, parsed) = parse_event(&buf[off..n])?;
+                match parsed {
+                    Parsed::Exec { fd, pid } => handle(Request {
+                        fan: self.fan,
+                        fd,
+                        pid,
+                        answered: false,
+                    }),
+                    Parsed::Skip(fd) => unsafe {
+                        libc::close(fd);
+                    },
+                    Parsed::Overflow => {
+                        error!("fanotify queue overflow, some exec requests were not seen")
+                    }
+                    Parsed::Ignore => {}
                 }
                 off += len;
-                if ev.fd < 0 {
-                    // The kernel drops events it cannot queue, and a dropped
-                    // permission request is never answered, so that exec was
-                    // allowed without a decision. Make the gap visible.
-                    if ev.mask & libc::FAN_Q_OVERFLOW != 0 {
-                        error!("fanotify queue overflow, some exec requests were not seen");
-                    }
-                    continue;
-                }
-                if ev.mask & libc::FAN_OPEN_EXEC_PERM == 0 {
-                    unsafe { libc::close(ev.fd) };
-                    continue;
-                }
-                handle(Request { fan: self.fan, fd: ev.fd, pid: ev.pid, answered: false });
             }
         }
     }
+}
+
+/// What one decoded fanotify record asks for.
+#[derive(Debug)]
+enum Parsed {
+    /// A permission request for opening an executable.
+    Exec { fd: RawFd, pid: i32 },
+    /// A descriptor to close without handling it.
+    Skip(RawFd),
+    /// The kernel dropped events it could not queue. The stream stays valid.
+    Overflow,
+    /// A record with no descriptor that is not an overflow.
+    Ignore,
+}
+
+fn bad_event() -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, "bad fanotify event")
+}
+
+/// Decode the first record in `buf` and say how many bytes it used. A record
+/// that does not fit its buffer, or an unknown version, means the stream can
+/// no longer be trusted. A dropped permission event is allowed by the kernel
+/// without a decision, so overflow must stay visible rather than be skipped.
+fn parse_event(buf: &[u8]) -> io::Result<(usize, Parsed)> {
+    const META: usize = mem::size_of::<libc::fanotify_event_metadata>();
+    if buf.len() < META {
+        return Err(bad_event());
+    }
+    let ev: libc::fanotify_event_metadata =
+        unsafe { std::ptr::read_unaligned(buf.as_ptr().cast()) };
+    let len = ev.event_len as usize;
+    if ev.vers != libc::FANOTIFY_METADATA_VERSION || len < META || len > buf.len() {
+        return Err(bad_event());
+    }
+    if ev.fd < 0 {
+        return Ok((
+            len,
+            if ev.mask & libc::FAN_Q_OVERFLOW != 0 {
+                Parsed::Overflow
+            } else {
+                Parsed::Ignore
+            },
+        ));
+    }
+    if ev.mask & libc::FAN_OPEN_EXEC_PERM == 0 {
+        return Ok((len, Parsed::Skip(ev.fd)));
+    }
+    Ok((
+        len,
+        Parsed::Exec {
+            fd: ev.fd,
+            pid: ev.pid,
+        },
+    ))
 }
 
 #[cfg(test)]
@@ -227,5 +276,87 @@ mod tests {
             io::ErrorKind::PermissionDenied
         );
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    const META: usize = std::mem::size_of::<libc::fanotify_event_metadata>();
+
+    fn event(event_len: u32, mask: u64, fd: i32, pid: i32) -> libc::fanotify_event_metadata {
+        libc::fanotify_event_metadata {
+            event_len,
+            vers: libc::FANOTIFY_METADATA_VERSION,
+            reserved: 0,
+            metadata_len: META as u16,
+            mask,
+            fd,
+            pid,
+        }
+    }
+
+    fn record(ev: &libc::fanotify_event_metadata) -> Vec<u8> {
+        let mut buf = vec![0u8; ev.event_len as usize];
+        unsafe { std::ptr::write_unaligned(buf.as_mut_ptr().cast(), *ev) };
+        buf
+    }
+
+    #[test]
+    fn an_exec_permission_record_names_its_descriptor_and_pid() {
+        let first = record(&event(META as u32, libc::FAN_OPEN_EXEC_PERM, 7, 4242));
+        let second = record(&event(META as u32, libc::FAN_OPEN_EXEC_PERM, 8, 4243));
+        let mut stream = first;
+        stream.extend(second);
+
+        let (len, parsed) = parse_event(&stream).unwrap();
+        assert_eq!(len, META);
+        assert!(matches!(parsed, Parsed::Exec { fd: 7, pid: 4242 }));
+        // The returned length is where the next record starts.
+        let (_, parsed) = parse_event(&stream[len..]).unwrap();
+        assert!(matches!(parsed, Parsed::Exec { fd: 8, pid: 4243 }));
+    }
+
+    #[test]
+    fn a_record_for_another_event_is_skipped() {
+        let buf = record(&event(META as u32, libc::FAN_ACCESS, 7, 1));
+        let (len, parsed) = parse_event(&buf).unwrap();
+        assert_eq!(len, META);
+        assert!(matches!(parsed, Parsed::Skip(7)));
+    }
+
+    #[test]
+    fn an_overflow_is_reported_and_a_stray_negative_descriptor_is_ignored() {
+        let overflow = record(&event(META as u32, libc::FAN_Q_OVERFLOW, -1, 0));
+        let (_, parsed) = parse_event(&overflow).unwrap();
+        assert!(matches!(parsed, Parsed::Overflow));
+
+        let stray = record(&event(META as u32, libc::FAN_ACCESS, -1, 0));
+        let (_, parsed) = parse_event(&stray).unwrap();
+        assert!(matches!(parsed, Parsed::Ignore));
+    }
+
+    #[test]
+    fn a_bad_version_is_refused() {
+        let mut ev = event(META as u32, libc::FAN_OPEN_EXEC_PERM, 7, 1);
+        ev.vers = 0;
+        assert_eq!(
+            parse_event(&record(&ev)).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+    }
+
+    #[test]
+    fn a_record_shorter_or_longer_than_its_header_is_refused() {
+        let short = event((META - 1) as u32, libc::FAN_OPEN_EXEC_PERM, 7, 1);
+        let mut buf = vec![0u8; META];
+        unsafe { std::ptr::write_unaligned(buf.as_mut_ptr().cast(), short) };
+        assert!(parse_event(&buf).is_err());
+
+        let long = event((META + 8) as u32, libc::FAN_OPEN_EXEC_PERM, 7, 1);
+        let mut buf = vec![0u8; META];
+        unsafe { std::ptr::write_unaligned(buf.as_mut_ptr().cast(), long) };
+        assert!(parse_event(&buf).is_err());
+    }
+
+    #[test]
+    fn a_buffer_shorter_than_the_header_is_refused() {
+        assert!(parse_event(&[0u8; 3]).is_err());
     }
 }

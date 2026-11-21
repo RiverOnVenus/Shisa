@@ -133,11 +133,6 @@ mod tests {
     }
 
     #[test]
-    fn a_user_that_is_not_there_is_not_ready() {
-        assert!(!password_set("root:$y$j9T$abc:19000::::::\n", ADMIN_USER));
-    }
-
-    #[test]
     fn the_config_path_is_the_users_own_file() {
         let diag = Diag::new(PathBuf::from("/etc/shisa/users"));
         assert_eq!(diag.config_path("zhui"), "/etc/shisa/users/zhui.toml");

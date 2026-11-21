@@ -929,6 +929,9 @@ mod tests {
     use super::*;
     use std::thread;
 
+    // These two compare the generated script's text. They catch a list or an
+    // event name being dropped, not whether the script does the right thing:
+    // running it needs a KWin session.
     #[test]
     fn the_script_carries_every_list() {
         let script = script_for(
@@ -985,7 +988,7 @@ mod tests {
     }
 
     #[test]
-    fn the_immediate_preset_fires_and_a_disabled_app_is_dropped() {
+    fn a_disabled_app_drops_its_pending_relock() {
         let mut tracker = Tracker::default();
         let now = Instant::now();
         tracker.relock.insert("off".into(), 5);
@@ -1009,20 +1012,6 @@ mod tests {
         tracker.retain_allowed(&["shown".to_string()]);
         assert!(tracker.unfocused.contains_key("shown"));
         assert!(!tracker.unfocused.contains_key("hidden"));
-    }
-
-    #[test]
-    fn kwin_does_not_list_script_children_in_the_parent_document() {
-        // Measured on KWin 6.8.2: `Introspect` on /Scripting returned no
-        // `node name="Script{id}"` children even right after loadScript
-        // handed out that id, while /Scripting/Script{id} itself answered
-        // org.kde.kwin.Script. A collision check that reads the parent
-        // document therefore misses every live script and reports each load
-        // as a collision, so the id is checked through the script's own
-        // object instead (script_object). This pins the parent document's
-        // shape so the old check cannot come back by accident.
-        let parent = r#"<node name="/Scripting"><interface name="org.kde.kwin.Scripting"/></node>"#;
-        assert!(!parent.contains("<node name=\"Script"));
     }
 
     #[test]

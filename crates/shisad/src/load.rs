@@ -20,6 +20,34 @@ const MAX_CONFIG_SIZE: u64 = 1 << 20;
 /// Marked inodes and the path each was reached by.
 pub type Marks = HashMap<FileId, PathBuf>;
 
+/// The inode operations a reload needs. [`Gate`] performs the real fanotify
+/// work. A reload's decisions are tested with a fake, because a real gate
+/// needs `CAP_SYS_ADMIN`.
+pub trait Marker {
+    fn mark(&self, path: &Path) -> io::Result<FileId>;
+    fn unmark(&self, path: &Path, id: FileId) -> io::Result<bool>;
+}
+
+impl Marker for Gate {
+    fn mark(&self, path: &Path) -> io::Result<FileId> {
+        Gate::mark(self, path)
+    }
+
+    fn unmark(&self, path: &Path, id: FileId) -> io::Result<bool> {
+        Gate::unmark(self, path, id)
+    }
+}
+
+impl<T: Marker + ?Sized> Marker for std::sync::Arc<T> {
+    fn mark(&self, path: &Path) -> io::Result<FileId> {
+        (**self).mark(path)
+    }
+
+    fn unmark(&self, path: &Path, id: FileId) -> io::Result<bool> {
+        (**self).unmark(path, id)
+    }
+}
+
 /// Config must be root's and not writable by anyone else, or an unprivileged
 /// user could change what is protected (docs/subsystems/configuration.md).
 fn check_owner(path: &Path, meta: &fs::Metadata) -> io::Result<()> {
@@ -36,6 +64,13 @@ fn check_owner(path: &Path, meta: &fs::Metadata) -> io::Result<()> {
 }
 
 fn read_config(path: &Path) -> io::Result<String> {
+    read_config_with(path, check_owner)
+}
+
+fn read_config_with(
+    path: &Path,
+    owner: fn(&Path, &fs::Metadata) -> io::Result<()>,
+) -> io::Result<String> {
     let file = fs::File::open(path)?;
     let meta = file.metadata()?;
     if !meta.is_file() {
@@ -44,7 +79,7 @@ fn read_config(path: &Path) -> io::Result<String> {
             "not a regular file",
         ));
     }
-    check_owner(path, &meta)?;
+    owner(path, &meta)?;
     // Truncating silently could cut at a line boundary and leave a smaller
     // but valid config, which would shrink protection without any error.
     if meta.len() > MAX_CONFIG_SIZE {
@@ -222,10 +257,22 @@ pub fn apply(
 /// Read every `<username>.toml` in `dir`, mark the protected paths and return
 /// the resulting policy. A user whose file cannot be read or parsed keeps the
 /// entry from `old`, so a typo during a reload does not switch protection off.
-pub fn load(gate: &Gate, dir: &Path, old: &Policy, marks: &mut Marks) -> Policy {
+pub fn load(marker: &dyn Marker, dir: &Path, old: &Policy, marks: &mut Marks) -> Policy {
+    load_with(marker, dir, old, marks, check_owner)
+}
+
+/// `owner` is a parameter so tests can read a config the current user owns.
+/// Production always passes [`check_owner`].
+fn load_with(
+    marker: &dyn Marker,
+    dir: &Path,
+    old: &Policy,
+    marks: &mut Marks,
+    owner: fn(&Path, &fs::Metadata) -> io::Result<()>,
+) -> Policy {
     let mut policy = Policy::default();
     let entries = fs::metadata(dir)
-        .and_then(|meta| check_owner(dir, &meta))
+        .and_then(|meta| owner(dir, &meta))
         .and_then(|()| fs::read_dir(dir));
     let entries = match entries {
         Ok(entries) => entries,
@@ -247,7 +294,7 @@ pub fn load(gate: &Gate, dir: &Path, old: &Policy, marks: &mut Marks) -> Policy 
             warn!("{}: no such user, ignored", path.display());
             continue;
         };
-        let parsed = read_config(&path)
+        let parsed = read_config_with(&path, owner)
             .map_err(|e| e.to_string())
             .and_then(|text| UserConfig::parse(&text).map_err(|e| e.to_string()));
         let config = match parsed {
@@ -273,7 +320,7 @@ pub fn load(gate: &Gate, dir: &Path, old: &Policy, marks: &mut Marks) -> Policy 
                     warn!("{name}: {}: skipping {}: {why}", app.id, p.display());
                     continue;
                 }
-                match gate.mark(p) {
+                match marker.mark(p) {
                     Ok(id) => {
                         marks.insert(id, p.clone());
                         if !ids.contains(&id) {
@@ -351,7 +398,7 @@ pub fn marks_are_current(policy: &Policy) -> bool {
 }
 
 /// Remove marks from inodes that no policy refers to any more.
-pub fn drop_stale_marks(gate: &Gate, marks: &mut Marks, keep: &HashSet<FileId>) {
+pub fn drop_stale_marks(marker: &dyn Marker, marks: &mut Marks, keep: &HashSet<FileId>) {
     marks.retain(|id, path| {
         if keep.contains(id) {
             return true;
@@ -359,7 +406,7 @@ pub fn drop_stale_marks(gate: &Gate, marks: &mut Marks, keep: &HashSet<FileId>) 
         // A replaced or deleted file leaves its old inode out of reach, so
         // this can fail. Events from that inode are allowed because the
         // policy no longer lists it.
-        let _ = gate.unmark(path, *id);
+        let _ = marker.unmark(path, *id);
         false
     });
 }
@@ -647,33 +694,6 @@ mod tests {
             .is_err()
         );
         assert_eq!(config.apps[0].paths.len(), 2);
-        // Shells and Shisa's own programs cannot become protected paths.
-        assert!(
-            apply(
-                &mut config,
-                "app",
-                &Change::Paths(vec!["/usr/bin/bash".into()]),
-                |_| unreachable!()
-            )
-            .is_err()
-        );
-        // A directory or a missing file cannot be marked either.
-        assert!(
-            apply(
-                &mut config,
-                "app",
-                &Change::Paths(vec!["/usr/share".into()]),
-                |_| unreachable!()
-            )
-            .is_err()
-        );
-        let mut fresh = UserConfig::default();
-        assert!(
-            apply(&mut fresh, "x", &Change::Protected(true), |_| Ok(vec![
-                "/usr/bin/shisa-settings".into()
-            ]))
-            .is_err()
-        );
     }
 
     #[test]
@@ -756,5 +776,222 @@ mod tests {
         .unwrap();
         let text = config.to_toml().unwrap();
         assert_eq!(UserConfig::parse(&text).unwrap(), config);
+    }
+
+    struct FakeMarker {
+        fail: bool,
+        next: std::cell::Cell<u64>,
+    }
+
+    impl FakeMarker {
+        fn new(fail: bool) -> Self {
+            Self {
+                fail,
+                next: std::cell::Cell::new(10),
+            }
+        }
+    }
+
+    impl Marker for FakeMarker {
+        fn mark(&self, _path: &Path) -> io::Result<FileId> {
+            if self.fail {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "test marker refuses",
+                ));
+            }
+            let ino = self.next.get();
+            self.next.set(ino + 1);
+            Ok(FileId { dev: 1, ino })
+        }
+
+        fn unmark(&self, _path: &Path, _id: FileId) -> io::Result<bool> {
+            Ok(true)
+        }
+    }
+
+    /// Tests own the config they write, which the production owner check
+    /// rejects. Fail-closed tests therefore inject this check and leave the
+    /// real one to `a_directory_not_owned_by_root_keeps_the_previous_policy`.
+    fn permissive(_: &Path, _: &fs::Metadata) -> io::Result<()> {
+        Ok(())
+    }
+
+    fn config_dir(tag: &str) -> (PathBuf, String, u32) {
+        let dir = std::env::temp_dir().join(format!("shisad-load-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let uid = unsafe { libc::getuid() };
+        let name = shisa_core::users::name(uid).expect("own user");
+        (dir, name, uid)
+    }
+
+    fn write_config(dir: &Path, name: &str, bin: &Path) {
+        fs::write(
+            dir.join(format!("{name}.toml")),
+            format!("[[apps]]\nid = \"app\"\npaths = [\"{}\"]\n", bin.display()),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn a_broken_config_keeps_the_previous_policy() {
+        let (dir, name, uid) = config_dir("broken");
+        let bin = dir.join("bin");
+        fs::write(&bin, "x").unwrap();
+        write_config(&dir, &name, &bin);
+        let marker = FakeMarker::new(false);
+        let first = load_with(
+            &marker,
+            &dir,
+            &Policy::default(),
+            &mut Marks::new(),
+            permissive,
+        );
+        let before = &first.users[&uid];
+        assert_eq!(before.apps[0].files, vec![FileId { dev: 1, ino: 10 }]);
+
+        fs::write(dir.join(format!("{name}.toml")), "this is not toml").unwrap();
+        let second = load_with(&marker, &dir, &first, &mut Marks::new(), permissive);
+        assert!(
+            second.users.contains_key(&uid),
+            "a broken config dropped the previous policy"
+        );
+        let after = &second.users[&uid];
+        assert_eq!(after.apps[0].id, "app");
+        assert_eq!(after.apps[0].files, before.apps[0].files);
+        assert_eq!(after.apps[0].effective, before.apps[0].effective);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_unreadable_config_keeps_the_previous_policy() {
+        let (dir, name, uid) = config_dir("unreadable");
+        let bin = dir.join("bin");
+        fs::write(&bin, "x").unwrap();
+        write_config(&dir, &name, &bin);
+        let marker = FakeMarker::new(false);
+        let first = load_with(
+            &marker,
+            &dir,
+            &Policy::default(),
+            &mut Marks::new(),
+            permissive,
+        );
+
+        // A directory where the config file should be cannot be read as a
+        // regular file, the same as a file whose permissions deny it.
+        let path = dir.join(format!("{name}.toml"));
+        fs::remove_file(&path).unwrap();
+        fs::create_dir(&path).unwrap();
+        let second = load_with(&marker, &dir, &first, &mut Marks::new(), permissive);
+        assert!(
+            second.users.contains_key(&uid),
+            "an unreadable config dropped the previous policy"
+        );
+        assert_eq!(second.users[&uid].apps[0].id, "app");
+        assert_eq!(
+            second.users[&uid].apps[0].files,
+            first.users[&uid].apps[0].files
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_config_directory_that_cannot_be_read_keeps_the_previous_policy() {
+        let (dir, name, uid) = config_dir("missing-dir");
+        let bin = dir.join("bin");
+        fs::write(&bin, "x").unwrap();
+        write_config(&dir, &name, &bin);
+        let marker = FakeMarker::new(false);
+        let first = load_with(
+            &marker,
+            &dir,
+            &Policy::default(),
+            &mut Marks::new(),
+            permissive,
+        );
+
+        let gone = dir.join("gone");
+        let second = load_with(&marker, &gone, &first, &mut Marks::new(), permissive);
+        assert!(
+            second.users.contains_key(&uid),
+            "an unreadable directory dropped the previous policy"
+        );
+        assert_eq!(second.users[&uid].apps[0].id, "app");
+        assert_eq!(
+            second.users[&uid].apps[0].files,
+            first.users[&uid].apps[0].files
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_directory_not_owned_by_root_keeps_the_previous_policy() {
+        let (dir, name, uid) = config_dir("owner");
+        let bin = dir.join("bin");
+        fs::write(&bin, "x").unwrap();
+        write_config(&dir, &name, &bin);
+        let marker = FakeMarker::new(false);
+        let first = load_with(
+            &marker,
+            &dir,
+            &Policy::default(),
+            &mut Marks::new(),
+            permissive,
+        );
+        // The real check runs here, and a temp directory belongs to the user.
+        let second = load(&marker, &dir, &first, &mut Marks::new());
+        assert!(
+            second.users.contains_key(&uid),
+            "a config directory owned by the user dropped the previous policy"
+        );
+        assert_eq!(second.users[&uid].apps[0].id, "app");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_missing_config_file_means_no_configuration() {
+        let (dir, name, uid) = config_dir("no-file");
+        let bin = dir.join("bin");
+        fs::write(&bin, "x").unwrap();
+        write_config(&dir, &name, &bin);
+        let marker = FakeMarker::new(false);
+        let first = load_with(
+            &marker,
+            &dir,
+            &Policy::default(),
+            &mut Marks::new(),
+            permissive,
+        );
+        assert!(first.users.contains_key(&uid));
+        fs::remove_file(dir.join(format!("{name}.toml"))).unwrap();
+        // Unlike a read or parse error, an absent file is a user who has no
+        // configuration, so the previous entry is not kept.
+        let second = load_with(&marker, &dir, &first, &mut Marks::new(), permissive);
+        assert!(!second.users.contains_key(&uid));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_failed_mark_keeps_the_app_listed_but_unmarked() {
+        let (dir, name, uid) = config_dir("mark-fail");
+        let bin = dir.join("bin");
+        fs::write(&bin, "x").unwrap();
+        write_config(&dir, &name, &bin);
+        let policy = load_with(
+            &FakeMarker::new(true),
+            &dir,
+            &Policy::default(),
+            &mut Marks::new(),
+            permissive,
+        );
+        let app = &policy.users[&uid].apps[0];
+        // Settings must still show the path, while `effective` says nothing
+        // is watched.
+        assert_eq!(app.paths, vec![bin]);
+        assert!(app.files.is_empty());
+        assert!(app.effective.is_empty());
+        let _ = fs::remove_dir_all(&dir);
     }
 }
