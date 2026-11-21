@@ -39,4 +39,6 @@ See the [developer documentation](docs/README.md) for architecture, coding stand
 
 ## License
 
+Copyright (C) 2026 RiverOnVenus.
+
 [GPL-3.0-or-later](LICENSE)

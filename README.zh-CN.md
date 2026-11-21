@@ -39,4 +39,6 @@ Shisa 适合防止别人顺手打开应用。启动认证仅覆盖实际生效�
 
 ## 许可证
 
+Copyright (C) 2026 RiverOnVenus。
+
 [GPL-3.0-or-later](LICENSE)
