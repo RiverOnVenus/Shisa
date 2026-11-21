@@ -1,16 +1,26 @@
 # Arch packaging and installation verification
 
-## Build a test package
+## Build a local test package
 
-Run these commands from a maintainer checkout with the separately maintained `packaging/arch/` files. The scripts require the repository root and the `v$pkgver` tag. Check that the tag points to the commit you intend to verify.
+Run these commands from the repository root on Arch Linux:
 
 ```sh
-cd packaging/arch
-./release.sh
-SRCDEST="$PWD" makepkg -f
+build_dir=$(mktemp -d "${TMPDIR:?}/shisa-arch.XXXXXXXX")
+packaging/arch/prepare-build.sh --worktree "$build_dir"
+(cd "$build_dir" && SRCDEST="$build_dir" makepkg)
 ```
 
-`release.sh` calls `make-source.sh` to archive the tagged sources, updates the checksum in `PKGBUILD`, and writes `.SRCINFO`. `SRCDEST="$PWD"` lets makepkg use the local archive. After publication, repeat the build using the release download URL to verify the published archive. The maintainer checkout has publishing details in `packaging/arch/packaging-notes.md`.
+The source archive includes modified tracked files and non-ignored additions. Deleted files and `packaging/` are excluded. The script stages its own checksum and sets a decimal test `pkgrel` in the copied recipe. The repository's `PKGBUILD` stays unchanged. Install needed build dependencies separately if they are missing. Both the source archive and the generated package stay in the build directory.
+
+A later formal package with the same base `pkgrel` sorts below the local decimal test build. Install the formal package explicitly with `pacman -U` if switching back from the test build.
+
+## GitHub Release packages
+
+The [Arch package workflow](../.github/workflows/arch-package.yml) builds the commit selected by a published `vX.Y.Z` Release. The tag must match the tagged `PKGBUILD` version. The build job runs `makepkg` and `check()` in a fresh Arch Linux image and checks the installed file list. The upload job attaches the x86_64 package and `SHA256SUMS` to that same Release. It preserves existing assets and reports a failure if an existing asset differs from the build.
+
+Use **Actions → Build Arch package → Run workflow** to build an Actions artifact from a selected branch or tag. A manual run builds a test package and does not upload Release assets. The workflow assumes release assets can be added after publication.
+
+For manual AUR preparation, `packaging/arch/release.sh` still creates the tagged source archive, updates the hash, and writes `.SRCINFO`. That source archive can be uploaded separately when needed.
 
 ## Installation and upgrade verification
 

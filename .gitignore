@@ -10,8 +10,13 @@ GEMINI.md
 .aider*
 .opencode/
 
-# Packaging is developed outside the repository
-packaging/
+# Local packaging notes and generated files
+/packaging/arch/packaging-notes.md
+/packaging/arch/.SRCINFO
+/packaging/arch/src/
+/packaging/arch/pkg/
+/packaging/arch/*.tar.gz
+/packaging/arch/*.pkg.tar.*
 
 # Build output
 target/
