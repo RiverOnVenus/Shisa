@@ -106,6 +106,5 @@ export function matches(app, query, filter) {
     return false;
   if (filter === "protected" && !app.protected) return false;
   if (filter === "unlocked" && !(app.protected && app.unlocked)) return false;
-  if (filter === "unprotected" && app.protected) return false;
   return true;
 }

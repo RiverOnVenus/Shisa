@@ -272,8 +272,7 @@ input:focus-visible {
   background: var(--pill);
 }
 
-/* the four filter words outgrow the sidebar in English, so the row wraps
-   instead of pushing past the narrow column */
+/* a translation that outgrows the sidebar wraps instead of pushing past it */
 .segs.filters {
   flex-wrap: wrap;
   row-gap: 2px;

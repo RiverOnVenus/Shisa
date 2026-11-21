@@ -34,7 +34,7 @@
     ["n", "North"], ["s", "South"], ["e", "East"], ["w", "West"],
     ["ne", "NorthEast"], ["nw", "NorthWest"], ["se", "SouthEast"], ["sw", "SouthWest"],
   ];
-  const filters = ["all", "protected", "unlocked", "unprotected"];
+  const filters = ["all", "protected", "unlocked"];
   // The account that holds the app-lock password, as created by
   // data/shisa-lock.sysusers. The first run has no password yet,
   // and every authentication fails until root sets one.

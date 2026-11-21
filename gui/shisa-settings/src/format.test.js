@@ -131,15 +131,13 @@ test("matches searches the name and the id, then the filter", () => {
   assert.ok(!matches(app, "firefox", "all"));
   assert.ok(matches(app, "", "protected"));
   assert.ok(matches(app, "", "unlocked"));
-  assert.ok(!matches(app, "", "unprotected"));
 
   const locked = { id: "a", name: "A", protected: true, unlocked: false };
   assert.ok(!matches(locked, "", "unlocked"));
-  assert.ok(!matches(locked, "", "unprotected"));
 
   const free = { id: "b", name: "B", protected: false, unlocked: false };
-  assert.ok(matches(free, "", "unprotected"));
   assert.ok(!matches(free, "", "protected"));
+  assert.ok(!matches(free, "", "unlocked"));
 });
 
 test("translations fill parameters and choose the plural form", () => {
