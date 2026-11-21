@@ -11,8 +11,12 @@ cargo fmt --all -- --check
 cargo test --workspace
 cargo clippy --workspace --all-targets
 (cd gui/shisa-settings && npm ci && npm run build)
+(cd gui/shisa-settings && npm test)
+(cd gui/shisa-settings/src-tauri && cargo test)
 (cd gui/shisa-settings/src-tauri && cargo build --features custom-protocol)
 ```
+
+The settings crate is outside the workspace, so `cargo test --workspace` does not reach it. Its frontend rules are plain JavaScript tested with Node's built-in runner, and the Tauri shell has its own tests. The Arch package's `check()` runs all three suites.
 
 `shisa-agent`'s test `the_manager_supplies_wayland_display_when_the_agent_lacks_it` needs a live systemd user manager that exports `WAYLAND_DISPLAY`. It skips itself in containers and CI, which have no user manager, so verify that path in a desktop session with `env -u WAYLAND_DISPLAY -u DISPLAY cargo test -p shisa-agent manager`.
 

@@ -43,6 +43,10 @@ check() {
     cd "$pkgname-$pkgver"
     export RUSTUP_TOOLCHAIN=stable
     cargo test --workspace --release --frozen
+    # The settings window is outside the workspace, and its frontend rules are
+    # plain JavaScript. Both suites run here so a release cannot skip them.
+    ( cd gui/shisa-settings && npm test )
+    ( cd gui/shisa-settings/src-tauri && cargo test --release --frozen )
 }
 
 package() {
