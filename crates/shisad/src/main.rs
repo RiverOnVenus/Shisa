@@ -294,13 +294,7 @@ fn on_request(
     // A flood of launches must not grow the held set or the daemon's
     // descriptor table without bound. The caller is refused like any other
     // unauthenticated launch.
-    let (for_app, for_user) = pending.iter().fold((0, 0), |(a, u), p| {
-        (
-            a + usize::from(p.uid == uid && p.app == app),
-            u + usize::from(p.uid == uid),
-        )
-    });
-    if for_app >= MAX_HELD_EXECS_PER_APP || for_user >= MAX_HELD_EXECS_PER_USER {
+    if held_exec_crowded(pending.iter().map(|p| (p.uid, p.app.as_str())), uid, &app) {
         debug!(pid, uid, %app, "too many held launches, denying");
         activity.record(uid, events.next_id(), &app, pid, activity::DENIED, 0);
         let _ = req.answer(false);
@@ -448,6 +442,20 @@ fn refuse(
             result: Err(ending.message().to_string()),
         });
     }
+}
+
+/// Whether one more held exec of `app` for `uid` would pass either cap.
+fn held_exec_crowded<'a>(held: impl Iterator<Item = (u32, &'a str)>, uid: u32, app: &str) -> bool {
+    let (mut for_app, mut for_user) = (0, 0);
+    for (held_uid, held_app) in held {
+        if held_uid == uid {
+            for_user += 1;
+            if held_app == app {
+                for_app += 1;
+            }
+        }
+    }
+    for_app >= MAX_HELD_EXECS_PER_APP || for_user >= MAX_HELD_EXECS_PER_USER
 }
 
 /// More authentication boxes than the daemon will hold at once. Settings
@@ -952,5 +960,84 @@ mod tests {
         );
         note_marks(&diag, &broken);
         assert!(diag.failed() > 0);
+    }
+
+    fn changes(count: usize, uid: u32) -> Vec<PendingChange> {
+        (0..count)
+            .map(|i| PendingChange {
+                id: i as u64,
+                uid,
+                app: "app".into(),
+                change: Change::Grace(1),
+                deadline: Instant::now(),
+            })
+            .collect()
+    }
+
+    fn unlocks(count: usize, uid: u32) -> Vec<PendingUnlock> {
+        (0..count)
+            .map(|i| PendingUnlock {
+                id: i as u64,
+                uid,
+                deadline: Instant::now(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn held_exec_caps_count_the_app_and_the_user_separately() {
+        let none: [(u32, &str); 0] = [];
+        assert!(!held_exec_crowded(none.iter().copied(), 1000, "app"));
+        // The same app of another user does not fill this user's cap.
+        let others: Vec<(u32, &str)> = (0..MAX_HELD_EXECS_PER_USER)
+            .map(|_| (2000, "app"))
+            .collect();
+        assert!(!held_exec_crowded(others.iter().copied(), 1000, "app"));
+        // One app at its cap is crowded even when the user total is below it.
+        let same_app: Vec<(u32, &str)> =
+            (0..MAX_HELD_EXECS_PER_APP).map(|_| (1000, "app")).collect();
+        assert!(held_exec_crowded(same_app.iter().copied(), 1000, "app"));
+        // The same count spread over other apps leaves room for this one.
+        let other_apps: Vec<(u32, &str)> = (0..MAX_HELD_EXECS_PER_APP)
+            .map(|_| (1000, "other"))
+            .collect();
+        assert!(!held_exec_crowded(other_apps.iter().copied(), 1000, "app"));
+        // Each app stays under its own cap, so only the user cap can refuse.
+        let names = ["a", "b", "c", "d", "e"];
+        let spread = |count: usize| -> Vec<(u32, String)> {
+            (0..count)
+                .map(|i| (1000, names[i % names.len()].to_string()))
+                .collect()
+        };
+        let below = spread(MAX_HELD_EXECS_PER_USER - 1);
+        assert!(!held_exec_crowded(
+            below.iter().map(|(uid, app)| (*uid, app.as_str())),
+            1000,
+            "app"
+        ));
+        let at = spread(MAX_HELD_EXECS_PER_USER);
+        assert!(held_exec_crowded(
+            at.iter().map(|(uid, app)| (*uid, app.as_str())),
+            1000,
+            "app"
+        ));
+    }
+
+    #[test]
+    fn auth_caps_share_one_budget_per_user_and_overall() {
+        assert!(!auth_crowded(&[], &[], 1000));
+        // Four of this user's own requests are crowded, three are not.
+        assert!(!auth_crowded(&changes(3, 1000), &[], 1000));
+        assert!(auth_crowded(&changes(4, 1000), &[], 1000));
+        // Changes and unlocks draw from the same per-user budget.
+        assert!(auth_crowded(&changes(2, 1000), &unlocks(2, 1000), 1000));
+        assert!(!auth_crowded(&changes(2, 1000), &unlocks(1, 1000), 1000));
+        // The overall cap applies to another user's requests too.
+        assert!(!auth_crowded(
+            &[],
+            &unlocks(MAX_WAITING_AUTH - 1, 2000),
+            1000
+        ));
+        assert!(auth_crowded(&[], &unlocks(MAX_WAITING_AUTH, 2000), 1000));
     }
 }
