@@ -5,7 +5,7 @@
 # `cargo build --release`. Everything runs on a private dbus-daemon with
 # tests/fake-polkit standing in for polkitd, so no real password is involved.
 #
-# Close KWrite before running. Only throwaway files under $W are marked.
+# Only throwaway files under $W are marked, KWrite is not used.
 set -u
 
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
@@ -17,12 +17,22 @@ LOG="$W/shisad.log"
 OUT="$W/results.txt"
 ME="$(id -un)"
 FAILED=0
+# Diagnostics reports CARGO_PKG_VERSION, which is the workspace version. Read
+# it from the source tree instead of pinning a number that goes stale.
+VERSION=$(sed -n 's/^version = "\([^"]*\)"$/\1/p' "$HERE/Cargo.toml" | head -n 1)
+[ -n "$VERSION" ] || { echo "cannot read the workspace version from Cargo.toml"; exit 1; }
 
 for b in "$SHISAD" "$CLI"; do
   [ -x "$b" ] || { echo "build first: cargo build --release"; exit 1; }
 done
 [ "$(id -u)" -ne 0 ] || { echo "run as the normal user, not root"; exit 1; }
 rm -rf "$W"; mkdir -p "$W"
+# The assertions below match the English interface. The saved language choice
+# lives under XDG_CONFIG_HOME, so point it at the test directory and force the
+# C locale instead of depending on the caller's session.
+export LC_ALL=C
+export XDG_CONFIG_HOME="$W/config"
+mkdir -p "$XDG_CONFIG_HOME"
 : > "$OUT"
 
 . "$HERE/tests/lib.sh"
@@ -104,7 +114,7 @@ grep -q "'denied'" "$W/recent.txt" && say "  ok    the denial is recorded" \
 grep -q 'uint64 1, uint64 0, uint64 1' "$W/recent.txt" && say "  ok    one request, none allowed, one denied" \
   || { say "  FAIL  unexpected totals: $(cat "$W/recent.txt")"; FAILED=$((FAILED + 1)); }
 diag > "$W/diag.txt" 2>&1
-grep -q "'0\.1\.0'" "$W/diag.txt" && say "  ok    the version is reported" \
+grep -Fq "('$VERSION'," "$W/diag.txt" && say "  ok    the version is reported" \
   || { say "  FAIL  no version: $(cat "$W/diag.txt")"; FAILED=$((FAILED + 1)); }
 grep -q 'uint64 2, uint64 2' "$W/diag.txt" && say "  ok    two apps and two marked paths" \
   || { say "  FAIL  unexpected counts: $(cat "$W/diag.txt")"; FAILED=$((FAILED + 1)); }

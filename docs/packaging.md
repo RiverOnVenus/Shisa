@@ -40,6 +40,8 @@ On 2026-11-22, a local test package `shisa-0.1.3-1.1` was built from the worktre
 
 On 2026-11-22, a second local test package `shisa-0.1.3-1.2` added the app-tray restore path. `makepkg`'s `check()` passed, including the KWin script tests for a hidden app activation that asks `RestoreIfTicketed` without showing the window first. It was installed over `0.1.3-1.1` with `pacman -U` and `pacman -Qkk shisa` reported 0 changed files. Only `shisa-agent.service` was restarted, so `shisad` kept its PID and the existing tickets and window permissions. The active script in `/run/user/1000/shisa` contains `RestoreIfTicketed`. The user verified the app-tray restore path in the live Wayland session.
 
+On 2026-11-22, a new local test package `shisa-0.1.3-1.1` was built from the worktree with the policy-mode, scan-budget, and test-harness changes. `makepkg`'s `check()` passed the workspace tests, the settings frontend and Tauri tests, and the KWin script tests. `pacman -Qip` reports the install script, and `bsdtar` shows the four binaries, both units, the polkit action and rule, the D-Bus policy, the sysusers entry, the pacman hook, `ConfigurationDirectoryMode=0700` in `shisad.service`, and `secure_config` in `.INSTALL`. The package was not installed.
+
 ## Dependency advisories
 
 On 2026-11-22, the two open Dependabot alerts were reviewed.
