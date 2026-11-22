@@ -802,7 +802,7 @@ fn select_display_vars(
 fn open_settings(gate: &Arc<Mutex<Option<window::Gate>>>, restore: bool) {
     let bin = env::var_os("SHISA_SETTINGS_BIN")
         .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| "shisa-settings".into());
+        .unwrap_or_else(|| "/usr/bin/shisa-settings".into());
     let missing = display_env();
     if !missing.is_empty() {
         debug!(

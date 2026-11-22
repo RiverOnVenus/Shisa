@@ -124,7 +124,7 @@ impl PtyAgent {
             return PtyAgent(None);
         }
         unsafe { libc::close(tty) };
-        let child = process::Command::new("pkttyagent")
+        let child = process::Command::new("/usr/bin/pkttyagent")
             .arg("--process")
             .arg(process::id().to_string())
             .spawn()
