@@ -48,6 +48,7 @@ const zh = {
   "crumb.activity": "最近启动",
   "top.search": "查找设置",
   "top.lockAll": "全部上锁",
+  "top.lockAllNone": "没有受保护的应用",
   "top.minimize": "最小化",
   "top.close": "关闭",
 
@@ -233,6 +234,7 @@ const en = {
   "crumb.activity": "Recent launches",
   "top.search": "Search settings",
   "top.lockAll": "Lock all",
+  "top.lockAllNone": "No protected apps",
   "top.minimize": "Minimize",
   "top.close": "Close",
 

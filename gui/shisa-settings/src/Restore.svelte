@@ -22,6 +22,10 @@
   let opening = $state("");
   let busyLock = $state(false);
   let agentMissing = $state(false);
+  // True when the daemon reports at least one protected app. Null means the
+  // list could not be read, so the lock action stays disabled rather than
+  // offering a call that is known to be pointless.
+  let hasProtected = $state(null);
   let notice = $state("");
   let error = $state("");
   let list;
@@ -49,7 +53,7 @@
 
   async function focusFirst() {
     await tick();
-    list?.querySelector("button")?.focus();
+    list?.querySelector("button:not(:disabled)")?.focus();
   }
 
   async function load(focus = true) {
@@ -62,6 +66,7 @@
         invoke("list_apps").catch(() => null),
       ]);
       const apps = new Map(installed.map(([id, name, icon]) => [id, { name, icon }]));
+      hasProtected = protectedRows ? protectedRows.length > 0 : null;
       // A valid ticket restores the window without a prompt. When the daemon
       // cannot answer, the hint stays unknown rather than guessed.
       const ticketed = protectedRows
@@ -92,6 +97,7 @@
       // A missing agent is not a read error: it explains why the tray and
       // window hiding are unavailable and offers the command that fixes it.
       agentMissing = !(await invoke("agent_status").catch(() => false));
+      hasProtected = null;
       rows = [];
       if (!agentMissing) error = t("restore.error.read");
     } finally {
@@ -155,7 +161,7 @@
   }
 
   async function lockAll() {
-    if (busyLock) return;
+    if (busyLock || hasProtected !== true) return;
     busyLock = true;
     notice = "";
     error = "";
@@ -189,12 +195,21 @@
     await load();
   }
 
+  /// Start a drag on a single left click. The usual
+  /// `data-tauri-drag-region` treats a double click as maximize, which
+  /// bypasses this window's fixed size.
+  function startDrag(event) {
+    if (event.button !== 0 || event.detail !== 1) return;
+    if (event.target instanceof Element && event.target.closest("button")) return;
+    panel.startDragging();
+  }
+
   function keydown(event) {
     if (event.key === "Escape" && !opening && !busyLock) {
       panel.close();
     }
     if (opening || busyLock || (event.key !== "ArrowDown" && event.key !== "ArrowUp")) return;
-    const buttons = [...(list?.querySelectorAll("button") ?? [])];
+    const buttons = [...(list?.querySelectorAll("button:not(:disabled)") ?? [])];
     if (!buttons.length) return;
     event.preventDefault();
     const index = buttons.indexOf(document.activeElement);
@@ -206,6 +221,14 @@
 <svelte:window onkeydown={keydown} />
 
 <main>
+  <div class="top" onmousedown={startDrag}>
+    <div class="crumb"><b>{t("restore.title")}</b></div>
+    <div class="actions">
+      <button class="icon winclose" aria-label={t("top.close")} title={t("top.close")} onclick={() => panel.close()}>
+        <svg viewBox="0 0 16 16" width="10" height="10"><path d="M4 4l8 8M12 4l-8 8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+      </button>
+    </div>
+  </div>
   <div class="scroll" bind:this={list} aria-busy={loading || !!opening || busyLock}>
     {#if loading}
       <div class="empty" role="status">{t("restore.loading")}</div>
@@ -223,7 +246,12 @@
         {#if !error}<div class="blank-name">{t("restore.empty")}</div>{/if}
         {#if notice}<div class="blank-sub">{notice}</div>{/if}
         <div class="blank-actions">
-          <button class="text action" disabled={busyLock} onclick={lockAll}>{t("restore.lockAll")}</button>
+          <button
+            class="text action"
+            disabled={busyLock || hasProtected !== true}
+            title={hasProtected === true ? undefined : hasProtected === false ? t("top.lockAllNone") : t("daemon.offline")}
+            onclick={lockAll}
+          >{t("restore.lockAll")}</button>
           <button class="text action" onclick={openSettings}>{t("restore.openSettings")}</button>
         </div>
       </div>
@@ -277,7 +305,7 @@
     display: flex;
     flex-direction: column;
     height: 100%;
-    padding: 10px 16px 16px;
+    padding: 0;
     background: var(--bg);
     color: var(--fg);
   }
@@ -286,6 +314,7 @@
     flex: 1;
     min-height: 0;
     overflow-y: auto;
+    padding: 10px 16px 16px;
   }
 
   .scroll > .empty {
