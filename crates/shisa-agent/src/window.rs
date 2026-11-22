@@ -850,6 +850,8 @@ fn js_string(value: &str) -> String {
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
+            '\u{2028}' => out.push_str("\\u2028"),
+            '\u{2029}' => out.push_str("\\u2029"),
             c if c.is_control() => out.push_str(&format!("\\u{:04x}", c as u32)),
             c => out.push(c),
         }
@@ -901,6 +903,12 @@ mod tests {
     fn app_ids_are_escaped_for_the_script() {
         assert_eq!(js_string("a\"b\\c"), r#""a\"b\\c""#);
         assert_eq!(js_string("a\nb"), r#""a\nb""#);
+        let escaped = js_string("a\u{2028}b");
+        assert_eq!(escaped.len(), 10);
+        assert!(escaped.contains("u2028"));
+        let escaped = js_string("a\u{2029}b");
+        assert_eq!(escaped.len(), 10);
+        assert!(escaped.contains("u2029"));
     }
 
     #[test]
