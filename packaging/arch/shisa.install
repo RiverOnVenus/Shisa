@@ -1,4 +1,30 @@
+# The per-user policy files list the apps and paths a user protects. Earlier
+# packages installed them world-readable, so tighten the directory and files
+# whenever the package is installed or upgraded. Returns 0 when it tightened
+# the modes, 1 when there was nothing to do or a chmod failed.
+secure_config() {
+    if [ ! -d /etc/shisa/users ]; then
+        return 1
+    fi
+    changed=0
+    if [ "$(stat -c '%a' /etc/shisa/users 2>/dev/null)" != "700" ]; then
+        changed=1
+    fi
+    if [ -n "$(find /etc/shisa/users -maxdepth 1 -type f -name '*.toml' \
+        -perm /077 -print -quit 2>/dev/null)" ]; then
+        changed=1
+    fi
+    if [ "$changed" -eq 0 ]; then
+        return 1
+    fi
+    chmod 700 /etc/shisa/users 2>/dev/null || return 1
+    find /etc/shisa/users -maxdepth 1 -type f -name '*.toml' \
+        -exec chmod 600 {} + 2>/dev/null || return 1
+    return 0
+}
+
 post_install() {
+    secure_config || true
     cat <<'EOT'
 Shisa is installed. Set the application-lock password first. Only root can
 set it, and it is separate from the login password:
@@ -20,6 +46,12 @@ EOT
 }
 
 post_upgrade() {
+    if secure_config; then
+        cat <<'EOT'
+Protected-app configuration under /etc/shisa/users is now readable only by
+root, because it lists the apps and paths each user protects.
+EOT
+    fi
     if [ -e /etc/pam.d/shisa.pacsave ]; then
         cat <<'EOT'
 /etc/pam.d/shisa is no longer used by Shisa, authentication now goes through

@@ -108,7 +108,8 @@ pub fn read_user(dir: &Path, name: &str) -> Result<UserConfig, String> {
     }
 }
 
-/// Write one user's config as root: 0644, atomic rename.
+/// Write one user's config as root: 0600, atomic rename. The policy lists the
+/// apps and paths a user protects, which is not for other local accounts.
 pub fn write_user(dir: &Path, name: &str, config: &UserConfig) -> io::Result<()> {
     write_user_with(dir, name, config, check_owner)
 }
@@ -127,7 +128,9 @@ fn write_user_with(
     // truncated. Check it before chmod, which would otherwise follow a
     // symlinked directory.
     owner(dir, &fs::metadata(dir)?)?;
-    fs::set_permissions(dir, fs::Permissions::from_mode(0o755))?;
+    // The directory itself stays root-only. The daemon reads and writes it as
+    // root, so no other account needs to list the per-user policy files.
+    fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
     let text = config
         .to_toml()
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
@@ -151,7 +154,7 @@ fn write_user_with(
         .open(&temp)
         .and_then(|mut file| {
             file.write_all(text.as_bytes())?;
-            file.set_permissions(fs::Permissions::from_mode(0o644))?;
+            file.set_permissions(fs::Permissions::from_mode(0o600))?;
             file.sync_all()
         })
         .and_then(|()| fs::rename(&temp, &path));
@@ -289,6 +292,27 @@ pub fn load(marker: &dyn Marker, dir: &Path, old: &Policy, marks: &mut Marks) ->
     load_with(marker, dir, old, marks, check_owner)
 }
 
+/// Open the config directory after the owner check. A directory left by an
+/// older package may still be group- or world-readable, so tighten it here as
+/// well as on write. A read-only mount must not cost the policy, so a failed
+/// chmod is logged and the load continues.
+fn read_config_dir(
+    dir: &Path,
+    owner: fn(&Path, &fs::Metadata) -> io::Result<()>,
+) -> io::Result<fs::ReadDir> {
+    let meta = fs::metadata(dir)?;
+    owner(dir, &meta)?;
+    if meta.mode() & 0o077 != 0
+        && let Err(e) = fs::set_permissions(dir, fs::Permissions::from_mode(0o700))
+    {
+        warn!(
+            "config directory {}: cannot set mode 0700: {e}",
+            dir.display()
+        );
+    }
+    fs::read_dir(dir)
+}
+
 /// `owner` is a parameter so tests can read a config the current user owns.
 /// Production always passes [`check_owner`].
 fn load_with(
@@ -299,10 +323,7 @@ fn load_with(
     owner: fn(&Path, &fs::Metadata) -> io::Result<()>,
 ) -> Policy {
     let mut policy = Policy::default();
-    let entries = fs::metadata(dir)
-        .and_then(|meta| owner(dir, &meta))
-        .and_then(|()| fs::read_dir(dir));
-    let entries = match entries {
+    let entries = match read_config_dir(dir, owner) {
         Ok(entries) => entries,
         Err(e) => {
             error!("config directory {}: {e}", dir.display());
@@ -791,8 +812,9 @@ mod tests {
         assert!(!dir.join(".u.toml.new").exists());
         assert_eq!(
             fs::metadata(dir.join("u.toml")).unwrap().mode() & 0o777,
-            0o644
+            0o600
         );
+        assert_eq!(fs::metadata(&dir).unwrap().mode() & 0o777, 0o700);
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -876,6 +898,24 @@ mod tests {
             format!("[[apps]]\nid = \"app\"\npaths = [\"{}\"]\n", bin.display()),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn a_load_tightens_an_existing_config_directory() {
+        let (dir, name, _) = config_dir("tighten");
+        let bin = dir.join("bin");
+        fs::write(&bin, "x").unwrap();
+        write_config(&dir, &name, &bin);
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+        let _ = load_with(
+            &FakeMarker::new(false),
+            &dir,
+            &Policy::default(),
+            &mut Marks::new(),
+            permissive,
+        );
+        assert_eq!(fs::metadata(&dir).unwrap().mode() & 0o777, 0o700);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

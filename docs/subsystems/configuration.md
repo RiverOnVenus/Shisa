@@ -24,7 +24,7 @@ The [launch gate resolver](launch-gate.md#protected-path-resolution) fills in `p
 
 A reload is fail-closed. If the config directory or one of its entries cannot be read, a user's file cannot be read or parsed, or an account name cannot be resolved, shisad keeps the policy it already had instead of treating the user as unprotected. A missing file is the only case that means the user has no configuration yet.
 
-A settings write is fail-closed too. shisad refuses a config directory that is not root's or that group or others can write, removes a stale temp file, and creates the new one without following a symlink. The result is written as 0644 and renamed into place.
+A settings write is fail-closed too. shisad refuses a config directory that is not root's or that group or others can write, removes a stale temp file, and creates the new one without following a symlink. The directory is kept at 0700, the result is written as 0600, and it is renamed into place. The package's install script tightens the directory and files of an earlier installation, because the files list the apps and paths each user protects.
 
 ### Interface language
 
@@ -68,7 +68,7 @@ Diagnostics() -> (sxxxttsb)
 
 `ListApps` returns both configured and last successfully marked paths. An unavailable path appears only in the configured list. Settings and `shisa status` identify it as inactive. `GlobalConfig` falls back to a 300-second grace period, clearing on screen lock, and a 60-second prompt timeout.
 
-`SetProtected`, `SetOption`, and `Unlock` authorize the caller's unique name through polkit. Each settings change requires its own authorization even if a launch ticket exists. An empty app ID in `SetOption` selects a global option. Changing an app's grace period drops its current ticket and preserves its window allowance. The first successful settings change creates the user's file as root with mode 0644 when needed. `Lock`, `Hide`, and `Unhide` require no authentication.
+`SetProtected`, `SetOption`, and `Unlock` authorize the caller's unique name through polkit. Each settings change requires its own authorization even if a launch ticket exists. An empty app ID in `SetOption` selects a global option. Changing an app's grace period drops its current ticket and preserves its window allowance. The first successful settings change creates the user's file as root with mode 0600 when needed, under the root-only directory. `Lock`, `Hide`, and `Unhide` require no authentication.
 
 `Lock` drops both the ticket and the window permission. `Hide` drops only the window permission, so the focus-loss timer conceals a window without ending its grace period. `Unhide` restores the permission and returns true only while the app still holds a valid ticket. A false result means the caller has to authenticate through `Unlock` first. A manual lock always clears the ticket, and a screen lock clears it when `clear_on_screen_lock` is enabled, so both defeat `Unhide`. Among `Lock`, `Hide`, and `Unhide`, only `Lock` accepts an empty app ID.
 

@@ -19,6 +19,9 @@ LimitNOFILE=8192:524288
 # ProtectSystem=strict /etc is read-only and ConfigurationDirectory only creates
 # the directory, so write access must be opened separately with ReadWritePaths.
 ConfigurationDirectory=shisa/users
+# The per-user files list the protected apps and paths. Keep the directory
+# root-only, the daemon reads and writes it as root.
+ConfigurationDirectoryMode=0700
 ReadWritePaths=/etc/shisa
 
 # CAP_SYS_ADMIN enables fanotify_init. CAP_SYS_PTRACE lets shisad read other
