@@ -75,6 +75,10 @@
   let icons = $state({});
   // Whether shisad answered the last list request. The sidebar foot says it.
   let daemon = $state(false);
+  // Whether shisa-agent owns its session bus name. The tray and window
+  // hiding are separate from shisad, so they get their own line.
+  let agent = $state(false);
+  let appVersion = $state("");
   // The general page's search narrows the cards to those whose words it
   // holds. It reads the rendered cards, so it cannot drift from what the page
   // says.
@@ -95,6 +99,12 @@
   // The general page's diagnostics card, read from the daemon. Null when the
   // daemon is too old to answer.
   let diag = $state(null);
+  // After an upgrade the old shisad keeps running until its service is
+  // restarted. The two versions can then disagree about D-Bus methods and
+  // settings, so say so instead of letting the window fail method by method.
+  const versionMismatch = $derived(
+    Boolean(diag && appVersion && diag.version !== appVersion),
+  );
 
   const nameOf = (id) => apps.find((a) => a.id === id)?.name ?? id;
 
@@ -553,6 +563,10 @@
     }
   }
 
+  async function checkAgent() {
+    agent = await invoke("agent_status").catch(() => false);
+  }
+
   async function refreshTickets() {
     if (busy > 0) return;
     if (apps.length === 0) {
@@ -570,6 +584,10 @@
   }
 
   onMount(() => {
+    invoke("app_version")
+      .then((version) => (appVersion = version))
+      .catch(() => {});
+    void checkAgent();
     (async () => {
       try {
         await refresh();
@@ -603,11 +621,11 @@
       .catch(() => paint(null));
     media.addEventListener("change", onMedia);
 
-    const tick = setInterval(() => { refreshTickets(); if (page === "app") loadActivity(); }, 10000);
+    const tick = setInterval(() => { refreshTickets(); checkAgent(); if (page === "app") loadActivity(); }, 10000);
     // The activity page follows the daemon while it is open. 800ms keeps a
     // waiting box's answer within a blink of the list.
     const live = setInterval(() => { if (page === "activity") loadActivity(); }, 800);
-    const onFocus = () => refreshTickets();
+    const onFocus = () => { refreshTickets(); checkAgent(); };
     window.addEventListener("focus", onFocus);
     return () => {
       clearInterval(tick);
@@ -723,7 +741,8 @@
         </svg>
         <span class="who"><span class="name">{t("sidebar.general")}</span></span>
       </button>
-      <div class="gw" class:off={!daemon}><i></i><span>{daemon ? t("daemon.online") : t("daemon.offline")}</span></div>
+      <div class="gw" class:off={!daemon} title={daemon ? t("daemon.online") : t("daemon.offline")}><i></i><span>{daemon ? t("daemon.online") : t("daemon.offline")}</span></div>
+      <div class="gw" class:off={!agent} title={agent ? t("agent.hint.on") : t("agent.hint.off")}><i></i><span>{agent ? t("agent.online") : t("agent.offline")}</span></div>
     </div>
   </aside>
 
@@ -775,6 +794,20 @@
                   <div class="sub">
                     {t("password.sub")}
                     <code>sudo passwd {adminUser}</code>{t("password.after")}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+        {/if}
+        {#if versionMismatch}
+          <section class="set notice">
+            <div class="list">
+              <div class="prefrow">
+                <div class="who">
+                  <div class="name">{t("version.name")}</div>
+                  <div class="sub">
+                    {t("version.sub", { daemon: diag.version, app: appVersion })}
                   </div>
                 </div>
               </div>
