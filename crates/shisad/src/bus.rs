@@ -291,6 +291,58 @@ impl ManagerIface {
         Ok(())
     }
 
+    /// Drop one app's window permission but keep its ticket. The session
+    /// agent's focus-loss timer calls this, and the `StateChanged` that
+    /// follows makes the window layer conceal the window. The signal carries
+    /// the ticket state, which the hide does not change. An empty app id is
+    /// not accepted: only `Lock` acts on every app.
+    async fn hide(
+        &self,
+        app_id: &str,
+        #[zbus(header)] hdr: Header<'_>,
+        #[zbus(connection)] conn: &AsyncConnection,
+    ) -> zbus::fdo::Result<()> {
+        let uid = caller_uid(conn, &hdr).await?;
+        if !valid_app_id(app_id) {
+            return Err(zbus::fdo::Error::InvalidArgs(format!(
+                "invalid app id {app_id:?}"
+            )));
+        }
+        let (hidden, unlocked) = {
+            let mut state = self.state.lock().unwrap();
+            let hidden = state.hide_app(uid, app_id);
+            let unlocked = state.has_ticket(uid, app_id, Instant::now());
+            (hidden, unlocked)
+        };
+        let agent = self.agents.lock().unwrap().get(&uid).cloned();
+        if let (Some(app), Some(agent)) = (hidden, agent) {
+            state_changed(conn, &agent, app, unlocked).await;
+        }
+        Ok(())
+    }
+
+    /// Restore a hidden app's window permission without another prompt when
+    /// its ticket is still valid. False means the ticket is gone or expired,
+    /// so the caller has to authenticate with `Unlock` first.
+    async fn unhide(
+        &self,
+        app_id: &str,
+        #[zbus(header)] hdr: Header<'_>,
+        #[zbus(connection)] conn: &AsyncConnection,
+    ) -> zbus::fdo::Result<bool> {
+        let uid = caller_uid(conn, &hdr).await?;
+        if !valid_app_id(app_id) {
+            return Err(zbus::fdo::Error::InvalidArgs(format!(
+                "invalid app id {app_id:?}"
+            )));
+        }
+        Ok(self
+            .state
+            .lock()
+            .unwrap()
+            .unhide_app(uid, app_id, Instant::now()))
+    }
+
     /// Authenticate for an app and leave a ticket, as `shisa unlock` does.
     async fn unlock(
         &self,
@@ -331,7 +383,8 @@ impl ManagerIface {
 
     /// Apps whose windows may show. This is not the ticket set: a ticket
     /// expiring only means the next launch needs authentication, while an
-    /// open window stays visible until a lock (docs/subsystems/window-management.md).
+    /// open window stays visible until a lock or a focus-loss hide
+    /// (docs/subsystems/window-management.md).
     async fn window_states(
         &self,
         #[zbus(header)] hdr: Header<'_>,

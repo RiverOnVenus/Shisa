@@ -188,8 +188,9 @@ pub struct State {
     tickets: HashMap<Key, Ticket>,
     instances: HashMap<Key, Vec<ProcId>>,
     /// Apps whose windows may stay visible. Unlike tickets, this survives the
-    /// grace period. A screen lock or a manual `Lock` clears it, and an
-    /// authenticated launch or window activation sets it (docs/subsystems/window-management.md).
+    /// grace period. A screen lock, a manual `Lock`, or a focus-loss hide
+    /// clears it, and an authenticated launch or window activation sets it
+    /// (docs/subsystems/window-management.md).
     window_allowed: HashMap<u32, HashSet<String>>,
     /// When the user's graphical session began, for the autostart window.
     session_start: HashMap<u32, Instant>,
@@ -227,7 +228,7 @@ impl State {
 
     /// Apps whose windows are allowed to show. This is not the ticket set:
     /// a ticket expiring only means the next launch needs authentication,
-    /// while an open window stays usable until a lock.
+    /// while an open window stays usable until a lock or a focus-loss hide.
     pub fn window_allowed(&self, uid: u32) -> Vec<String> {
         self.window_allowed
             .get(&uid)
@@ -360,6 +361,35 @@ impl State {
         (ticket || window).then(|| app.to_string())
     }
 
+    /// Drop one app's window permission but keep its ticket. The focus-loss
+    /// timer uses this so that hiding a window does not end the grace period
+    /// (docs/subsystems/window-management.md).
+    pub fn hide_app(&mut self, uid: u32, app: &str) -> Option<String> {
+        let hidden = self
+            .window_allowed
+            .get_mut(&uid)
+            .is_some_and(|apps| apps.remove(app));
+        if self
+            .window_allowed
+            .get(&uid)
+            .is_some_and(|apps| apps.is_empty())
+        {
+            self.window_allowed.remove(&uid);
+        }
+        hidden.then(|| app.to_string())
+    }
+
+    /// Restore a hidden app's window permission while its ticket is valid.
+    /// False means the ticket is gone or expired, so the caller has to
+    /// authenticate before showing the window.
+    pub fn unhide_app(&mut self, uid: u32, app: &str, now: Instant) -> bool {
+        if !self.has_ticket(uid, app, now) {
+            return false;
+        }
+        self.allow_window(uid, app);
+        true
+    }
+
     /// The screen of this user locked. Drops the tickets unless the user
     /// turned `clear_on_screen_lock` off. Returns the apps that had one.
     pub fn screen_locked(&mut self, uid: u32) -> Vec<String> {
@@ -441,6 +471,11 @@ impl State {
             match self.take_ticket(&key, now) {
                 TicketUse::Valid { one_shot } => {
                     self.remember_instance(key, chain.first());
+                    // A ticket still authorizes the launch, so the app's
+                    // window may show even if focus-loss hiding removed that
+                    // permission while the ticket survived
+                    // (docs/subsystems/window-management.md).
+                    self.allow_window(uid, id);
                     let mut decision = Decision::allow_app(uid, id, Why::Ticket);
                     if one_shot {
                         lost.push(id.clone());
@@ -879,6 +914,50 @@ mod tests {
         assert!(s.lock_app(UID, "app").is_some());
         assert!(!s.is_window_allowed(UID, "app"));
         assert!(s.lock_app(UID, "app").is_none());
+    }
+
+    #[test]
+    fn hiding_keeps_the_ticket_and_unhiding_restores_the_window() {
+        let mut s = state();
+        let t0 = Instant::now();
+        assert_eq!(s.grant(UID, "app", t0), Some(Duration::from_secs(300)));
+        assert_eq!(s.hide_app(UID, "app"), Some("app".to_string()));
+        assert!(!s.is_window_allowed(UID, "app"));
+        // The focus-loss hide is not a lock: the grace period is untouched.
+        assert!(s.has_ticket(UID, "app", t0));
+        assert!(s.unhide_app(UID, "app", t0));
+        assert!(s.is_window_allowed(UID, "app"));
+        // Hiding an app that is not allowed changes nothing.
+        s.hide_app(UID, "app");
+        assert_eq!(s.hide_app(UID, "app"), None);
+    }
+
+    #[test]
+    fn unhiding_without_a_ticket_asks_for_authentication() {
+        let mut s = state();
+        let t0 = Instant::now();
+        s.allow_window(UID, "app");
+        s.hide_app(UID, "app");
+        assert!(!s.unhide_app(UID, "app", t0));
+        assert!(!s.is_window_allowed(UID, "app"));
+        // An expired ticket is no better than none.
+        assert_eq!(s.grant(UID, "app", t0), Some(Duration::from_secs(300)));
+        s.hide_app(UID, "app");
+        assert!(!s.unhide_app(UID, "app", t0 + Duration::from_secs(301)));
+        assert!(!s.is_window_allowed(UID, "app"));
+    }
+
+    #[test]
+    fn a_ticket_launch_restores_a_focus_loss_hidden_window() {
+        let mut s = state();
+        let t0 = Instant::now();
+        s.grant(UID, "app", t0);
+        s.hide_app(UID, "app");
+        assert!(!s.is_window_allowed(UID, "app"));
+        // The ticket covers the launch, and launching the app again means it
+        // should be visible again.
+        assert_eq!(s.decide(&procs(), APP_BIN, 200, t0).why, Why::Ticket);
+        assert!(s.is_window_allowed(UID, "app"));
     }
 
     #[test]

@@ -33,6 +33,7 @@ enum Action {
     LockAll,
     VerifyLock,
     Unlock(String),
+    RestoreIfTicketed(String),
     HiddenWindows((u64, u64), HashMap<String, u32>),
     OpenSettings,
     OpenRestore,
@@ -251,9 +252,9 @@ fn main() -> std::process::ExitCode {
     }
     let _session = service;
 
-    // A window that lost focus longer than its app's delay is hidden by the
-    // same path a manual lock uses. The timer only asks shisad to lock it;
-    // the StateChanged that follows makes the gate hide it.
+    // A window that lost focus longer than its app's delay is hidden
+    // without dropping the app's ticket. The timer only asks shisad to hide
+    // it; the StateChanged that follows makes the gate hide it.
     {
         let conn = conn.clone();
         let tracker = tracker.clone();
@@ -532,6 +533,7 @@ fn action_loop(
             },
             Action::VerifyLock => verify_lock(gate, handle),
             Action::Unlock(app) => unlock(&app, gate),
+            Action::RestoreIfTicketed(app) => restore_if_ticketed(&app, gate),
             Action::HiddenWindows(version, counts) => handle.update(|tray| {
                 if version > tray.hidden_windows.0 {
                     tray.hidden_windows = (version, counts);
@@ -627,14 +629,26 @@ fn notify(message: &str) {
     }
 }
 
-/// Authenticate for one app from the tray. The call blocks on the desktop's
-/// polkit box; the action thread is separate, so the menu stays responsive.
+/// Show one hidden app again from the tray. A valid ticket from the last
+/// authentication is enough, so the desktop's polkit box only appears once
+/// the grace period has run out. The action thread is separate, so the menu
+/// stays responsive while the box waits.
 fn unlock(app: &str, gate: &Arc<Mutex<Option<window::Gate>>>) {
     let result = (|| -> zbus::Result<bool> {
         let conn = Connection::system()?;
         let manager = ManagerProxyBlocking::new(&conn)?;
         if manager.window_states()?.iter().any(|id| id == app) {
             return Ok(false);
+        }
+        // An older shisad does not serve Unhide. Fall back to authentication
+        // instead of leaving the window hidden.
+        match manager.unhide(app) {
+            Ok(true) => {
+                info!(app, "window permission restored from its current ticket");
+                return Ok(false);
+            }
+            Ok(false) => {}
+            Err(e) => debug!("unhide {app}: {e}"),
         }
         manager.unlock(app)?;
         Ok(true)
@@ -647,6 +661,23 @@ fn unlock(app: &str, gate: &Arc<Mutex<Option<window::Gate>>>) {
             restore_window(app, gate);
         }
         Err(e) => warn!("unlock: {e}"),
+    }
+}
+
+/// Restore a window the user asked for through the app's own tray icon.
+/// The KWin script hid it again, so it stays hidden until this confirms a
+/// valid ticket. Without one the window stays hidden and no prompt starts:
+/// the restore panel remains the way to authenticate.
+fn restore_if_ticketed(app: &str, gate: &Arc<Mutex<Option<window::Gate>>>) {
+    let shown = (|| -> zbus::Result<bool> {
+        let conn = Connection::system()?;
+        let manager = ManagerProxyBlocking::new(&conn)?;
+        manager.unhide(app)
+    })();
+    match shown {
+        Ok(true) => restore_window(app, gate),
+        Ok(false) => debug!(app, "no ticket, the window stays hidden"),
+        Err(e) => warn!("restore {app}: {e}"),
     }
 }
 
@@ -675,8 +706,9 @@ fn restore_window(app: &str, gate: &Mutex<Option<window::Gate>>) {
 }
 
 /// Hide an app whose window sat unfocused longer than its configured delay.
-/// The lock drops the window permission; the StateChanged that follows makes
-/// the resident script hide the window, exactly like a manual lock.
+/// This drops the window permission but keeps the app's ticket, so restoring
+/// the window inside the grace period does not ask for authentication again.
+/// The StateChanged that follows makes the resident script hide the window.
 fn relock_loop(conn: &Connection, tracker: &Arc<Mutex<window::Tracker>>) -> ! {
     loop {
         // Short enough that the immediate preset feels immediate, cheap
@@ -694,8 +726,14 @@ fn relock_loop(conn: &Connection, tracker: &Arc<Mutex<window::Tracker>>) -> ! {
                 continue;
             }
             info!(%app, "window sat unfocused, hiding it");
-            if let Err(e) = manager.lock(&app) {
-                debug!("relock {app}: {e}");
+            if let Err(e) = manager.hide(&app) {
+                // A new agent can meet an older shisad that has no Hide. A
+                // lock is the old behavior and still conceals the window,
+                // even though it also drops the ticket.
+                debug!("relock {app}: {e}; falling back to a lock");
+                if let Err(e) = manager.lock(&app) {
+                    debug!("relock {app}: lock fallback failed: {e}");
+                }
             }
         }
     }

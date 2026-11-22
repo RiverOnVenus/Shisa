@@ -40,7 +40,7 @@ On daemon exit the kernel releases pending events and removes marks. systemd use
 
 Tickets are stored in memory by user and app. The grace period starts on authorization. A zero grace period allows the pending launch once. An explicit `shisa unlock` without a pending launch issues a one-use ticket that expires after the configured wait limit.
 
-Manual locking revokes tickets and window allowance. When all active graphical sessions for a user are locked, shisad clears both states unless `clear_on_screen_lock` is disabled. It reacts to logind signals and checks `LockedHint` every 30 seconds as a fallback. Daemon restart clears tickets. Ticket expiry alone affects subsequent launches and leaves existing window allowance in place.
+Manual locking revokes tickets and window allowance. Focus-loss hiding revokes only the window allowance, so the ticket and its grace period survive the hide. When all active graphical sessions for a user are locked, shisad clears both states unless `clear_on_screen_lock` is disabled. It reacts to logind signals and checks `LockedHint` every 30 seconds as a fallback. Daemon restart clears tickets. Ticket expiry alone affects subsequent launches and leaves existing window allowance in place.
 
 An instance records the PID and start time of the admitted process. Its descendants qualify while that process is alive. Grace-period expiry and screen locking leave instances intact. After a daemon restart the instance table is empty, but an already-running app can still execute its own protected image.
 

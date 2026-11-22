@@ -279,6 +279,20 @@ fn on_request(
         // user's app names no app of this caller, so nothing is recorded.
         if let (Some(uid), Some(app)) = (decision.uid, decision.app.as_deref()) {
             activity.record(uid, events.next_id(), app, pid, kind_of(decision.why), 0);
+            // A ticket or autostart launch can restore the window permission
+            // that focus-loss hiding removed. Tell the agent so its cached
+            // window state catches up. A consumed one-shot ticket was already
+            // reported above as lost.
+            if matches!(decision.why, Why::Ticket | Why::Autostart)
+                && !decision.lost_tickets.iter().any(|lost| lost == app)
+            {
+                let unlocked = state.lock().unwrap().has_ticket(uid, app, Instant::now());
+                let _ = bus.send(Msg::StateChanged {
+                    uid,
+                    app: app.to_string(),
+                    unlocked,
+                });
+            }
         }
         if let Err(e) = req.answer(decision.why.allows()) {
             debug!(pid, "answer not delivered: {e}");

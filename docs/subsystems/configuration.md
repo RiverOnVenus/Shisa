@@ -53,7 +53,9 @@ GlobalConfig() -> (tbt)              # grace period, clear on screen lock, promp
 ResolveApp(app_id: s) -> (asas)      # derived paths and coverage notes, read-only
 SetProtected(app_id: s, on: b) -> ()
 SetOption(app_id: s, key: s, value: v) -> ()
-Lock(app_id: s) -> ()                # empty ID locks all apps for the caller
+Lock(app_id: s) -> ()                # empty ID drops every ticket and window permission
+Hide(app_id: s) -> ()                # hide one app's windows and keep its ticket
+Unhide(app_id: s) -> b               # show them again while the ticket is valid
 Unlock(app_id: s) -> ()              # authorize an unlock for a protected app
 RegisterAgent() -> ()                # subscribe to state notifications as the session agent
 WindowStates() -> as                # apps with window allowance
@@ -66,9 +68,11 @@ Diagnostics() -> (sxxxttsb)
 
 `ListApps` returns both configured and last successfully marked paths. An unavailable path appears only in the configured list. Settings and `shisa status` identify it as inactive. `GlobalConfig` falls back to a 300-second grace period, clearing on screen lock, and a 60-second prompt timeout.
 
-`SetProtected`, `SetOption`, and `Unlock` authorize the caller's unique name through polkit. Each settings change requires its own authorization even if a launch ticket exists. An empty app ID in `SetOption` selects a global option. Changing an app's grace period drops its current ticket and preserves its window allowance. The first successful settings change creates the user's file as root with mode 0644 when needed. `Lock` only revokes allowance and requires no authentication.
+`SetProtected`, `SetOption`, and `Unlock` authorize the caller's unique name through polkit. Each settings change requires its own authorization even if a launch ticket exists. An empty app ID in `SetOption` selects a global option. Changing an app's grace period drops its current ticket and preserves its window allowance. The first successful settings change creates the user's file as root with mode 0644 when needed. `Lock`, `Hide`, and `Unhide` require no authentication.
 
-`StateChanged` is sent to the user's registered agent after settings changes, ticket issue, `Lock`, screen-lock revocation, consumption of a one-use ticket, or ticket expiry. `SessionUnlocked` signals the agent to refresh window handling on session unlock. `WindowStates` reports window allowance independently from launch tickets. `RelockSeconds` reports the configured focus-loss delays.
+`Lock` drops both the ticket and the window permission. `Hide` drops only the window permission, so the focus-loss timer conceals a window without ending its grace period. `Unhide` restores the permission and returns true only while the app still holds a valid ticket. A false result means the caller has to authenticate through `Unlock` first. A manual lock always clears the ticket, and a screen lock clears it when `clear_on_screen_lock` is enabled, so both defeat `Unhide`. Among `Lock`, `Hide`, and `Unhide`, only `Lock` accepts an empty app ID.
+
+`StateChanged` is sent to the user's registered agent after settings changes, ticket issue, `Lock`, `Hide`, a ticket- or autostart-covered launch that restores window allowance, screen-lock revocation, consumption of a one-use ticket, or ticket expiry. `Unhide` does not send it: the caller applies the restored window state itself or asks the session agent to do so. `SessionUnlocked` signals the agent to refresh window handling on session unlock. `WindowStates` reports window allowance independently from launch tickets. `RelockSeconds` reports the configured focus-loss delays.
 
 ### Diagnostics
 
@@ -80,7 +84,7 @@ The password readiness flag checks only the `shisa-lock` password field in `/etc
 
 ## Session D-Bus
 
-The agent serves `io.github.RiverOnVenus.Shisa.Window` at `/io/github/RiverOnVenus/Shisa/Window`. `WindowEvent(app_id: s, pid: s, event: s) -> b` takes a decimal PID string and accepts `focused` and `unfocused` events for relock timers. The interface also provides `WindowState`, `HiddenApps`, `RestoreWindow`, `WindowsChecked`, `HiddenWindows`, and `VerifyLock`. See [Window management](window-management.md) for the acknowledgement and restoration contracts.
+The agent serves `io.github.RiverOnVenus.Shisa.Window` at `/io/github/RiverOnVenus/Shisa/Window`. `WindowEvent(app_id: s, pid: s, event: s) -> b` takes a decimal PID string and accepts `focused` and `unfocused` events for relock timers. The interface also provides `WindowState`, `HiddenApps`, `RestoreWindow`, `RestoreIfTicketed`, `WindowsChecked`, `HiddenWindows`, and `VerifyLock`. `RestoreWindow` is the restore panel's path and may authenticate. `RestoreIfTicketed` is the KWin script's path for an app's own tray activation: it restores the window only while a ticket is valid and never starts polkit. See [Window management](window-management.md) for the acknowledgement and restoration contracts.
 
 ## CLI
 

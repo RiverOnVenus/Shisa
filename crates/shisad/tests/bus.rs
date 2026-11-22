@@ -311,6 +311,103 @@ fn window_states_and_relock_seconds_follow_the_policy() {
 }
 
 #[test]
+fn hide_keeps_the_ticket_and_unhide_requires_it() {
+    let _serial = ONE_BUS.lock().unwrap_or_else(|e| e.into_inner());
+    let _bus = PrivateBus::start("hide");
+    let state = state();
+    state.lock().unwrap().allow_window(uid(), "app");
+    let (_events, _tx) = start_daemon(state.clone());
+    let conn = Connection::system().unwrap();
+    let manager = ManagerProxyBlocking::new(&conn).unwrap();
+
+    // Without a ticket, hiding drops the window permission and restoring it
+    // has to ask for authentication.
+    manager.hide("app").unwrap();
+    assert!(manager.window_states().unwrap().is_empty());
+    assert!(!manager.unhide("app").unwrap());
+    assert!(manager.window_states().unwrap().is_empty());
+
+    // A ticket survives the hide, and unhide uses it instead of a prompt.
+    state.lock().unwrap().grant(uid(), "app", Instant::now());
+    manager.hide("app").unwrap();
+    assert!(
+        manager
+            .list_apps()
+            .unwrap()
+            .iter()
+            .any(|row| row.0 == "app" && row.1)
+    );
+    assert!(manager.unhide("app").unwrap());
+    assert_eq!(manager.window_states().unwrap(), vec!["app"]);
+
+    // A manual lock still drops the ticket, so unhide cannot bypass it.
+    manager.hide("app").unwrap();
+    manager.lock("app").unwrap();
+    assert!(!manager.unhide("app").unwrap());
+    assert!(manager.window_states().unwrap().is_empty());
+
+    // Only Lock addresses every app.
+    assert!(manager.hide("").is_err());
+    assert!(manager.hide("bad/id").is_err());
+    assert!(manager.unhide("bad/id").is_err());
+}
+
+#[test]
+fn hide_reports_the_ticket_it_keeps() {
+    let _serial = ONE_BUS.lock().unwrap_or_else(|e| e.into_inner());
+    let _bus = PrivateBus::start("hide-signal");
+    let state = state();
+    let control = state.clone();
+    let (_events, _tx) = start_daemon(state);
+
+    let observer = Connection::system().unwrap();
+    ManagerProxyBlocking::new(&observer)
+        .unwrap()
+        .register_agent()
+        .unwrap();
+    let (ready_tx, ready_rx) = mpsc::channel();
+    let (signal_tx, signal_rx) = mpsc::channel();
+    let watcher = std::thread::spawn(move || {
+        let agent = ManagerProxyBlocking::new(&observer).unwrap();
+        let mut signals = agent.receive_state_changed().unwrap();
+        ready_tx.send(()).unwrap();
+        let seen = signals.next().map(|signal| {
+            let args = signal.args().unwrap();
+            (args.app_id, args.unlocked)
+        });
+        let _ = signal_tx.send(seen);
+    });
+    ready_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+
+    let caller = Connection::system().unwrap();
+    let manager = ManagerProxyBlocking::new(&caller).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    // The match rule reaches the bus asynchronously. Grant a ticket and hide
+    // again until the observer sees the signal.
+    let seen = loop {
+        control.lock().unwrap().grant(uid(), "app", Instant::now());
+        manager.hide("app").unwrap();
+        match signal_rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(Some(seen)) => break seen,
+            Ok(None) => panic!("the signal stream ended"),
+            Err(mpsc::RecvTimeoutError::Timeout) if Instant::now() < deadline => continue,
+            Err(e) => panic!("no StateChanged arrived: {e}"),
+        }
+    };
+    // The hide removed the window permission, not the ticket it reports.
+    assert_eq!(seen, ("app".to_string(), true));
+    assert!(manager.window_states().unwrap().is_empty());
+    assert!(
+        manager
+            .list_apps()
+            .unwrap()
+            .iter()
+            .any(|row| row.0 == "app" && row.1)
+    );
+    watcher.join().unwrap();
+}
+
+#[test]
 fn unlock_waits_for_authentication_and_rejects_unknown_apps() {
     let _serial = ONE_BUS.lock().unwrap_or_else(|e| e.into_inner());
     let _bus = PrivateBus::start("unlock");

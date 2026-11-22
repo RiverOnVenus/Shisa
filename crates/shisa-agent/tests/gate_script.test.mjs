@@ -175,7 +175,28 @@ test("activating a locked window hides it instead of reporting focus", () => {
   env.workspace.activeWindow = kate;
   env.handlers.activated[0](kate);
   assert.equal(kate.opacity, 0);
+  assert.equal(kate.minimized, true);
   assert.equal(methodCalls(env, "WindowEvent").length, before);
+  // An app's own tray icon activates its hidden window. The script keeps it
+  // hidden and leaves the ticket check to the agent, so the window cannot
+  // appear before that check.
+  const restore = methodCalls(env, "RestoreIfTicketed");
+  assert.equal(restore.length, 1);
+  assert.equal(restore[0][4], "org.kde.kate");
+});
+
+test("activating an allowed window asks for no restore", () => {
+  const kate = makeWindow("org.kde.kate", "kate");
+  const env = boot({
+    locked: ["org.kde.kate"],
+    allowed: ["org.kde.kate"],
+    windows: [kate],
+  });
+  env.workspace.activeWindow = kate;
+  env.handlers.activated[0](kate);
+  assert.equal(kate.opacity, 1);
+  assert.equal(kate.minimized, false);
+  assert.equal(methodCalls(env, "RestoreIfTicketed").length, 0);
 });
 
 test("a state revision applies a new protection list", () => {

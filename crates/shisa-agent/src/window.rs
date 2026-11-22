@@ -167,6 +167,16 @@ impl WindowService {
             .map_err(|error| zbus::fdo::Error::Failed(error.to_string()))
     }
 
+    /// The app's own tray icon activated a hidden window. The script has
+    /// already concealed it again, so this only brings it back when the app
+    /// still holds a ticket, and never starts polkit
+    /// (docs/subsystems/window-management.md).
+    fn restore_if_ticketed(&self, app: String) -> zbus::fdo::Result<()> {
+        self.actions
+            .send(super::Action::RestoreIfTicketed(app))
+            .map_err(|error| zbus::fdo::Error::Failed(error.to_string()))
+    }
+
     fn windows_checked(&self, generation: &str, matched: &str, hidden: &str) {
         if let (Ok(generation), Ok(matched), Ok(hidden)) =
             (generation.parse(), matched.parse(), hidden.parse())

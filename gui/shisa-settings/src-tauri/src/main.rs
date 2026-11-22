@@ -543,6 +543,11 @@ async fn restore_hidden(app_id: String) -> R<()> {
             Language::En => "this window is no longer in the list".into(),
         });
     }
+    // An already allowed window needs no prompt. Otherwise a valid ticket
+    // restores the permission, and only an app without one waits for polkit,
+    // so a cancelled prompt reaches the panel as an error instead of
+    // silently closing it. An older shisad has no Unhide and falls through
+    // to authentication.
     let system = zbus::Connection::system().await.map_err(err)?;
     let manager = ManagerProxy::new(&system).await.map_err(err)?;
     if !manager
@@ -550,6 +555,7 @@ async fn restore_hidden(app_id: String) -> R<()> {
         .await
         .map_err(err)?
         .contains(&app_id)
+        && !manager.unhide(&app_id).await.unwrap_or(false)
     {
         manager.unlock(&app_id).await.map_err(err)?;
     }

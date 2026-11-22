@@ -101,7 +101,8 @@ const zh = {
   "app.grace.sub.zero": "0 表示每次启动都要认证。",
   "app.grace.sub": "认证通过后这段时间内再打开不再询问。",
   "app.relock.name": "失焦后隐藏",
-  "app.relock.sub": "失焦达到设定时长后收起窗口，恢复时需要认证。",
+  "app.relock.sub":
+    "失焦达到设定时长后收起窗口。宽限期内恢复不再询问，过期后需要认证。",
   "app.advanced": "高级设置",
   "app.customRelock": "自定义失焦时长",
   "app.autostart.name": "自启动",
@@ -128,7 +129,7 @@ const zh = {
   "restore.windows": "{count} 个窗口",
   "restore.loading": "正在查找窗口…",
   "restore.empty": "没有隐藏的窗口",
-  "restore.waiting": "等待验证…",
+  "restore.waiting": "正在恢复…",
   "restore.error.read": "无法读取隐藏窗口。",
   "restore.error.restore": "无法恢复窗口，请重试。",
 
@@ -265,7 +266,7 @@ const en = {
     "After a successful authentication, launches in this period do not ask again.",
   "app.relock.name": "Hide when focus is lost",
   "app.relock.sub":
-    "After this long without focus the window is hidden, and restoring it asks for authentication.",
+    "After this long without focus the window is hidden. Restoring it within the grace period does not ask again, and asks after it expires.",
   "app.advanced": "Advanced settings",
   "app.customRelock": "Custom focus-loss delay",
   "app.autostart.name": "Autostart",
@@ -294,7 +295,7 @@ const en = {
   "restore.windows": "{count} window|{count} windows",
   "restore.loading": "Looking for windows…",
   "restore.empty": "No hidden windows",
-  "restore.waiting": "Waiting for authentication…",
+  "restore.waiting": "Restoring…",
   "restore.error.read": "Could not read hidden windows.",
   "restore.error.restore": "Could not restore the window. Try again.",
 

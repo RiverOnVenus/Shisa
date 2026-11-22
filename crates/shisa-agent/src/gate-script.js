@@ -205,6 +205,11 @@ workspace.windowActivated.connect(function (w) {
   const app = appOf(w);
   if (app && PROTECTED.includes(app) && !isAllowed(app)) {
     hide(w);
+    // A click on the app's own tray icon activates its hidden window. Keep
+    // it hidden and ask the agent to restore it only if a ticket still
+    // covers the app, so this path never lets the window show before the
+    // ticket is confirmed.
+    callDBus(SERVICE, PATH, IFACE, "RestoreIfTicketed", app, function () {});
     return;
   }
   if (w) syncFocus(w);

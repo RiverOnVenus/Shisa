@@ -42,8 +42,14 @@ pub trait Manager {
     /// App id, whether a ticket is held now, configured paths, and the paths
     /// that were actually marked.
     fn list_apps(&self) -> zbus::Result<Vec<AppRow>>;
-    /// Drop tickets. An empty app id drops all of them.
+    /// Drop tickets and window permissions. An empty app id drops all of them.
     fn lock(&self, app_id: &str) -> zbus::Result<()>;
+    /// Hide one app's windows but keep its ticket, so restoring them can
+    /// reuse the current grace period. An empty app id is refused.
+    fn hide(&self, app_id: &str) -> zbus::Result<()>;
+    /// Show a hidden app's windows again without authentication when its
+    /// ticket is still valid. False means the caller has to authenticate.
+    fn unhide(&self, app_id: &str) -> zbus::Result<bool>;
     /// Authenticate for an app and leave a ticket, as `shisa unlock` does.
     fn unlock(&self, app_id: &str) -> zbus::Result<()>;
     /// Announce this process as the user's agent, for state changes.
