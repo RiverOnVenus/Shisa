@@ -17,7 +17,7 @@ use shisa_core::i18n::{self, Language};
 use std::collections::HashMap;
 use std::env;
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -52,6 +52,15 @@ const NOTIFY_SERVICE: &str = "org.freedesktop.Notifications";
 /// result that still needs attention stays longer.
 const NOTIFY_TIMEOUT_MS: i32 = 5_000;
 const NOTIFY_PROBLEM_TIMEOUT_MS: i32 = 8_000;
+/// A focus-loss hide is silent by design, so the first one explains where
+/// the window went. Later hides stay quiet: the user opted into the feature
+/// and the tray icon already shows the locked state.
+static RELOCK_HINTED: AtomicBool = AtomicBool::new(false);
+/// Bound the retries for a notification service that is not delivering the
+/// hint. Three attempts cover a startup race without spawning a thread for
+/// every hide while DND or a broken service suppresses the popup.
+static RELOCK_HINT_ATTEMPTS: AtomicU8 = AtomicU8::new(0);
+const RELOCK_HINT_MAX_ATTEMPTS: u8 = 3;
 
 struct TrayState {
     protected_count: usize,
@@ -186,7 +195,7 @@ impl Tray for TrayState {
         vec![
             StandardItem {
                 label: text(self.language, "全部上锁", "Lock all").into(),
-                enabled: !self.offline,
+                enabled: !self.offline && self.protected_count > 0,
                 activate: send(Action::LockAll),
                 ..Default::default()
             }
@@ -511,6 +520,9 @@ fn refresh(
     // window state is separate from the tickets, so an expiring ticket does
     // not hide a window that is still in use.
     let protected: Vec<String> = apps.iter().map(|(id, _, _, _)| id.clone()).collect();
+    // Publish the count before the window-state sync. A failed WindowStates
+    // call must not leave the tray's Lock all disabled with a stale zero.
+    let _ = handle.update(|tray| tray.protected_count = protected.len());
     // A failed call is not "nothing is allowed". Keep the window layer as it
     // is rather than hiding every protected window on a transient error.
     let mut gate = gate.lock().unwrap();
@@ -530,7 +542,6 @@ fn refresh(
         }
     };
     drop(gate);
-    let _ = handle.update(|tray| tray.protected_count = protected.len());
 }
 
 fn action_loop(
@@ -714,10 +725,11 @@ fn notify_lock(handle: &Handle<TrayState>, message: &str, concealed: bool, timeo
     notify(message, timeout_ms, icon);
 }
 
-/// Send one lock result. The notification is a confirmation with no action,
+/// Send one notification. Lock results are confirmations with no action,
 /// and every lock gets its own popup so a repeated lock is confirmed again
-/// after the previous result has expired.
-fn notify(message: &str, timeout_ms: i32, icon: &str) {
+/// after the previous result has expired. The focus-loss hint shares this
+/// path.
+fn notify(message: &str, timeout_ms: i32, icon: &str) -> bool {
     let result = (|| -> zbus::Result<u32> {
         let conn = Connection::session()?;
         let proxy = Proxy::new(
@@ -742,9 +754,46 @@ fn notify(message: &str, timeout_ms: i32, icon: &str) {
         )?;
         Ok(id)
     })();
-    if let Err(e) = result {
-        warn!("lock notification: {e}");
+    match result {
+        Ok(_) => true,
+        Err(e) => {
+            warn!("notification: {e}");
+            false
+        }
     }
+}
+
+/// Explain the first focus-loss hide. The relock loop must not block on a
+/// notification service that stopped answering, so the send runs on its own
+/// thread. The flag is released when the notification cannot be delivered,
+/// and a later hide tries again.
+fn hint_relock_once() {
+    if RELOCK_HINTED.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    if RELOCK_HINT_ATTEMPTS.fetch_add(1, Ordering::Relaxed) >= RELOCK_HINT_MAX_ATTEMPTS {
+        // Stop spawning a thread per hide for a service that is not going to
+        // show the hint. The flag stays set, so later hides stay silent.
+        return;
+    }
+    thread::spawn(|| {
+        // Do Not Disturb means the notification would be suppressed. Release
+        // the one-time flag so a later hide can explain itself once DND is
+        // off, instead of spending the hint on an invisible popup.
+        if do_not_disturb() == Some(true) {
+            RELOCK_HINTED.store(false, Ordering::Relaxed);
+            return;
+        }
+        let message = match i18n::current() {
+            Language::ZhCn => "窗口失焦后已自动隐藏。左键点击 Shisa 托盘图标可以打开恢复面板。",
+            Language::En => {
+                "The window was hidden after losing focus. Left-click the Shisa tray icon to open the restore panel."
+            }
+        };
+        if !notify(message, NOTIFY_PROBLEM_TIMEOUT_MS, LOCKED_ICON) {
+            RELOCK_HINTED.store(false, Ordering::Relaxed);
+        }
+    });
 }
 
 /// Plasma's effective Do Not Disturb state, read from the notification
@@ -893,14 +942,24 @@ fn relock_loop(conn: &Connection, tracker: &Arc<Mutex<window::Tracker>>) -> ! {
                 continue;
             }
             info!(%app, "window sat unfocused, hiding it");
-            if let Err(e) = manager.hide(&app) {
-                // A new agent can meet an older shisad that has no Hide. A
-                // lock is the old behavior and still conceals the window,
-                // even though it also drops the ticket.
-                debug!("relock {app}: {e}; falling back to a lock");
-                if let Err(e) = manager.lock(&app) {
-                    debug!("relock {app}: lock fallback failed: {e}");
+            let hidden = match manager.hide(&app) {
+                Ok(()) => true,
+                Err(e) => {
+                    // A new agent can meet an older shisad that has no Hide. A
+                    // lock is the old behavior and still conceals the window,
+                    // even though it also drops the ticket.
+                    debug!("relock {app}: {e}; falling back to a lock");
+                    match manager.lock(&app) {
+                        Ok(()) => true,
+                        Err(e) => {
+                            debug!("relock {app}: lock fallback failed: {e}");
+                            false
+                        }
+                    }
                 }
+            };
+            if hidden {
+                hint_relock_once();
             }
         }
     }
@@ -1037,6 +1096,24 @@ mod tests {
         assert!(matches!(requests.try_recv(), Ok(Action::LockAll)));
         (settings.activate)(&mut tray);
         assert!(matches!(requests.try_recv(), Ok(Action::OpenSettings)));
+    }
+
+    #[test]
+    fn lock_all_is_disabled_without_protected_apps() {
+        let (actions, _requests) = mpsc::channel();
+        let tray = TrayState {
+            hidden_windows: Default::default(),
+            protected_count: 0,
+            last_lock: None,
+            offline: false,
+            language: Language::ZhCn,
+            actions,
+        };
+        let menu = tray.menu();
+        let MenuItem::Standard(lock_all) = &menu[0] else {
+            panic!("expected lock all");
+        };
+        assert!(!lock_all.enabled);
     }
 
     #[test]
