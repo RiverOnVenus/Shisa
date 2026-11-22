@@ -315,9 +315,28 @@
   /// the card says so instead of the window failing.
   async function loadDiag() {
     try {
-      const [version, started, reloaded, failed, apps, marked, config, adminReady] =
-        await invoke("diagnostics");
-      diag = { version, started, reloaded, failed, apps, marked, config, adminReady };
+      const [
+        version,
+        started,
+        reloaded,
+        failed,
+        apps,
+        marked,
+        config,
+        adminReady,
+        configFailed,
+      ] = await invoke("diagnostics");
+      diag = {
+        version,
+        started,
+        reloaded,
+        failed,
+        apps,
+        marked,
+        config,
+        adminReady,
+        configFailed,
+      };
     } catch {
       diag = null;
     }
@@ -867,6 +886,18 @@
                     </div>
                   </div>
                 </div>
+                {#if diag.configFailed > 0}
+                  <div class="prefrow">
+                    <div class="who">
+                      <div class="name">{t("diag.configFailed.name")}</div>
+                      <div class="sub bad">
+                        {t("diag.configFailed.sub", {
+                          ago: ago(diag.configFailed, Date.now(), t),
+                        })}
+                      </div>
+                    </div>
+                  </div>
+                {/if}
                 {#if diag.config}
                   <div class="prefrow">
                     <div class="who">

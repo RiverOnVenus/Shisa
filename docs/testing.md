@@ -53,6 +53,8 @@ On 2026-11-22, the user verified the live Wayland session after installing the t
 
 On 2026-11-22, `cargo test --workspace --locked` (171 tests) passed after the session environment and file ownership constraints. The manager-environment test skips when no user manager is available.
 
+On 2026-11-22, `cargo test --workspace --locked` (172 tests) covered the configuration failure timestamp and the load failure flag. The settings diagnostics card renders the new field.
+
 ## Window and authentication verification
 
 1. In an isolated KWin session, open a protected window and an ordinary window. Lock all apps and verify that the protected window disappears and the ordinary window stays usable. Repeat the operation and check that the acknowledgement reflects the current state.

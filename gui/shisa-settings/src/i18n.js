@@ -73,6 +73,9 @@ const zh = {
   "diag.last.name": "最近一次加载",
   "diag.last.failed": "有路径没标记上，{ago}",
   "diag.last.ok": "全部路径已标记。",
+  "diag.configFailed.name": "配置加载",
+  "diag.configFailed.sub":
+    "上一次配置没有读出或解析（{ago}），仍在用旧的保护策略。",
   "diag.config": "配置文件",
   "diag.unavailable": "当前守护进程不提供诊断信息，装上新版 shisad 后可用。",
   "settings.empty.match": "没有匹配的设置",
@@ -233,6 +236,9 @@ const en = {
   "diag.last.name": "Last load",
   "diag.last.failed": "Some paths could not be marked, {ago}",
   "diag.last.ok": "All paths are marked.",
+  "diag.configFailed.name": "Configuration load",
+  "diag.configFailed.sub":
+    "The last configuration could not be read or parsed, {ago}. The previous policy is still in effect.",
   "diag.config": "Configuration file",
   "diag.unavailable":
     "This daemon does not provide diagnostics. Install a newer shisad to see them.",

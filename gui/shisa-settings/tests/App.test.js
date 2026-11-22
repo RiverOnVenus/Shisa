@@ -30,7 +30,7 @@ vi.mock("@tauri-apps/api/core", () => ({
       case "recent_launches":
         return [[], 0, 0, 0];
       case "diagnostics":
-        return ["0.1.1", 1, 0, 0, 1, 1, "/etc/shisa/users/test.toml", true];
+        return ["0.1.1", 1, 0, 0, 1, 1, "/etc/shisa/users/test.toml", true, 0];
       case "set_ui_language":
         languageWrites.push(args.language);
         return null;
