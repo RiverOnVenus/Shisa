@@ -2,7 +2,7 @@
 
 ## Configuration
 
-Each user has a root-owned configuration file at `/etc/shisa/users/<username>.toml`.
+Each user has a root-owned configuration file at `/etc/shisa/users/<username>.toml`. The account name must be a single path component. A name that is empty, `.`, `..`, or contains a slash is refused instead of being joined into the path.
 
 ```toml
 [global]
