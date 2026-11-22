@@ -44,6 +44,8 @@ On 2026-11-22, a new local test package `shisa-0.1.3-1.1` was built from the wor
 
 On 2026-11-22, a local test package `shisa-0.1.3-1.1` was built from the `audit/small-hardening` worktree. `makepkg`'s `check()` passed the workspace tests, the settings frontend and Tauri tests, and the KWin script tests. `pacman -Qip` reports the install script, and the package carries the `secure_config` migration in `.INSTALL` and `ConfigurationDirectoryMode=0700` in `shisad.service`. The package was not installed.
 
+On 2026-11-22, the local test package `shisa-0.1.3-1.1` was installed over the installed 0.1.3-1.1 with `pacman -U`. `pacman -Qkk shisa` reported 0 changed files out of 49. `post_upgrade` tightened `/etc/shisa/users` to 0700 and its files to 0600. `shisad.service` and `shisa-agent.service` were restarted, both active, and `Diagnostics` reported 0.1.3. The live KWin checks are pending.
+
 ## Dependency advisories
 
 On 2026-11-22, the two open Dependabot alerts were reviewed.
