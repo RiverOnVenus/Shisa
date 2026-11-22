@@ -17,7 +17,7 @@ use shisa_core::i18n::{self, Language};
 use std::collections::HashMap;
 use std::env;
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -246,20 +246,10 @@ fn main() -> std::process::ExitCode {
     {
         let gate = gate.clone();
         let handle = handle.clone();
-        let last_notification = Arc::new(AtomicU32::new(0));
         let dnd_hinted = Arc::new(AtomicBool::new(false));
-        // The watcher needs the same id slot and action channel as the lock
-        // result, so hold both in this block and move the slot into the
-        // action thread.
-        let notify_actions = actions_tx.clone();
-        let notify_last = last_notification.clone();
-        thread::Builder::new()
-            .name("notifications".into())
-            .spawn(move || watch_notification_actions(notify_actions, notify_last))
-            .expect("notifications thread");
         thread::Builder::new()
             .name("actions".into())
-            .spawn(move || action_loop(actions_rx, &gate, &handle, &last_notification, &dnd_hinted))
+            .spawn(move || action_loop(actions_rx, &gate, &handle, &dnd_hinted))
             .expect("actions thread");
     }
 
@@ -547,29 +537,22 @@ fn action_loop(
     rx: Receiver<Action>,
     gate: &Arc<Mutex<Option<window::Gate>>>,
     handle: &Handle<TrayState>,
-    last_notification: &AtomicU32,
     dnd_hinted: &AtomicBool,
 ) {
     for action in rx {
         match action {
             Action::LockAll => match lock("") {
-                Ok(()) => verify_lock(gate, handle, last_notification, dnd_hinted),
+                Ok(()) => verify_lock(gate, handle, dnd_hinted),
                 Err(e) => {
                     let language = i18n::current();
                     let message = match language {
                         Language::ZhCn => format!("全部上锁失败：{e}"),
                         Language::En => format!("Lock all failed: {e}"),
                     };
-                    notify_lock(
-                        handle,
-                        &message,
-                        false,
-                        NOTIFY_PROBLEM_TIMEOUT_MS,
-                        last_notification,
-                    );
+                    notify_lock(handle, &message, false, NOTIFY_PROBLEM_TIMEOUT_MS);
                 }
             },
-            Action::VerifyLock => verify_lock(gate, handle, last_notification, dnd_hinted),
+            Action::VerifyLock => verify_lock(gate, handle, dnd_hinted),
             Action::Unlock(app) => unlock(&app, gate),
             Action::RestoreIfTicketed(app) => restore_if_ticketed(&app, gate),
             Action::HiddenWindows(version, counts) => {
@@ -593,7 +576,6 @@ fn lock(app: &str) -> zbus::Result<()> {
 fn verify_lock(
     gate: &Mutex<Option<window::Gate>>,
     handle: &Handle<TrayState>,
-    last_notification: &AtomicU32,
     dnd_hinted: &AtomicBool,
 ) {
     let report = (|| -> Option<WindowReport> {
@@ -626,14 +608,14 @@ fn verify_lock(
     let hint =
         report.as_ref().is_some_and(|report| report.hidden > 0) && should_hint_dnd(dnd_hinted);
     let message = lock_summary(report.as_ref(), language, hint, &names);
-    let restore = report.as_ref().is_some_and(|report| report.hidden > 0);
+    let concealed = report.as_ref().is_some_and(|report| report.hidden > 0);
     let timeout = match &report {
         Some(report) if report.missed.is_empty() && report.matched == report.hidden => {
             NOTIFY_TIMEOUT_MS
         }
         _ => NOTIFY_PROBLEM_TIMEOUT_MS,
     };
-    notify_lock(handle, &message, restore, timeout, last_notification);
+    notify_lock(handle, &message, concealed, timeout);
 }
 
 /// The display names of the apps that could not be concealed. A malformed or
@@ -721,38 +703,21 @@ fn lock_summary(
     message
 }
 
-fn notify_lock(
-    handle: &Handle<TrayState>,
-    message: &str,
-    restore: bool,
-    timeout_ms: i32,
-    last_notification: &AtomicU32,
-) {
+fn notify_lock(handle: &Handle<TrayState>, message: &str, concealed: bool, timeout_ms: i32) {
     info!("{message}");
     let _ = handle.update(|tray| tray.last_lock = Some(message.to_string()));
-    let action = restore.then(|| text(i18n::current(), "恢复窗口", "Restore windows"));
-    let icon = if restore {
+    let icon = if concealed {
         LOCKED_ICON
     } else {
         "shisa-tray-symbolic"
     };
-    // Replace the previous lock result instead of stacking notifications.
-    // The returned id becomes the only one whose action can open the panel.
-    let replaces = last_notification.load(Ordering::Relaxed);
-    if let Some(id) = notify(message, action, timeout_ms, icon, replaces) {
-        last_notification.store(id, Ordering::Relaxed);
-    } else {
-        last_notification.store(0, Ordering::Relaxed);
-    }
+    notify(message, timeout_ms, icon);
 }
 
-fn notify(
-    message: &str,
-    action: Option<&str>,
-    timeout_ms: i32,
-    icon: &str,
-    replaces_id: u32,
-) -> Option<u32> {
+/// Send one lock result. The notification is a confirmation with no action,
+/// and every lock gets its own popup so a repeated lock is confirmed again
+/// after the previous result has expired.
+fn notify(message: &str, timeout_ms: i32, icon: &str) {
     let result = (|| -> zbus::Result<u32> {
         let conn = Connection::session()?;
         let proxy = Proxy::new(
@@ -761,69 +726,24 @@ fn notify(
             "/org/freedesktop/Notifications",
             NOTIFY_SERVICE,
         )?;
-        let actions = match action {
-            Some(label) => vec!["restore".to_string(), label.to_string()],
-            None => Vec::new(),
-        };
         let hints = HashMap::<String, zbus::zvariant::Value>::new();
         let id = proxy.call(
             "Notify",
             &(
                 "Shisa",
-                replaces_id,
+                0u32,
                 icon,
                 "Shisa",
                 message,
-                actions,
+                Vec::<String>::new(),
                 hints,
                 timeout_ms,
             ),
         )?;
         Ok(id)
     })();
-    match result {
-        Ok(id) => Some(id),
-        Err(e) => {
-            warn!("lock notification: {e}");
-            None
-        }
-    }
-}
-
-/// Act on the "Restore windows" button of the lock notification. Only the
-/// newest notification is remembered, and a new lock replaces that one.
-fn watch_notification_actions(actions: Sender<Action>, last: Arc<AtomicU32>) {
-    loop {
-        let Ok(conn) = Connection::session() else {
-            thread::sleep(Duration::from_secs(2));
-            continue;
-        };
-        let rule = MatchRule::builder()
-            .msg_type(Type::Signal)
-            .sender(NOTIFY_SERVICE)
-            .and_then(|rule| rule.interface(NOTIFY_SERVICE))
-            .and_then(|rule| rule.member("ActionInvoked"))
-            .map(|rule| rule.build());
-        let Ok(rule) = rule else {
-            return;
-        };
-        let Ok(mut signals) = MessageIterator::for_match_rule(rule, &conn, None) else {
-            thread::sleep(Duration::from_secs(2));
-            continue;
-        };
-        for message in &mut signals {
-            let Ok(message) = message else { break };
-            let Ok((id, key)) = message.body().deserialize::<(u32, String)>() else {
-                continue;
-            };
-            if id != 0 && id == last.load(Ordering::Relaxed) && key == "restore" {
-                // Only clear the slot if no newer notification took it while
-                // this action was in flight.
-                let _ = last.compare_exchange(id, 0, Ordering::Relaxed, Ordering::Relaxed);
-                let _ = actions.send(Action::OpenRestore);
-            }
-        }
-        thread::sleep(Duration::from_secs(1));
+    if let Err(e) = result {
+        warn!("lock notification: {e}");
     }
 }
 
@@ -946,10 +866,8 @@ fn restore_window(app: &str, gate: &Mutex<Option<window::Gate>>) {
                 "窗口恢复未确认",
                 "Window restore was not confirmed",
             ),
-            None,
             NOTIFY_PROBLEM_TIMEOUT_MS,
             "shisa-tray-symbolic",
-            0,
         );
     }
 }
@@ -1047,7 +965,14 @@ fn open_settings(gate: &Arc<Mutex<Option<window::Gate>>>, restore: bool) {
             "settings: display env from the user manager"
         );
     }
-    let mut settings = Command::new(bin);
+    // The agent's user unit is a cgroup. Stopping or restarting it would kill
+    // every process in that group, including an open settings window. A
+    // transient scope gives the window its own lifetime, so the user can
+    // keep reading the health line while the agent is down.
+    let mut settings = Command::new("/usr/bin/systemd-run");
+    settings
+        .args(["--user", "--scope", "--collect", "--quiet", "--"])
+        .arg(bin);
     if restore {
         settings.arg("--restore-windows");
     }

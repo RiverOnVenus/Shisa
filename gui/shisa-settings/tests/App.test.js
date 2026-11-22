@@ -5,9 +5,10 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { mount, unmount } from "svelte";
 
-const { calls, languageWrites } = vi.hoisted(() => ({
+const { calls, languageWrites, state } = vi.hoisted(() => ({
   calls: [],
   languageWrites: [],
+  state: { agentOnline: true },
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -31,6 +32,8 @@ vi.mock("@tauri-apps/api/core", () => ({
         return [[], 0, 0, 0];
       case "diagnostics":
         return ["0.1.1", 1, 0, 0, 1, 1, "/etc/shisa/users/test.toml", true, 0];
+      case "agent_status":
+        return state.agentOnline;
       case "set_ui_language":
         languageWrites.push(args.language);
         return null;
@@ -60,6 +63,7 @@ let app;
 beforeEach(() => {
   calls.length = 0;
   languageWrites.length = 0;
+  state.agentOnline = true;
   document.body.innerHTML = "";
   document.documentElement.lang = "";
 });
@@ -84,11 +88,24 @@ async function render() {
 test("renders the installed apps and the daemon state", async () => {
   await render();
   expect(rowNames()).toEqual(["Kate", "Dolphin"]);
-  expect(document.querySelector(".side-foot .gw").textContent).toContain(
-    "App lock is running",
+  await vi.waitFor(() =>
+    expect(document.querySelector(".side-foot .gw").textContent).toContain(
+      "Running normally",
+    ),
   );
   // The protected row is selected on mount, so its settings are loaded.
   expect(calls).toContainEqual(["app_config", { appId: "org.kde.kate" }]);
+});
+
+test("the health line names a missing session agent", async () => {
+  state.agentOnline = false;
+  await render();
+  await vi.waitFor(() =>
+    expect(document.querySelector(".side-foot .gw").textContent).toContain(
+      "Session agent is not running",
+    ),
+  );
+  expect(document.querySelector(".side-foot .gw.warn")).not.toBeNull();
 });
 
 test("the General row draws its own gear instead of asking the icon theme", async () => {

@@ -26,7 +26,7 @@ Replace the example package filename with the file you downloaded or built. The 
 ## Usage
 
 1. Open **Shisa Settings** and enable **Require authentication before launch** for the apps you want to protect.
-2. Before lending your desktop, right-click the Shisa tray icon and choose **Lock all**. Check the notification to confirm the protected windows were hidden. The notification also offers **Restore windows**, and it reminds you to enable Do Not Disturb when that is off.
+2. Before lending your desktop, right-click the Shisa tray icon and choose **Lock all**. Check the notification to confirm the protected windows were hidden. It also reminds you to enable Do Not Disturb when that is off.
 3. When you get your desktop back, left-click the tray icon, select an app in **Restore windows**, and authenticate. The original window and unsaved content are preserved.
 
 You can bind `shisa lock` to a KDE keyboard shortcut or enable **Hide when focus is lost** per app.

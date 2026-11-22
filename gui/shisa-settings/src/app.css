@@ -444,9 +444,24 @@ input:focus-visible {
   box-shadow: 0 0 0 3px var(--green-soft);
 }
 
+.gw > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .gw.off > i {
   background: var(--muted);
   box-shadow: none;
+}
+
+.gw.warn {
+  color: var(--amber);
+}
+
+.gw.warn > i {
+  background: var(--amber);
+  box-shadow: 0 0 0 3px var(--amber-soft);
 }
 
 /* ---- main ---- */

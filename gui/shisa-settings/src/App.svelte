@@ -105,6 +105,26 @@
   const versionMismatch = $derived(
     Boolean(diag && appVersion && diag.version !== appVersion),
   );
+  // One line for the whole health state. Naming both services only when they
+  // are healthy would repeat the same sentence in every window, so the
+  // healthy case stays short and the tooltip carries the breakdown.
+  const health = $derived(
+    daemon && agent
+      ? t("health.ok")
+      : !daemon && !agent
+        ? t("health.bothOff")
+        : !daemon
+          ? t("health.daemonOff")
+          : t("health.agentOff"),
+  );
+  const healthDetail = $derived.by(() => {
+    const lines = [
+      t(daemon ? "daemon.online" : "daemon.offline"),
+      t(agent ? "agent.online" : "agent.offline"),
+    ];
+    if (!agent) lines.push(t("agent.hint.off"));
+    return lines.join("\n");
+  });
 
   const nameOf = (id) => apps.find((a) => a.id === id)?.name ?? id;
 
@@ -741,8 +761,7 @@
         </svg>
         <span class="who"><span class="name">{t("sidebar.general")}</span></span>
       </button>
-      <div class="gw" class:off={!daemon} title={daemon ? t("daemon.online") : t("daemon.offline")}><i></i><span>{daemon ? t("daemon.online") : t("daemon.offline")}</span></div>
-      <div class="gw" class:off={!agent} title={agent ? t("agent.hint.on") : t("agent.hint.off")}><i></i><span>{agent ? t("agent.online") : t("agent.offline")}</span></div>
+      <div class="gw" class:off={!daemon && !agent} class:warn={!daemon || !agent} title={healthDetail}><i></i><span>{health}</span></div>
     </div>
   </aside>
 
