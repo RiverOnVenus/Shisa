@@ -46,6 +46,8 @@ On 2026-11-22, a local test package `shisa-0.1.3-1.1` was built from the `audit/
 
 On 2026-11-22, the local test package `shisa-0.1.3-1.1` was installed over the installed 0.1.3-1.1 with `pacman -U`. `pacman -Qkk shisa` reported 0 changed files out of 49. `post_upgrade` tightened `/etc/shisa/users` to 0700 and its files to 0600. `shisad.service` and `shisa-agent.service` were restarted, both active, and `Diagnostics` reported 0.1.3. The user verified the live KWin checks.
 
+On 2026-11-22, the local test package from the `audit/session-env-hardening` worktree was installed over 0.1.3-1.1 with `pacman -U`. `pacman -Qkk shisa` reported 0 changed files out of 49. The config modes stayed 0700/0600. `shisad.service` and `shisa-agent.service` were restarted, both active, and `Diagnostics` reported 0.1.3 with the configuration-failure timestamp at zero. The live settings checks are pending.
+
 ## Dependency advisories
 
 On 2026-11-22, the two open Dependabot alerts were reviewed.

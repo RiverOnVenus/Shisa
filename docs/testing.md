@@ -55,6 +55,8 @@ On 2026-11-22, `cargo test --workspace --locked` (171 tests) passed after the se
 
 On 2026-11-22, `cargo test --workspace --locked` (172 tests) covered the configuration failure timestamp and the load failure flag. The settings diagnostics card renders the new field.
 
+On 2026-11-22, after the session environment and configuration-failure changes, `tests/gate.sh`, `tests/auth.sh`, and `tests/settings.sh` each reported 0 failed, including the exact manager resolution and the nine-field `Diagnostics` tuple. The package check passed 172 workspace tests, 4 settings Tauri tests, and the frontend and KWin script suites. The live settings checks are pending.
+
 ## Window and authentication verification
 
 1. In an isolated KWin session, open a protected window and an ordinary window. Lock all apps and verify that the protected window disappears and the ordinary window stays usable. Repeat the operation and check that the acknowledgement reflects the current state.
