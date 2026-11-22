@@ -1078,35 +1078,77 @@ fn target_of(all: &[String], args: &[String]) -> String {
     parts.join(" ")
 }
 
-fn all_desktop_files(env: &Env) -> Vec<(String, PathBuf)> {
-    fn walk(dir: &Path, prefix: &str, out: &mut Vec<(String, PathBuf)>, depth: u8) {
-        if out.len() >= MAX_ENTRIES {
+/// Walk one applications directory, counting every entry against the scan
+/// budget. The budget is on entries visited, not on the `.desktop` files that
+/// make it into `out`: a directory full of unrelated files must not make the
+/// root-side scan walk it without bound.
+fn walk_desktop_files(
+    dir: &Path,
+    prefix: &str,
+    out: &mut Vec<(String, PathBuf)>,
+    depth: u8,
+    visited: &mut usize,
+    limit: usize,
+) {
+    if *visited >= limit {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if *visited >= limit {
             return;
         }
-        let Ok(entries) = fs::read_dir(dir) else {
-            return;
-        };
-        for entry in entries.flatten() {
-            if out.len() >= MAX_ENTRIES {
-                return;
+        *visited += 1;
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        // Do not follow a symlinked directory out of the applications
+        // directory. A symlinked desktop file itself is still read.
+        let is_dir = entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false);
+        if is_dir {
+            if depth < 3 {
+                walk_desktop_files(
+                    &path,
+                    &format!("{prefix}{name}-"),
+                    out,
+                    depth + 1,
+                    visited,
+                    limit,
+                );
             }
-            let path = entry.path();
-            let name = entry.file_name().to_string_lossy().into_owned();
-            // Do not follow a symlinked directory out of the applications
-            // directory. A symlinked desktop file itself is still read.
-            let is_dir = entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false);
-            if is_dir {
-                if depth < 3 {
-                    walk(&path, &format!("{prefix}{name}-"), out, depth + 1);
-                }
-            } else if let Some(id) = name.strip_suffix(".desktop") {
-                out.push((format!("{prefix}{id}"), path));
-            }
+        } else if let Some(id) = name.strip_suffix(".desktop") {
+            out.push((format!("{prefix}{id}"), path));
         }
     }
+}
+
+fn all_desktop_files(env: &Env) -> Vec<(String, PathBuf)> {
+    all_desktop_files_with(env, MAX_ENTRIES)
+}
+
+fn all_desktop_files_with(env: &Env, limit: usize) -> Vec<(String, PathBuf)> {
     let mut out = Vec::new();
-    for dir in &env.data_dirs {
-        walk(&dir.join("applications"), "", &mut out, 0);
+    let mut visited = 0;
+    let dirs = env.data_dirs.len();
+    for (index, dir) in env.data_dirs.iter().enumerate() {
+        let left = limit.saturating_sub(visited);
+        if left == 0 {
+            break;
+        }
+        // Divide what is left by the directories still to scan, so one
+        // directory full of unrelated files cannot hide the applications in
+        // the directories after it.
+        let share = (left / (dirs - index)).max(1);
+        let stop = visited + share.min(left);
+        walk_desktop_files(
+            &dir.join("applications"),
+            "",
+            &mut out,
+            0,
+            &mut visited,
+            stop,
+        );
     }
     out
 }
@@ -1475,6 +1517,62 @@ mod tests {
             "{installed:?}"
         );
         assert!(!installed.iter().any(|a| a.id == "linkdir-hidden"));
+    }
+
+    #[test]
+    fn the_scan_budget_counts_directory_entries_not_desktop_files() {
+        let fx = fixture("scan-budget");
+        let dir = fx.dir.join("many");
+        fs::create_dir_all(&dir).unwrap();
+        for i in 0..10 {
+            fs::write(dir.join(format!("file-{i}")), "").unwrap();
+        }
+        let mut out = Vec::new();
+        let mut visited = 0;
+        walk_desktop_files(&dir, "", &mut out, 0, &mut visited, 4);
+        assert_eq!(visited, 4);
+        assert!(out.is_empty());
+
+        // The production budget reaches the desktop file, an empty one does
+        // not. The visited count above is what keeps a tree of unrelated files
+        // from being walked without bound.
+        let bin = binary(&fx, "budget-bin");
+        app(
+            &fx,
+            "budget.test",
+            &format!("[Desktop Entry]\nName=Budget\nExec={}\n", bin.display()),
+        );
+        assert!(all_desktop_files_with(&fx.env, 0).is_empty());
+        assert!(
+            all_desktop_files_with(&fx.env, MAX_ENTRIES)
+                .iter()
+                .any(|(id, _)| id == "budget.test")
+        );
+    }
+
+    #[test]
+    fn one_data_directory_cannot_consume_the_whole_scan_budget() {
+        let fx = fixture("scan-share");
+        let first = fx.env.data_dirs[0].join("applications");
+        for i in 0..10 {
+            fs::write(first.join(format!("junk-{i}")), "").unwrap();
+        }
+        let second = fx.dir.join("second-share");
+        fs::create_dir_all(second.join("applications")).unwrap();
+        let bin = binary(&fx, "share-bin");
+        fs::write(
+            second.join("applications/share.test.desktop"),
+            format!("[Desktop Entry]\nName=Share\nExec={}\n", bin.display()),
+        )
+        .unwrap();
+        let mut env = fx.env.clone();
+        env.data_dirs.push(second);
+        assert!(
+            all_desktop_files_with(&env, 4)
+                .iter()
+                .any(|(id, _)| id == "share.test"),
+            "a directory full of unrelated files used the whole scan budget"
+        );
     }
 
     #[test]
