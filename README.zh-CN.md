@@ -15,7 +15,7 @@ Shisa 不是屏幕锁，也不是用户隔离工具。
 从 [GitHub Releases](https://github.com/RiverOnVenus/Shisa/releases) 下载 x86_64 Arch 包，或[在本地构建测试包](docs/packaging.md#build-a-local-test-package)，然后安装并完成首次设置：
 
 ```sh
-sudo pacman -U ./shisa-0.1.4-1-x86_64.pkg.tar.zst
+sudo pacman -U ./shisa-0.1.5-1-x86_64.pkg.tar.zst
 sudo passwd shisa-lock
 sudo systemctl enable --now shisad.service
 systemctl --user enable --now shisa-agent.service
