@@ -24,7 +24,7 @@ On 2026-11-21, the v0.1.1 release build failed twice in the container: one test 
 
 On 2026-11-21, v0.1.2 built and passed `check()` in the release container. The release attached `shisa-0.1.2-1-x86_64.pkg.tar.zst`, `SHA256SUMS` and `shisa-0.1.2.tar.gz`. The downloaded package and source archive matched their checksums, and the package lists the four binaries, both systemd units and the polkit action and rule.
 
-For manual AUR preparation, `packaging/arch/release.sh` still creates the tagged source archive, updates the hash, and writes `.SRCINFO`. That source archive can be uploaded separately when needed.
+For manual AUR preparation, `packaging/arch/release.sh` still creates the tagged source archive, updates the hash, and writes `.SRCINFO`. That source archive can be uploaded separately when needed. `make-source.sh` refuses a tag whose workspace `Cargo.toml`, settings `Cargo.toml`, `package.json`, and `tauri.conf.json` do not all name the PKGBUILD version. The settings window compares its own version with shisad's, so a manifest that lags behind would leave a permanent mismatch notice on a correct install.
 
 ## Installation and upgrade verification
 
