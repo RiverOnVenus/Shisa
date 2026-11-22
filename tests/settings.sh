@@ -4,7 +4,9 @@
 # Covers `shisa protect`/`unprotect`, `SetOption`, the written config file and
 # `shisa resolve`. Every change is authenticated on its own: a ticket does not
 # stand in for it. A private dbus-daemon and tests/fake-polkit are used, so no
-# real password is involved and everything stays under $W.
+# real password is involved. Throwaway files live under $W, and T3 protects
+# and unprotects /usr/bin/kwrite to exercise the desktop entry resolution. It
+# never launches KWrite.
 set -u
 
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
@@ -23,6 +25,12 @@ for b in "$SHISAD" "$CLI"; do
 done
 [ "$(id -u)" -ne 0 ] || { echo "run as the normal user, not root"; exit 1; }
 rm -rf "$W"; mkdir -p "$W"
+# The assertions below match the English interface. The saved language choice
+# lives under XDG_CONFIG_HOME, so point it at the test directory and force the
+# C locale instead of depending on the caller's session.
+export LC_ALL=C
+export XDG_CONFIG_HOME="$W/config"
+mkdir -p "$XDG_CONFIG_HOME"
 : > "$OUT"
 
 . "$HERE/tests/lib.sh"
@@ -59,9 +67,14 @@ grep -q '/usr/bin/kwrite' "$OUT" && say "  ok    path resolved" \
 
 say "== T2 a refused change writes nothing =="
 expect 1 "protect refused by polkit" "$CLI" protect "$APP"
-[ ! -e "$W/etc/$ME.toml" ] || ! sudo grep -q "id = \"$APP\"" "$W/etc/$ME.toml" \
-  && say "  ok    no config written" \
-  || { say "  FAIL  config written without authentication"; FAILED=$((FAILED + 1)); }
+# The daemon keeps the config directory at 0700, so the file has to be read
+# through sudo even when it does not exist yet.
+if sudo test -f "$W/etc/$ME.toml" && sudo grep -q "id = \"$APP\"" "$W/etc/$ME.toml"; then
+  say "  FAIL  config written without authentication"
+  FAILED=$((FAILED + 1))
+else
+  say "  ok    no config written"
+fi
 
 say "== T3 an allowed change is written as root =="
 control allow
@@ -78,8 +91,10 @@ grep -q "$APP" "$W/status.txt" && say "  ok    app listed" \
   || { say "  FAIL  app not listed"; FAILED=$((FAILED + 1)); }
 sudo test -f "$W/etc/$ME.toml" && say "  ok    config file written" \
   || { say "  FAIL  config file missing"; FAILED=$((FAILED + 1)); }
-sudo stat -c '%a %U' "$W/etc/$ME.toml" | grep -q '^644 root' && say "  ok    mode 644 owned by root" \
+sudo stat -c '%a %U' "$W/etc/$ME.toml" | grep -q '^600 root' && say "  ok    mode 600 owned by root" \
   || { say "  FAIL  wrong owner or mode: $(sudo stat -c '%a %U' "$W/etc/$ME.toml")"; FAILED=$((FAILED + 1)); }
+sudo stat -c '%a' "$W/etc" | grep -q '^700$' && say "  ok    config directory mode 700" \
+  || { say "  FAIL  wrong directory mode: $(sudo stat -c '%a' "$W/etc")"; FAILED=$((FAILED + 1)); }
 sudo grep -q "id = \"$APP\"" "$W/etc/$ME.toml" && sudo grep -q '/usr/bin/kwrite' "$W/etc/$ME.toml" \
   && say "  ok    app and its path are in the file" \
   || { say "  FAIL  file content unexpected"; sudo cat "$W/etc/$ME.toml" | tee -a "$OUT"; FAILED=$((FAILED + 1)); }

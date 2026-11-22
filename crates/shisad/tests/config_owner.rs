@@ -220,7 +220,9 @@ fn writing_settings_leaves_a_root_owned_file_that_reads_back() {
     load::write_user(&dir, &user, &config).expect("write as namespace root");
     let path = dir.join(format!("{user}.toml"));
     let mode = fs::metadata(&path).unwrap().mode() & 0o777;
-    assert_eq!(mode, 0o644);
+    assert_eq!(mode, 0o600);
+    let dir_mode = fs::metadata(&dir).unwrap().mode() & 0o777;
+    assert_eq!(dir_mode, 0o700);
     assert!(!dir.join(format!(".{user}.toml.new")).exists());
     assert_eq!(load::read_user(&dir, &user).unwrap(), config);
     let _ = fs::remove_dir_all(&dir);
