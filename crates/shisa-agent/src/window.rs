@@ -16,10 +16,13 @@ use std::fs;
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 use tracing::{debug, warn};
+use zbus::Connection as AsyncConnection;
 use zbus::blocking::{Connection, Proxy};
+use zbus::message::Header;
 
 /// The fixed plugin name older agents used. Unloaded once at startup so its
 /// stale handlers do not fight the per-generation scripts.
@@ -91,6 +94,9 @@ struct Inventory {
 #[derive(Default)]
 pub struct Ready {
     generation: Mutex<(u64, u32, u32)>,
+    /// The newest generation the agent published. A report above it cannot
+    /// come from the script this agent loaded.
+    expected: AtomicU64,
     desired: Mutex<String>,
     inventory: Mutex<Inventory>,
     changed: Condvar,
@@ -101,7 +107,14 @@ impl Ready {
         Ready::default()
     }
 
+    fn expect(&self, generation: u64) {
+        self.expected.store(generation, Ordering::SeqCst);
+    }
+
     fn note(&self, generation: u64, matched: u32, hidden: u32) {
+        if generation > self.expected.load(Ordering::SeqCst) {
+            return;
+        }
         let mut current = self.generation.lock().unwrap();
         if generation > current.0 {
             *current = (generation, matched, hidden);
@@ -127,9 +140,36 @@ impl Ready {
     }
 }
 
+/// The KWin script is the only sender allowed to report window state, focus,
+/// or a ticket-gated restore. The session bus is shared by every process of
+/// the user, so compare the sender with the current owner of KWin's name. A
+/// live probe showed the script's calls arriving from that same unique name.
+async fn from_kwin(conn: &AsyncConnection, hdr: &Header<'_>) -> bool {
+    let Some(sender) = hdr.sender() else {
+        return false;
+    };
+    let Ok(reply) = conn
+        .call_method(
+            Some("org.freedesktop.DBus"),
+            "/org/freedesktop/DBus",
+            Some("org.freedesktop.DBus"),
+            "GetNameOwner",
+            &("org.kde.KWin",),
+        )
+        .await
+    else {
+        return false;
+    };
+    let Ok(owner) = reply.body().deserialize::<String>() else {
+        return false;
+    };
+    owner == sender.to_string()
+}
+
 /// The script reports focus changes and its own generation once it has
-/// started. Nothing else crosses the session bus: the window layer does not
-/// authenticate.
+/// started. The agent accepts those reports only from KWin. Restoration still
+/// goes through the daemon's ticket check, and the window layer never
+/// authenticates on its own.
 #[derive(Clone)]
 pub struct WindowService {
     actions: std::sync::mpsc::Sender<super::Action>,
@@ -148,6 +188,36 @@ impl WindowService {
             ready,
             actions,
         }
+    }
+
+    /// The focus bookkeeping behind `WindowEvent`, kept synchronous so the
+    /// unit tests can exercise it without a bus connection.
+    fn apply_window_event(&self, app_id: &str, event: &str) -> bool {
+        let mut tracker = self.tracker.lock().unwrap();
+        match event {
+            // The window lost focus. Start its relock clock when the app has
+            // the feature enabled.
+            "unfocused" => {
+                if tracker.focused.as_deref() == Some(app_id) {
+                    tracker.focused = None;
+                }
+                if tracker.relock.contains_key(app_id) {
+                    tracker
+                        .unfocused
+                        .entry(app_id.to_string())
+                        .or_insert_with(Instant::now);
+                }
+            }
+            // The app has the focus again: a switch back before the delay
+            // must cancel the hide, or the window would vanish while the
+            // user is working in it.
+            "focused" => {
+                tracker.unfocused.remove(app_id);
+                tracker.focused = Some(app_id.to_string());
+            }
+            _ => {}
+        }
+        true
     }
 }
 
@@ -171,13 +241,33 @@ impl WindowService {
     /// already concealed it again, so this only brings it back when the app
     /// still holds a ticket, and never starts polkit
     /// (docs/subsystems/window-management.md).
-    fn restore_if_ticketed(&self, app: String) -> zbus::fdo::Result<()> {
+    async fn restore_if_ticketed(
+        &self,
+        app: String,
+        #[zbus(header)] hdr: Header<'_>,
+        #[zbus(connection)] conn: &AsyncConnection,
+    ) -> zbus::fdo::Result<()> {
+        if !from_kwin(conn, &hdr).await {
+            return Err(zbus::fdo::Error::Failed(
+                "only KWin may restore a hidden window".into(),
+            ));
+        }
         self.actions
             .send(super::Action::RestoreIfTicketed(app))
             .map_err(|error| zbus::fdo::Error::Failed(error.to_string()))
     }
 
-    fn windows_checked(&self, generation: &str, matched: &str, hidden: &str) {
+    async fn windows_checked(
+        &self,
+        generation: &str,
+        matched: &str,
+        hidden: &str,
+        #[zbus(header)] hdr: Header<'_>,
+        #[zbus(connection)] conn: &AsyncConnection,
+    ) {
+        if !from_kwin(conn, &hdr).await {
+            return;
+        }
         if let (Ok(generation), Ok(matched), Ok(hidden)) =
             (generation.parse(), matched.parse(), hidden.parse())
         {
@@ -185,7 +275,17 @@ impl WindowService {
         }
     }
 
-    fn hidden_windows(&self, generation: &str, sequence: &str, counts: &str) {
+    async fn hidden_windows(
+        &self,
+        generation: &str,
+        sequence: &str,
+        counts: &str,
+        #[zbus(header)] hdr: Header<'_>,
+        #[zbus(connection)] conn: &AsyncConnection,
+    ) {
+        if !from_kwin(conn, &hdr).await {
+            return;
+        }
         let (Ok(generation), Ok(sequence)) = (generation.parse(), sequence.parse()) else {
             return;
         };
@@ -219,29 +319,18 @@ impl WindowService {
 
     /// The app lost or regained focus. The agent starts and cancels its
     /// relock clock when that app has the feature enabled.
-    fn window_event(&self, app_id: String, _pid: String, event: String) -> zbus::fdo::Result<bool> {
-        let mut tracker = self.tracker.lock().unwrap();
-        match event.as_str() {
-            // The window lost focus. Start its relock clock when the app has
-            // the feature enabled.
-            "unfocused" => {
-                if tracker.focused.as_deref() == Some(&app_id) {
-                    tracker.focused = None;
-                }
-                if tracker.relock.contains_key(&app_id) {
-                    tracker.unfocused.entry(app_id).or_insert_with(Instant::now);
-                }
-            }
-            // The app has the focus again: a switch back before the delay
-            // must cancel the hide, or the window would vanish while the
-            // user is working in it.
-            "focused" => {
-                tracker.unfocused.remove(&app_id);
-                tracker.focused = Some(app_id);
-            }
-            _ => {}
+    async fn window_event(
+        &self,
+        app_id: String,
+        _pid: String,
+        event: String,
+        #[zbus(header)] hdr: Header<'_>,
+        #[zbus(connection)] conn: &AsyncConnection,
+    ) -> zbus::fdo::Result<bool> {
+        if !from_kwin(conn, &hdr).await {
+            return Ok(false);
         }
-        Ok(true)
+        Ok(self.apply_window_event(&app_id, &event))
     }
 }
 
@@ -469,6 +558,7 @@ impl Gate {
     ) -> Result<(), LoadError> {
         if self.is_loaded() {
             self.generation += 1;
+            self.ready.expect(self.generation);
             self.publish_state(protected, allowed, restore);
             if self
                 .ready
@@ -511,6 +601,7 @@ impl Gate {
             }
             self.generation += 1;
             self.instance = self.generation;
+            self.ready.expect(self.generation);
             self.publish_state(protected, allowed, restore);
             let path = self
                 .directory
@@ -874,12 +965,23 @@ mod tests {
         let waiter = ready.clone();
         let handle = thread::spawn(move || waiter.wait(2, Duration::from_millis(500)));
         thread::sleep(Duration::from_millis(20));
+        ready.expect(2);
         ready.note(2, 3, 2);
         ready.note(1, 0, 0);
         assert_eq!(*ready.generation.lock().unwrap(), (2, 3, 2));
         assert!(!ready.wait(1, Duration::ZERO));
         assert!(handle.join().unwrap());
         assert!(ready.wait(2, Duration::from_millis(1)));
+    }
+
+    #[test]
+    fn a_report_above_the_expected_generation_is_ignored() {
+        let ready = Ready::new();
+        ready.expect(5);
+        ready.note(u64::MAX, 0, 0);
+        assert_eq!(*ready.generation.lock().unwrap(), (0, 0, 0));
+        ready.note(5, 1, 1);
+        assert_eq!(*ready.generation.lock().unwrap(), (5, 1, 1));
     }
 
     #[test]
@@ -891,17 +993,9 @@ mod tests {
             Arc::new(Ready::new()),
             std::sync::mpsc::channel().0,
         );
-        assert!(
-            service
-                .window_event("app".into(), "1".into(), "unfocused".into())
-                .unwrap()
-        );
+        assert!(service.apply_window_event("app", "unfocused"));
         assert!(tracker.lock().unwrap().unfocused.contains_key("app"));
-        assert!(
-            service
-                .window_event("app".into(), "1".into(), "focused".into())
-                .unwrap()
-        );
+        assert!(service.apply_window_event("app", "focused"));
         assert!(!tracker.lock().unwrap().unfocused.contains_key("app"));
         assert!(!tracker.lock().unwrap().may_relock("app"));
         // The timer never fires for this focus cycle.
@@ -923,26 +1017,14 @@ mod tests {
             Arc::new(Ready::new()),
             std::sync::mpsc::channel().0,
         );
-        assert!(
-            service
-                .window_event("app".into(), "1".into(), "unfocused".into())
-                .unwrap()
-        );
+        assert!(service.apply_window_event("app", "unfocused"));
         assert!(tracker.lock().unwrap().unfocused.contains_key("app"));
         // An app without the feature is not tracked at all.
-        assert!(
-            service
-                .window_event("other".into(), "1".into(), "unfocused".into())
-                .unwrap()
-        );
+        assert!(service.apply_window_event("other", "unfocused"));
         assert!(!tracker.lock().unwrap().unfocused.contains_key("other"));
         // Other events do not touch the clock.
         tracker.lock().unwrap().unfocused.remove("app");
-        assert!(
-            service
-                .window_event("app".into(), "1".into(), "activated".into())
-                .unwrap()
-        );
+        assert!(service.apply_window_event("app", "activated"));
         assert!(tracker.lock().unwrap().unfocused.is_empty());
     }
 }

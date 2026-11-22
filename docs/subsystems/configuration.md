@@ -84,7 +84,7 @@ The password readiness flag checks only the `shisa-lock` password field in `/etc
 
 ## Session D-Bus
 
-The agent serves `io.github.RiverOnVenus.Shisa.Window` at `/io/github/RiverOnVenus/Shisa/Window`. `WindowEvent(app_id: s, pid: s, event: s) -> b` takes a decimal PID string and accepts `focused` and `unfocused` events for relock timers. The interface also provides `WindowState`, `HiddenApps`, `RestoreWindow`, `RestoreIfTicketed`, `WindowsChecked`, `HiddenWindows`, and `VerifyLock`. `RestoreWindow` is the restore panel's path and may authenticate. `RestoreIfTicketed` is the KWin script's path for an app's own tray activation: it restores the window only while a ticket is valid and never starts polkit. See [Window management](window-management.md) for the acknowledgement and restoration contracts.
+The agent serves `io.github.RiverOnVenus.Shisa.Window` at `/io/github/RiverOnVenus/Shisa/Window`. `WindowEvent(app_id: s, pid: s, event: s) -> b` takes a decimal PID string and accepts `focused` and `unfocused` events for relock timers. The interface also provides `WindowState`, `HiddenApps`, `RestoreWindow`, `RestoreIfTicketed`, `WindowsChecked`, `HiddenWindows`, and `VerifyLock`. `WindowEvent`, `WindowsChecked`, `HiddenWindows`, and `RestoreIfTicketed` are accepted only from the current owner of `org.kde.KWin`. `RestoreWindow` is the restore panel's path and may authenticate. `RestoreIfTicketed` is the KWin script's path for an app's own tray activation: it restores the window only while a ticket is valid and never starts polkit. See [Window management](window-management.md) for the acknowledgement and restoration contracts.
 
 ## CLI
 
