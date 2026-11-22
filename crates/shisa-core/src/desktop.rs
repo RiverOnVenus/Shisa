@@ -22,7 +22,8 @@ pub struct Env {
     /// Flatpak installation roots, each containing `app/<id>/current/active`.
     pub flatpak_roots: Vec<PathBuf>,
     /// Set when another process reads on behalf of this account: its uid and
-    /// home directory. Files below the home must then belong to the account.
+    /// home directory. Files outside the system directories must then belong
+    /// to the account.
     pub owner: Option<(u32, PathBuf)>,
     /// The account's XDG config directory, for the interface language.
     pub config_home: PathBuf,
@@ -121,8 +122,8 @@ impl Env {
     ///
     /// shisad calls this as root for files the account controls, so it only
     /// accepts a regular file of limited size, opened without blocking (a
-    /// FIFO in the applications directory must not stall the caller). Below
-    /// the account's home the file has to be owned by the account: a link
+    /// FIFO in the applications directory must not stall the caller). A file
+    /// outside the system directories has to be owned by the account: a link
     /// there may point anywhere, and root must not read on the account's
     /// behalf what the account could not read itself.
     fn read(&self, path: &Path) -> io::Result<String> {
@@ -137,8 +138,8 @@ impl Env {
                 "not a small regular file",
             ));
         }
-        if let Some((uid, home)) = &self.owner
-            && path.starts_with(home)
+        if let Some((uid, _home)) = &self.owner
+            && !system_path(path)
             && meta.uid() != *uid
         {
             return Err(io::Error::new(
@@ -207,13 +208,24 @@ impl Env {
     }
 }
 
+/// System desktop and Flatpak directories are root's. A file read on an
+/// account's behalf may come from them. Any other path must belong to the
+/// account, so a user-controlled directory cannot make root read another
+/// account's file.
+fn system_path(path: &Path) -> bool {
+    const ROOTS: &[&str] = &["/usr", "/opt", "/var/lib/flatpak"];
+    ROOTS.iter().any(|root| path.starts_with(*root))
+}
+
 /// The environment of the user's systemd manager, which carries the session's
-/// XDG directories, PATH and locale. The daemon itself has none of them.
+/// XDG directories, PATH and locale. Only the process in the account's
+/// `user@<uid>.service/init.scope` whose real uid is the account is accepted.
+/// The daemon itself has none of them.
 fn session_env(uid: u32) -> HashMap<String, String> {
     let Ok(entries) = fs::read_dir("/proc") else {
         return HashMap::new();
     };
-    let unit = format!("user@{uid}.service");
+    let manager = format!("/user.slice/user-{uid}.slice/user@{uid}.service/init.scope");
     for entry in entries.flatten() {
         if entry
             .file_name()
@@ -233,7 +245,21 @@ fn session_env(uid: u32) -> HashMap<String, String> {
         let Ok(cgroup) = fs::read_to_string(dir.join("cgroup")) else {
             continue;
         };
-        if !cgroup.contains(&unit) {
+        let Some(path) = cgroup.lines().find_map(|line| line.strip_prefix("0::")) else {
+            continue;
+        };
+        if path.trim_end() != manager {
+            continue;
+        }
+        let Ok(status) = fs::read_to_string(dir.join("status")) else {
+            continue;
+        };
+        let real_uid = status
+            .lines()
+            .find_map(|line| line.strip_prefix("Uid:"))
+            .and_then(|line| line.split_ascii_whitespace().next())
+            .and_then(|value| value.parse::<u32>().ok());
+        if real_uid != Some(uid) {
             continue;
         }
         let Ok(environ) = fs::read(dir.join("environ")) else {
@@ -1308,15 +1334,36 @@ mod tests {
         // The same file under another account's name is refused too.
         env.owner = Some((me + 1, home.clone()));
         assert!(env.read(&file).is_err());
-        // Outside the home the owner does not matter, and directories and
-        // FIFOs are never read.
+        // The account's own file stays readable outside its home, but a link
+        // to another account's file is refused. Directories and FIFOs are
+        // never read.
         env.owner = Some((me, fx.dir.join("elsewhere")));
-        assert!(env.read(&link).is_ok());
+        assert!(env.read(&file).is_ok());
+        assert!(env.read(&link).is_err());
         assert!(env.read(&home).is_err());
         let fifo = home.join("applications/pipe.desktop");
         let c = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
         assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o644) }, 0);
         assert!(env.read(&fifo).is_err());
+    }
+
+    #[test]
+    fn system_roots_are_read_on_behalf_of_an_account() {
+        assert!(system_path(Path::new("/usr/share/applications/x.desktop")));
+        assert!(system_path(Path::new("/opt/app/x.desktop")));
+        assert!(system_path(Path::new("/var/lib/flatpak/app/x.desktop")));
+        assert!(!system_path(Path::new("/run/user/1000/x.desktop")));
+        assert!(!system_path(Path::new("/home/u/.local/share/x.desktop")));
+    }
+
+    #[test]
+    fn the_manager_environment_comes_from_the_account_manager() {
+        let uid = unsafe { libc::getuid() };
+        let vars = session_env(uid);
+        if vars.is_empty() {
+            return;
+        }
+        assert!(vars.contains_key("XDG_RUNTIME_DIR") || vars.contains_key("PATH"));
     }
 
     #[test]

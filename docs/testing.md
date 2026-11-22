@@ -51,6 +51,8 @@ On 2026-11-22, the small hardening branch passed `cargo test --workspace --locke
 
 On 2026-11-22, the user verified the live Wayland session after installing the test package: the settings list and icons loaded, Lock all hid the protected windows while an ordinary window stayed usable, the restore panel returned a window without a prompt inside the grace period, and the app-tray path behaved the same. The config modes were 0700/0600.
 
+On 2026-11-22, `cargo test --workspace --locked` (171 tests) passed after the session environment and file ownership constraints. The manager-environment test skips when no user manager is available.
+
 ## Window and authentication verification
 
 1. In an isolated KWin session, open a protected window and an ordinary window. Lock all apps and verify that the protected window disappears and the ordinary window stays usable. Repeat the operation and check that the acknowledgement reflects the current state.
