@@ -502,14 +502,23 @@ fn find_icon(name: &str) -> Option<String> {
     None
 }
 
+/// Icons are small. An `Icon=` path can be absolute or reach through a
+/// symlink, so refuse a device or an unbounded file instead of reading it
+/// into memory.
+const MAX_ICON_BYTES: u64 = 4 << 20;
+
 fn data_url(path: &std::path::Path) -> Option<String> {
-    let bytes = std::fs::read(path).ok()?;
     let mime = match path.extension().and_then(|e| e.to_str()) {
         Some("svg") => "image/svg+xml",
         Some("png") => "image/png",
         Some("xpm") => "image/x-xpixmap",
         _ => return None,
     };
+    let meta = std::fs::metadata(path).ok()?;
+    if !meta.is_file() || meta.len() > MAX_ICON_BYTES {
+        return None;
+    }
+    let bytes = std::fs::read(path).ok()?;
     let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
     Some(format!("data:{mime};base64,{encoded}"))
 }
@@ -569,14 +578,19 @@ fn open_window(app: &tauri::AppHandle, restore: bool) -> Result<(), Box<dyn std:
         let _ = window.set_focus();
         return Ok(());
     }
-    let data = std::env::var_os("XDG_RUNTIME_DIR")
+    // The runtime directory is per-user and private. A fixed fallback under
+    // /tmp is not, and another account could pre-create or poison it.
+    let runtime = std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir)
-        .join(if restore {
-            "shisa-restore"
-        } else {
-            "shisa-settings"
-        });
+        .filter(|path| path.is_absolute())
+        .ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::NotFound, "XDG_RUNTIME_DIR is not set")
+        })?;
+    let data = runtime.join(if restore {
+        "shisa-restore"
+    } else {
+        "shisa-settings"
+    });
     std::fs::create_dir_all(&data)?;
     let builder = WebviewWindowBuilder::new(app, label, WebviewUrl::App("index.html".into()))
         .data_directory(data);
@@ -666,6 +680,24 @@ mod tests {
 
     fn owned(value: Value<'_>) -> OwnedValue {
         value.try_into().unwrap()
+    }
+
+    #[test]
+    fn an_icon_path_must_be_a_small_regular_file() {
+        let dir = std::env::temp_dir().join(format!("shisa-icon-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let small = dir.join("small.png");
+        std::fs::write(&small, b"\x89PNG").unwrap();
+        assert!(data_url(&small).is_some());
+        let large = dir.join("large.png");
+        let file = std::fs::File::create(&large).unwrap();
+        file.set_len(MAX_ICON_BYTES + 1).unwrap();
+        assert!(data_url(&large).is_none());
+        let zero = dir.join("zero.png");
+        std::os::unix::fs::symlink("/dev/zero", &zero).unwrap();
+        assert!(data_url(&zero).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
