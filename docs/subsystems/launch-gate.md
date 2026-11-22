@@ -32,6 +32,8 @@ Before exec completes, `/proc/<pid>/exe` still identifies the caller's old proce
 3. For a valid ticket, allow the launch and register an instance.
 4. Otherwise, suspend the request and ask polkit. Authorization issues a ticket, registers an instance, and resumes the original exec with its original arguments, environment, terminal, and cgroup. Refusal, cancellation, and timeout return `EPERM` to the caller.
 
+A permission event whose file descriptor cannot be inspected is denied. The event exists only for a marked inode, so an unidentified file cannot be assumed unprotected.
+
 Waiting callers sleep in exec and can be killed by a signal. The default wait is 60 seconds. The event loop answers every event and delegates authentication to separate work. Excess pending launches are refused once they reach 64 per app or 256 per user.
 
 On daemon exit the kernel releases pending events and removes marks. systemd uses `Restart=always`, and the tray reports daemon availability. The service uses `Type=notify` and `WatchdogSec=10` with a heartbeat every five seconds to recover from event-loop stalls. Root can temporarily disable launch protection by stopping `shisad` from a TTY.
