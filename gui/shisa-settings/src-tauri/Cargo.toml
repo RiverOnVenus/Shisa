@@ -22,6 +22,12 @@ futures-util = { version = "0.3", default-features = false, features = ["std"] }
 base64 = "0.22"
 glib = "0.18"
 
+# The same gtk and gdk that tauri links, named directly to reach the window's
+# client-side decoration: tauri returns gtk::ApplicationWindow from
+# WebviewWindow::gtk_window, and gtk::prelude supplies set_decorated.
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = { version = "0.18", features = ["v3_24"] }
+
 [features]
 # Embeds the built frontend. Without it the shell expects the Vite dev server.
 custom-protocol = ["tauri/custom-protocol"]
