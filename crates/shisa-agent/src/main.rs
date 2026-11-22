@@ -9,8 +9,9 @@
 //! When shisad restarts or goes away the agent keeps running, marks itself
 //! offline and registers again.
 
+use ksni::blocking::{Handle, TrayMethods};
 use ksni::menu::{MenuItem, StandardItem};
-use ksni::{Category, Handle, Status, Tray, TrayService};
+use ksni::{Category, Status, Tray};
 use shisa_core::dbus::{BUS_NAME, INTERFACE, ManagerProxyBlocking, WINDOW_BUS_NAME, WINDOW_PATH};
 use shisa_core::i18n::{self, Language};
 use std::collections::HashMap;
@@ -81,7 +82,7 @@ fn watch_language(handle: Handle<TrayState>) -> ! {
         let now = i18n::current();
         if now != shown {
             shown = now;
-            handle.update(|tray| tray.language = now);
+            let _ = handle.update(|tray| tray.language = now);
         }
     }
 }
@@ -165,11 +166,11 @@ impl Tray for TrayState {
 
     fn menu(&self) -> Vec<MenuItem<Self>> {
         use ksni::menu::MenuItem::Separator;
-        let send = |action: Action| {
+        let send = |action: Action| -> Box<dyn Fn(&mut TrayState) + Send> {
             let actions = self.actions.clone();
             Box::new(move |_this: &mut TrayState| {
                 let _ = actions.send(action.clone());
-            }) as Box<dyn Fn(&mut TrayState)>
+            })
         };
         vec![
             StandardItem {
@@ -205,15 +206,25 @@ fn main() -> std::process::ExitCode {
     // the unix socket service, the refresh and the tray's unlock.
     let gate: Arc<Mutex<Option<window::Gate>>> = Arc::default();
     let tracker: Arc<Mutex<window::Tracker>> = Arc::default();
-    let service = TrayService::new(TrayState {
+    let tray = TrayState {
         protected_count: 0,
         hidden_windows: Default::default(),
         last_lock: None,
         offline: true,
         language: i18n::current(),
         actions: actions_tx.clone(),
-    });
-    let handle = service.handle();
+    };
+    // The user unit starts with the graphical session, which can precede
+    // plasmashell registering the StatusNotifierWatcher. Treat a missing
+    // watcher as offline and let ksni register once it appears, rather than
+    // failing the process on that startup race.
+    let handle = match tray.assume_sni_available(true).spawn() {
+        Ok(handle) => handle,
+        Err(e) => {
+            error!("tray: {e}");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
     {
         let handle = handle.clone();
         thread::Builder::new()
@@ -229,7 +240,6 @@ fn main() -> std::process::ExitCode {
             .spawn(move || action_loop(actions_rx, &gate, &handle))
             .expect("actions thread");
     }
-    service.spawn();
 
     let conn = match Connection::system() {
         Ok(conn) => conn,
@@ -355,7 +365,7 @@ fn supervise(
                     if !online {
                         info!("registered with shisad");
                         online = true;
-                        handle.update(|tray| tray.offline = false);
+                        let _ = handle.update(|tray| tray.offline = false);
                     }
                     if let Ok(manager) = ManagerProxyBlocking::new(conn) {
                         refresh(handle, &manager, gate, tracker);
@@ -366,7 +376,7 @@ fn supervise(
         } else if !present && online {
             info!("shisad is gone");
             online = false;
-            handle.update(|tray| tray.offline = true);
+            let _ = handle.update(|tray| tray.offline = true);
         }
         match wake_rx.recv_timeout(interval) {
             Ok(()) => {}
@@ -508,7 +518,7 @@ fn refresh(
         }
     };
     drop(gate);
-    handle.update(|tray| tray.protected_count = protected.len());
+    let _ = handle.update(|tray| tray.protected_count = protected.len());
 }
 
 fn action_loop(
@@ -534,11 +544,13 @@ fn action_loop(
             Action::VerifyLock => verify_lock(gate, handle),
             Action::Unlock(app) => unlock(&app, gate),
             Action::RestoreIfTicketed(app) => restore_if_ticketed(&app, gate),
-            Action::HiddenWindows(version, counts) => handle.update(|tray| {
-                if version > tray.hidden_windows.0 {
-                    tray.hidden_windows = (version, counts);
-                }
-            }),
+            Action::HiddenWindows(version, counts) => {
+                let _ = handle.update(|tray| {
+                    if version > tray.hidden_windows.0 {
+                        tray.hidden_windows = (version, counts);
+                    }
+                });
+            }
             Action::OpenSettings => open_settings(gate, false),
             Action::OpenRestore => open_settings(gate, true),
         }
@@ -596,7 +608,7 @@ fn lock_summary(result: Option<(u32, u32)>, language: Language) -> String {
 
 fn notify_lock(handle: &Handle<TrayState>, message: &str) {
     info!("{message}");
-    handle.update(|tray| tray.last_lock = Some(message.to_string()));
+    let _ = handle.update(|tray| tray.last_lock = Some(message.to_string()));
     notify(message);
 }
 
