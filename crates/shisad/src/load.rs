@@ -4,8 +4,8 @@ use crate::gate::Gate;
 use crate::policy::{AppPolicy, Change, Policy, UserPolicy};
 use crate::procfs::FileId;
 use shisa_core::config::{
-    App, Autostart, MAX_GRACE, MAX_PROMPT_TIMEOUT, MAX_RELOCK_SECONDS, MIN_PROMPT_TIMEOUT,
-    UserConfig, valid_app_id,
+    App, Autostart, MAX_GRACE, MAX_PROMPT_TIMEOUT, MAX_PROTECTED_PATHS, MAX_RELOCK_SECONDS,
+    MIN_PROMPT_TIMEOUT, UserConfig, valid_app_id,
 };
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -215,6 +215,9 @@ pub fn check_range(change: &Change) -> Result<(), String> {
         // Cheap checks only: this runs on the bus thread. Whether a path is
         // a markable file is checked on the reload thread, after the
         // authentication.
+        Change::Paths(paths) if paths.len() > MAX_PROTECTED_PATHS => {
+            Err(format!("at most {MAX_PROTECTED_PATHS} protected paths"))
+        }
         Change::Paths(paths) if paths.is_empty() => {
             Err("keep at least one protected path, or turn off protection instead".into())
         }
@@ -251,6 +254,11 @@ pub fn apply(
             let paths = resolve(app)?;
             if paths.is_empty() {
                 return Err(format!("{app} has no usable protected path"));
+            }
+            if paths.len() > MAX_PROTECTED_PATHS {
+                return Err(format!(
+                    "{app} has more than {MAX_PROTECTED_PATHS} protected paths"
+                ));
             }
             for path in &paths {
                 usable_path(path)?;
@@ -700,6 +708,10 @@ mod tests {
             ))
             .is_err()
         );
+        let many: Vec<PathBuf> = (0..=MAX_PROTECTED_PATHS)
+            .map(|i| PathBuf::from(format!("/usr/bin/app{i}")))
+            .collect();
+        assert!(apply(&mut config, "many", &Change::Protected(true), |_| Ok(many)).is_err());
     }
 
     #[test]
@@ -797,6 +809,10 @@ mod tests {
             .is_err()
         );
         assert_eq!(config, before);
+        let many: Vec<PathBuf> = (0..=MAX_PROTECTED_PATHS)
+            .map(|i| PathBuf::from(format!("/usr/bin/app{i}")))
+            .collect();
+        assert!(check_range(&Change::Paths(many)).is_err());
         apply(
             &mut config,
             "",
