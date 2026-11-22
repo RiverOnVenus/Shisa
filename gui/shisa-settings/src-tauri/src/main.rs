@@ -119,6 +119,41 @@ fn set_ui_language(language: String) -> R<()> {
     i18n::save(language).map_err(err)
 }
 
+/// The version of this settings binary, to compare with the daemon's.
+#[tauri::command]
+fn app_version() -> String {
+    env!("CARGO_PKG_VERSION").to_string()
+}
+
+/// Whether `shisa-agent` owns its session bus name. The tray and window
+/// hiding live there, so the settings window can report them independently
+/// of shisad. A missing session bus is not an error here: it simply means
+/// the agent is unavailable.
+#[tauri::command]
+async fn agent_status() -> bool {
+    let Ok(connection) = zbus::Connection::session().await else {
+        return false;
+    };
+    connection
+        .call_method(
+            Some("org.freedesktop.DBus"),
+            "/org/freedesktop/DBus",
+            Some("org.freedesktop.DBus"),
+            "NameHasOwner",
+            &(shisa_core::dbus::WINDOW_BUS_NAME,),
+        )
+        .await
+        .ok()
+        .and_then(|reply| reply.body().deserialize::<bool>().ok())
+        .unwrap_or(false)
+}
+
+/// Open or focus the settings window from the restore panel.
+#[tauri::command]
+async fn open_settings(app: tauri::AppHandle) -> R<()> {
+    open_window(&app, false).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 async fn list_apps() -> R<Vec<AppRow>> {
     let conn = zbus::Connection::system().await.map_err(err)?;
@@ -715,7 +750,10 @@ fn main() {
             icon,
             color_scheme,
             ui_language,
-            set_ui_language
+            set_ui_language,
+            app_version,
+            agent_status,
+            open_settings
         ])
         .run(tauri::generate_context!())
         .expect("shisa-settings failed to start");
@@ -746,6 +784,31 @@ mod tests {
         std::os::unix::fs::symlink("/dev/zero", &zero).unwrap();
         assert!(data_url(&zero).is_none());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn every_manifest_names_the_same_release_version() {
+        // The settings window compares this crate's version with shisad's.
+        // A release that bumps one manifest and not the others would leave a
+        // permanent mismatch notice on a correct install.
+        let version = env!("CARGO_PKG_VERSION");
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let repo = manifest.join("../../..");
+        let workspace = std::fs::read_to_string(repo.join("Cargo.toml")).unwrap();
+        assert!(
+            workspace.contains(&format!("version = \"{version}\"")),
+            "the workspace Cargo.toml does not name {version}"
+        );
+        let package = std::fs::read_to_string(manifest.join("../package.json")).unwrap();
+        assert!(
+            package.contains(&format!("\"version\": \"{version}\"")),
+            "package.json does not name {version}"
+        );
+        let tauri = std::fs::read_to_string(manifest.join("tauri.conf.json")).unwrap();
+        assert!(
+            tauri.contains(&format!("\"version\": \"{version}\"")),
+            "tauri.conf.json does not name {version}"
+        );
     }
 
     #[test]

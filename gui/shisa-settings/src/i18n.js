@@ -29,6 +29,11 @@ const zh = {
   "sidebar.general": "通用",
   "daemon.online": "应用锁在运行",
   "daemon.offline": "应用锁没有响应",
+  "agent.online": "会话代理在运行",
+  "agent.offline": "会话代理没有运行",
+  "agent.hint.on": "托盘和窗口隐藏由 shisa-agent 提供，窗口隐藏需要 KWin。",
+  "agent.hint.off":
+    "shisa-agent 没有运行，托盘和窗口隐藏都不可用。运行 systemctl --user start shisa-agent.service。",
   "dot.unlocked": "启动凭证有效",
   "dot.locked": "启动需认证",
 
@@ -49,6 +54,9 @@ const zh = {
   "password.sub":
     "受保护的应用要输入应用锁密码，这个密码还没设，现在所有认证都会失败。请管理员在终端运行",
   "password.after": "，完成后重新打开这个窗口。",
+  "version.name": "shisad 与设置程序设计版本不一致",
+  "version.sub":
+    "shisad {daemon}，设置程序 {app}。升级后请运行 sudo systemctl restart shisad.service，并运行 systemctl --user restart shisa-agent.service。",
 
   "general.grace.name": "默认宽限期",
   "general.grace.sub": "认证通过后这段时间内再打开不再询问。",
@@ -130,11 +138,22 @@ const zh = {
   "app.addPath.absolute": "保护路径要写绝对路径，例如 /usr/bin/程序。",
 
   "restore.windows": "{count} 个窗口",
+  "restore.ticketed": "点击直接恢复 · {count} 个窗口",
+  "restore.auth": "需要应用锁密码 · {count} 个窗口",
   "restore.loading": "正在查找窗口…",
   "restore.empty": "没有隐藏的窗口",
+  "restore.agentMissing": "会话代理没有运行",
+  "restore.agentMissing.sub":
+    "托盘和窗口隐藏都不可用。在终端运行 systemctl --user start shisa-agent.service，然后重试。",
+  "restore.retry": "重试",
+  "restore.openSettings": "打开设置",
+  "restore.lockAll": "全部上锁",
+  "restore.lockedAll": "已全部上锁。",
   "restore.waiting": "正在恢复…",
   "restore.error.read": "无法读取隐藏窗口。",
   "restore.error.restore": "无法恢复窗口，请重试。",
+  "restore.error.lock": "无法上锁，请重试。",
+  "restore.error.settings": "无法打开设置。",
 
   "grace.every": "每次",
   "grace.5m": "5 分钟",
@@ -190,6 +209,12 @@ const en = {
   "sidebar.general": "General",
   "daemon.online": "App lock is running",
   "daemon.offline": "App lock is not responding",
+  "agent.online": "Session agent is running",
+  "agent.offline": "Session agent is not running",
+  "agent.hint.on":
+    "shisa-agent provides the tray and window hiding, which needs KWin.",
+  "agent.hint.off":
+    "shisa-agent is not running, so the tray and window hiding are unavailable. Run systemctl --user start shisa-agent.service.",
   "dot.unlocked": "Launch ticket valid",
   "dot.locked": "Authentication required to launch",
 
@@ -210,6 +235,9 @@ const en = {
   "password.sub":
     "Protected apps ask for the app-lock password, which has not been set, so every authentication will fail. Ask an administrator to run",
   "password.after": " in a terminal, then reopen this window.",
+  "version.name": "shisad and the settings app have different versions",
+  "version.sub":
+    "shisad {daemon}, settings {app}. After an upgrade, run sudo systemctl restart shisad.service and systemctl --user restart shisa-agent.service.",
 
   "general.grace.name": "Default grace period",
   "general.grace.sub":
@@ -299,11 +327,24 @@ const en = {
     "Protected paths must be absolute, for example /usr/bin/program.",
 
   "restore.windows": "{count} window|{count} windows",
+  "restore.ticketed":
+    "Restores without a prompt · {count} window|Restores without a prompt · {count} windows",
+  "restore.auth":
+    "Asks for the app-lock password · {count} window|Asks for the app-lock password · {count} windows",
   "restore.loading": "Looking for windows…",
   "restore.empty": "No hidden windows",
+  "restore.agentMissing": "The session agent is not running",
+  "restore.agentMissing.sub":
+    "The tray and window hiding are unavailable. Run systemctl --user start shisa-agent.service in a terminal, then retry.",
+  "restore.retry": "Retry",
+  "restore.openSettings": "Open settings",
+  "restore.lockAll": "Lock all",
+  "restore.lockedAll": "Locked all apps.",
   "restore.waiting": "Restoring…",
   "restore.error.read": "Could not read hidden windows.",
   "restore.error.restore": "Could not restore the window. Try again.",
+  "restore.error.lock": "Could not lock. Try again.",
+  "restore.error.settings": "Could not open settings.",
 
   "grace.every": "Every time",
   "grace.5m": "5 minutes",
