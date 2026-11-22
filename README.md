@@ -4,7 +4,7 @@
 
 English · [简体中文](README.zh-CN.md)
 
-Shisa is a desktop app lock for Arch Linux and KDE Plasma 6 on Wayland. It keeps private apps from being opened casually when someone else uses your desktop. Its main use is briefly lending your unlocked desktop: hide private windows, then require a separate password to restore them or launch apps through protected entry points.
+Shisa is an app lock for Arch Linux and KDE Plasma 6 on Wayland. Its main use is briefly lending your unlocked desktop: hide private windows such as chat and mail, then require a separate app-lock password to restore them or launch their apps again through a protected entry point.
 
 Shisa is not a screen lock and not a user isolation tool.
 
@@ -12,7 +12,7 @@ Shisa is not a screen lock and not a user isolation tool.
 
 ## Installation
 
-Download the x86_64 Arch package from [GitHub Releases](https://github.com/RiverOnVenus/Shisa/releases), or [build a local test package](docs/packaging.md#build-a-local-test-package). Install the package and complete the initial setup:
+Download the x86_64 Arch package from [GitHub Releases](https://github.com/RiverOnVenus/Shisa/releases), or [build a local test package](docs/packaging.md#build-a-local-test-package), then install it and complete the initial setup:
 
 ```sh
 sudo pacman -U ./shisa-0.1.3-1-x86_64.pkg.tar.zst
@@ -26,14 +26,14 @@ Replace the example package filename with the file you downloaded or built. The 
 ## Usage
 
 1. Open **Shisa Settings** and enable **Require authentication before launch** for the apps you want to protect.
-2. Before lending your desktop, right-click the Shisa tray icon and choose **Lock all**. Check the notification to confirm that the protected windows were hidden.
+2. Before lending your desktop, right-click the Shisa tray icon and choose **Lock all**. Check the notification to confirm the protected windows were hidden.
 3. When you get your desktop back, left-click the tray icon, select an app in **Restore windows**, and authenticate. The original window and unsaved content are preserved.
 
 You can bind `shisa lock` to a KDE keyboard shortcut or enable **Hide when focus is lost** per app.
 
 ## Protection scope
 
-Shisa guards against casually opening private apps. Launch authentication applies to active protected paths. Apps running under the same account can still read application data or interfere with window hiding. Hiding covers windows only, so notifications from hidden apps still appear and the notification history can still be opened. Enable Do Not Disturb before lending the desktop.
+Shisa guards against casually opening private apps. Launch authentication covers only protected entry points that are active. Apps running under the same account can still read application data, which is not encrypted, or interfere with window hiding. Hiding covers windows only, so notifications from hidden apps still appear and the notification history can still be opened. Enable Do Not Disturb before lending the desktop.
 
 See the [threat model](docs/architecture.md#threat-model) for the situations Shisa covers and the ones it does not.
 
