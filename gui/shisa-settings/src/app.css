@@ -535,6 +535,16 @@ input:focus-visible {
   color: var(--fg);
 }
 
+.icon:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.icon:disabled:hover {
+  background: none;
+  color: var(--muted);
+}
+
 .icon.winclose {
   align-self: center;
   width: 22px;

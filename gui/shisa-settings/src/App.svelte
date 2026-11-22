@@ -125,6 +125,20 @@
     if (!agent) lines.push(t("agent.hint.off"));
     return lines.join("\n");
   });
+  // Locking only takes state away, so the button is pointless when nothing
+  // is protected. Null means the daemon has not answered yet or is offline,
+  // which is not the same as a known empty list. The tray menu applies the
+  // known-empty rule on its own.
+  const hasProtected = $derived(
+    daemon ? apps.some((app) => app.protected) : null,
+  );
+  const lockAllTitle = $derived(
+    hasProtected === true
+      ? t("top.lockAll")
+      : hasProtected === false
+        ? t("top.lockAllNone")
+        : t("daemon.offline"),
+  );
 
   const nameOf = (id) => apps.find((a) => a.id === id)?.name ?? id;
 
@@ -475,6 +489,7 @@
   }
 
   function lockAll() {
+    if (hasProtected !== true) return;
     change(() => invoke("lock", { appId: "" }), refresh, t("busy.lock"));
   }
 
@@ -785,8 +800,14 @@
         />
       {/if}
       <div class="actions">
-        {#if page === "activity" || (page === "app" && current)}
-          <button class="icon" aria-label={t("top.lockAll")} title={t("top.lockAll")} onclick={lockAll}>
+        {#if page === "general" || page === "activity" || (page === "app" && current)}
+          <button
+            class="icon"
+            aria-label={t("top.lockAll")}
+            title={lockAllTitle}
+            disabled={hasProtected !== true}
+            onclick={lockAll}
+          >
             <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <rect x="3.5" y="7" width="9" height="6.5" rx="1.2" />
               <path d="M5.5 7V5.2a2.5 2.5 0 0 1 5 0V7" />

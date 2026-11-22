@@ -709,7 +709,8 @@ async fn restore_hidden(bus: State<'_, Bus>, app_id: String) -> R<()> {
 /// 8px 0 0`), and the shadow follows that shape, which makes a frameless
 /// square page look rounded above and square below. The class-scoped rule
 /// squares every corner while keeping the theme's own shadow colour, blur
-/// and resize margin. The class keeps it off the restore window.
+/// and resize margin. The class applies to both the settings and restore
+/// windows.
 #[cfg(target_os = "linux")]
 fn add_csd_shadow(window: &tauri::WebviewWindow) {
     use gtk::prelude::*;
@@ -771,6 +772,8 @@ fn open_window(app: &tauri::AppHandle, restore: bool) -> Result<(), Box<dyn std:
             })
             .inner_size(384.0, 400.0)
             .resizable(false)
+            .decorations(false)
+            .transparent(true)
             .center()
             .build()?
     } else {
@@ -785,11 +788,11 @@ fn open_window(app: &tauri::AppHandle, restore: bool) -> Result<(), Box<dyn std:
             .transparent(true)
             .build()?
     };
-    if !restore {
-        let _ = window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
-        #[cfg(target_os = "linux")]
-        add_csd_shadow(&window);
-    }
+    // Both windows use the same frameless page and GTK decoration shadow, so
+    // the restore panel does not fall back to a native titlebar.
+    let _ = window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
+    #[cfg(target_os = "linux")]
+    add_csd_shadow(&window);
     tauri::async_runtime::spawn(follow_appearance(window));
     Ok(())
 }
