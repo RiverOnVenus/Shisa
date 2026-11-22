@@ -255,9 +255,10 @@ fn on_request(
             .unwrap()
             .decide(&RealProcs, file, pid, Instant::now()),
         Err(e) => {
-            // The file cannot be identified, so no policy can apply to it.
-            warn!(pid, "cannot stat executed file: {e}");
-            let _ = req.answer(true);
+            // The event exists only for a marked inode. An unidentified file
+            // cannot be proven unprotected, so deny it.
+            warn!(pid, "cannot stat executed file: {e}, denying");
+            let _ = req.answer(false);
             return;
         }
     };
