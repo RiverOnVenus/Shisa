@@ -83,6 +83,10 @@
   // holds. It reads the rendered cards, so it cannot drift from what the page
   // says.
   let settingsQuery = $state("");
+  // Whether the last filter pass had a query. Clearing the query folds the
+  // cards again, while a refresh without a search leaves folds the user
+  // opened by hand alone.
+  let wasSearching = false;
   // The language card renders before the daemon answers, so the search reads
   // it separately from the cards below it.
   let languageCard = $state(null);
@@ -169,12 +173,23 @@
     ].filter(Boolean);
     if (!cards.length) return;
     const needle = settingsQuery.trim().toLowerCase();
+    const searching = needle !== "";
     let shown = 0;
     for (const card of cards) {
       const hit = !needle || card.textContent.toLowerCase().includes(needle);
       card.hidden = !hit;
       if (hit) shown++;
     }
+    // A match inside a collapsed fold would be invisible, so reveal the fold
+    // that holds it. Once the search ends, routine numbers fold again.
+    if (searching || wasSearching) {
+      for (const card of cards) {
+        for (const fold of card.querySelectorAll("details")) {
+          fold.open = searching && fold.textContent.toLowerCase().includes(needle);
+        }
+      }
+    }
+    wasSearching = searching;
     const none = document.querySelector(".set-none");
     if (none) none.hidden = shown > 0;
   }
@@ -301,6 +316,10 @@
     globalReady = false;
     settingsQuery = "";
     await Promise.all([loadGlobal(), loadDiag()]);
+    // The diagnostics rows render after the daemon answers. Apply a query
+    // typed while they were loading.
+    await tick();
+    filterSettings();
   }
 
   /// The live page: the daemon's recent launch decisions, polled while it is
@@ -783,7 +802,7 @@
   <div class="main">
     <div class="top" data-tauri-drag-region>
       <div class="crumb" data-tauri-drag-region>
-        <span>{page === "general" ? t("crumb.settings") : page === "activity" ? t("crumb.diagnostics") : t("crumb.apps")}</span>
+        <span>{page === "general" || page === "activity" ? t("crumb.settings") : t("crumb.apps")}</span>
         <i>/</i>
         <b>{page === "general" ? t("crumb.general") : page === "activity" ? t("crumb.activity") : current?.name ?? "—"}</b>
       </div>
@@ -916,82 +935,84 @@
             </div>
           </section>
           <section class="set">
-            <div class="label">{t("diag.records")}</div>
-            <div class="list"><div class="prefrow">
-              <button class="text action" onclick={selectActivity}>{t("diag.view")}</button>
-            </div></div>
-          </section>
-          {#if diag}
-            <section class="set">
-              <div class="label">{t("diag.title")}</div>
-              <div class="list">
-                <div class="prefrow">
-                  <div class="who">
-                    <div class="name">shisad {diag.version}</div>
-                    <div class="sub">
-                      {t("diag.uptime", {
-                        duration: duration(Date.now() - diag.started, t),
-                        reloaded: diag.reloaded
-                          ? t("diag.reloaded.at", { ago: ago(diag.reloaded, Date.now(), t) })
-                          : t("diag.reloaded.never"),
-                      })}
+            <div class="list">
+              <div class="prefrow">
+                <div class="who">
+                  <div class="name">{t("diag.title")}</div>
+                  {#if diag}
+                    <!-- Failures stay outside the fold: the health line only
+                         says whether both services answer, so a configuration
+                         that failed to load would otherwise be invisible. -->
+                    <div class="sub" class:bad={diag.failed > 0 || diag.configFailed > 0}>
+                      {#if diag.configFailed > 0}
+                        <div>
+                          {t("diag.configFailed.sub", {
+                            ago: ago(diag.configFailed, Date.now(), t),
+                          })}
+                        </div>
+                      {/if}
+                      {#if diag.failed > 0}
+                        <div>{t("diag.last.failed", { ago: ago(diag.failed, Date.now(), t) })}</div>
+                      {:else if diag.configFailed === 0}
+                        {t("diag.last.ok")}
+                      {/if}
                     </div>
-                  </div>
+                  {/if}
                 </div>
-                <div class="prefrow">
-                  <div class="who">
-                    <div class="name">{t("diag.apps.name")}</div>
-                    <div class="sub">{t("diag.apps.sub", {
-                      apps: diag.apps,
-                      marked: diag.marked,
-                      appWord: plural(lang, diag.apps, "app", "apps"),
-                      pathWord: plural(lang, diag.marked, "path", "paths"),
-                    })}</div>
-                  </div>
-                </div>
-                <div class="prefrow">
-                  <div class="who">
-                    <div class="name">{t("diag.last.name")}</div>
-                    <div class="sub" class:bad={diag.failed > 0}>
-                      {diag.failed
-                        ? t("diag.last.failed", { ago: ago(diag.failed, Date.now(), t) })
-                        : t("diag.last.ok")}
-                    </div>
-                  </div>
-                </div>
-                {#if diag.configFailed > 0}
+                <button class="text action" onclick={selectActivity}>{t("diag.view")}</button>
+              </div>
+              {#if diag}
+                <!-- The routine numbers stay folded so the card does not repeat
+                     what the header and the health line already say. -->
+                <details class="advanced">
+                  <summary class="prefrow adv-toggle">
+                    <span class="name">{t("diag.details")}</span>
+                    <svg class="chev" viewBox="0 0 16 16" aria-hidden="true">
+                      <path d="m4 6 4 4 4-4" />
+                    </svg>
+                  </summary>
                   <div class="prefrow">
                     <div class="who">
-                      <div class="name">{t("diag.configFailed.name")}</div>
-                      <div class="sub bad">
-                        {t("diag.configFailed.sub", {
-                          ago: ago(diag.configFailed, Date.now(), t),
+                      <div class="name">shisad {diag.version}</div>
+                      <div class="sub">
+                        {t("diag.uptime", {
+                          duration: duration(Date.now() - diag.started, t),
+                          reloaded: diag.reloaded
+                            ? t("diag.reloaded.at", { ago: ago(diag.reloaded, Date.now(), t) })
+                            : t("diag.reloaded.never"),
                         })}
                       </div>
                     </div>
                   </div>
-                {/if}
-                {#if diag.config}
                   <div class="prefrow">
                     <div class="who">
-                      <div class="name">{t("diag.config")}</div>
-                      <div class="sub mono">{diag.config}</div>
+                      <div class="name">{t("diag.apps.name")}</div>
+                      <div class="sub">{t("diag.apps.sub", {
+                        apps: diag.apps,
+                        marked: diag.marked,
+                        appWord: plural(lang, diag.apps, "app", "apps"),
+                        pathWord: plural(lang, diag.marked, "path", "paths"),
+                      })}</div>
                     </div>
                   </div>
-                {/if}
-              </div>
-            </section>
-          {:else}
-            <section class="set">
-              <div class="list">
+                  {#if diag.config}
+                    <div class="prefrow">
+                      <div class="who">
+                        <div class="name">{t("diag.config")}</div>
+                        <div class="sub mono">{diag.config}</div>
+                      </div>
+                    </div>
+                  {/if}
+                </details>
+              {:else}
                 <div class="prefrow">
                   <div class="who">
                     <div class="sub">{t("diag.unavailable")}</div>
                   </div>
                 </div>
-              </div>
-            </section>
-          {/if}
+              {/if}
+            </div>
+          </section>
           </div>
           <div class="empty set-none" hidden>{t("settings.empty.match")}</div>
         {:else}

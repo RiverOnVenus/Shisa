@@ -8,7 +8,20 @@ import { mount, unmount } from "svelte";
 const { calls, languageWrites, state } = vi.hoisted(() => ({
   calls: [],
   languageWrites: [],
-  state: { agentOnline: true },
+  state: {
+    agentOnline: true,
+    diagnostics: [
+      "0.1.1",
+      1,
+      0,
+      0,
+      1,
+      1,
+      "/etc/shisa/users/test.toml",
+      true,
+      0,
+    ],
+  },
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -31,7 +44,7 @@ vi.mock("@tauri-apps/api/core", () => ({
       case "recent_launches":
         return [[], 0, 0, 0];
       case "diagnostics":
-        return ["0.1.1", 1, 0, 0, 1, 1, "/etc/shisa/users/test.toml", true, 0];
+        return state.diagnostics;
       case "agent_status":
         return state.agentOnline;
       case "set_ui_language":
@@ -64,6 +77,17 @@ beforeEach(() => {
   calls.length = 0;
   languageWrites.length = 0;
   state.agentOnline = true;
+  state.diagnostics = [
+    "0.1.1",
+    1,
+    0,
+    0,
+    1,
+    1,
+    "/etc/shisa/users/test.toml",
+    true,
+    0,
+  ];
   document.body.innerHTML = "";
   document.documentElement.lang = "";
 });
@@ -169,6 +193,56 @@ test("the settings search is case-insensitive and covers the language card", asy
   search.dispatchEvent(new Event("input", { bubbles: true }));
   await vi.waitFor(() => expect(language.hidden).toBe(true));
   expect(document.querySelector(".set-none").hidden).toBe(false);
+});
+
+test("the diagnostics card is folded and the search opens the fold it matches", async () => {
+  await render();
+  document.querySelector(".side-foot button.row").click();
+  await vi.waitFor(() =>
+    expect(document.body.textContent).toContain("Default grace period"),
+  );
+  const card = [...document.querySelectorAll(".set")].find((section) =>
+    section.textContent.includes("Diagnostics"),
+  );
+  const fold = card.querySelector("details");
+  expect(fold).not.toBeNull();
+  expect(fold.open).toBe(false);
+
+  const search = document.querySelector(".top-q");
+  search.value = "0.1.1";
+  search.dispatchEvent(new Event("input", { bubbles: true }));
+  await vi.waitFor(() => expect(fold.open).toBe(true));
+
+  search.value = "";
+  search.dispatchEvent(new Event("input", { bubbles: true }));
+  await vi.waitFor(() => expect(fold.open).toBe(false));
+});
+
+test("a marking failure shows without opening the diagnostics fold", async () => {
+  // The tuple is version, started, reloaded, failed, apps, marked, config,
+  // password readiness and the configuration failure time.
+  state.diagnostics = [
+    "0.1.1",
+    1,
+    0,
+    5,
+    1,
+    1,
+    "/etc/shisa/users/test.toml",
+    true,
+    0,
+  ];
+  await render();
+  document.querySelector(".side-foot button.row").click();
+  await vi.waitFor(() =>
+    expect(document.body.textContent).toContain(
+      "Some paths could not be marked",
+    ),
+  );
+  const card = [...document.querySelectorAll(".set")].find((section) =>
+    section.textContent.includes("Diagnostics"),
+  );
+  expect(card.querySelector("details").open).toBe(false);
 });
 
 test("choosing a language saves it and retitles the window", async () => {

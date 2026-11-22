@@ -42,7 +42,6 @@ const zh = {
   "dot.locked": "启动需认证",
 
   "crumb.settings": "设置",
-  "crumb.diagnostics": "通用 · 诊断",
   "crumb.apps": "应用",
   "crumb.general": "通用",
   "crumb.activity": "最近启动",
@@ -75,18 +74,16 @@ const zh = {
   "general.custom": "自定义",
   "general.language.name": "语言",
 
-  "diag.records": "诊断记录",
   "diag.view": "查看最近启动和拒绝原因",
   "diag.title": "诊断",
+  "diag.details": "详细信息",
   "diag.uptime": "已运行 {duration}，最近一次重新加载{reloaded}。",
   "diag.reloaded.at": "在 {ago}",
   "diag.reloaded.never": "还没发生",
   "diag.apps.name": "受保护的应用",
   "diag.apps.sub": "{apps} 个应用，{marked} 条路径已加上监视标记。",
-  "diag.last.name": "最近一次加载",
   "diag.last.failed": "有路径没标记上，{ago}",
   "diag.last.ok": "全部路径已标记。",
-  "diag.configFailed.name": "配置加载",
   "diag.configFailed.sub":
     "上一次配置没有读出或解析（{ago}），仍在用旧的保护策略。",
   "diag.config": "配置文件",
@@ -228,7 +225,6 @@ const en = {
   "dot.locked": "Authentication required to launch",
 
   "crumb.settings": "Settings",
-  "crumb.diagnostics": "General · Diagnostics",
   "crumb.apps": "Apps",
   "crumb.general": "General",
   "crumb.activity": "Recent launches",
@@ -262,19 +258,17 @@ const en = {
   "general.custom": "Custom",
   "general.language.name": "Language",
 
-  "diag.records": "Diagnostic records",
   "diag.view": "View recent launches and refusals",
   "diag.title": "Diagnostics",
+  "diag.details": "Details",
   "diag.uptime": "Running for {duration}, last reload {reloaded}.",
   "diag.reloaded.at": "{ago}",
   "diag.reloaded.never": "has not happened",
   "diag.apps.name": "Protected apps",
   "diag.apps.sub":
     "{apps} {appWord}, {marked} {pathWord} marked for monitoring.",
-  "diag.last.name": "Last load",
   "diag.last.failed": "Some paths could not be marked, {ago}",
   "diag.last.ok": "All paths are marked.",
-  "diag.configFailed.name": "Configuration load",
   "diag.configFailed.sub":
     "The last configuration could not be read or parsed, {ago}. The previous policy is still in effect.",
   "diag.config": "Configuration file",
