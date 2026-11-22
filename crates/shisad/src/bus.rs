@@ -264,6 +264,7 @@ impl ManagerIface {
             marked,
             config,
             ready,
+            self.diag.config_failed(),
         ))
     }
 

@@ -163,6 +163,7 @@ fn interface_and_settings_changes() {
     assert!(diag.1 > 0);
     assert_eq!((diag.4, diag.5), (1, 1));
     assert_eq!(diag.6, "/etc/shisa/users/tester.toml");
+    assert_eq!(diag.8, 0);
     manager.lock("app").unwrap();
     manager.lock("").unwrap();
     assert_eq!(manager.global_config().unwrap(), (300, true, 5));

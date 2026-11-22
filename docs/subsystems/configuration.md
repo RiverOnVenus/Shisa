@@ -22,7 +22,7 @@ The [launch gate resolver](launch-gate.md#protected-path-resolution) fills in `p
 
 `grace_seconds` is capped at 31,536,000 (one year) to keep expiry arithmetic bounded. `prompt_timeout_seconds` must be between 5 and 85. A protected app must have at least one path and at most 64. `SetOption` rejects out-of-range values before prompting. When loading a file edited by root, shisad clamps the grace period and wait limit. Use `SetProtected` to remove protection entirely.
 
-A reload is fail-closed. If the config directory or one of its entries cannot be read, a user's file cannot be read or parsed, or an account name cannot be resolved, shisad keeps the policy it already had instead of treating the user as unprotected. A missing file is the only case that means the user has no configuration yet.
+A reload is fail-closed. If the config directory or one of its entries cannot be read, a user's file cannot be read or parsed, or an account name cannot be resolved, shisad keeps the policy it already had instead of treating the user as unprotected. The diagnostics record the time of the last such failure. A missing file is the only case that means the user has no configuration yet.
 
 A settings write is fail-closed too. shisad refuses a config directory that is not root's or that group or others can write, removes a stale temp file, and creates the new one without following a symlink. The directory is kept at 0700, the result is written as 0600, and it is renamed into place. The package's install script tightens the directory and files of an earlier installation, because the files list the apps and paths each user protects.
 
@@ -63,7 +63,7 @@ RelockSeconds() -> a(su)             # focus-loss delays, omitting disabled apps
 signal StateChanged(app_id: s, unlocked: b)
 signal SessionUnlocked()
 RecentLaunches() -> (a(txsisxx)ttt)
-Diagnostics() -> (sxxxttsb)
+Diagnostics() -> (sxxxttsbx)
 ```
 
 `ListApps` returns both configured and last successfully marked paths. An unavailable path appears only in the configured list. Settings and `shisa status` identify it as inactive. `GlobalConfig` falls back to a 300-second grace period, clearing on screen lock, and a 60-second prompt timeout.
@@ -78,7 +78,7 @@ Diagnostics() -> (sxxxttsb)
 
 `RecentLaunches` returns the caller's most recent 64 events in chronological order and counts accumulated since daemon startup. Each event contains an ID, Unix timestamp in milliseconds, app ID, PID, outcome, wait deadline, and answer time. A zero deadline means there is no wait. A zero answer time means the request is waiting. The direct-allow outcomes are `ticket`, `instance`, `autostart`, and `selfexec`. A pending `asked` entry changes to `granted`, `timeout`, `cancelled`, `failed`, or `denied` when the check ends. See [Authentication](authentication.md#completion-and-cancellation) for outcome semantics. Restart clears the records and counts.
 
-`Diagnostics` returns the version, start time, last reload, last incomplete mark operation, app count, mark count, config path, and password readiness. Times are Unix milliseconds and zero means the event has not occurred. A complete reload resets the mark-failure timestamp. Counts and the config path are for the caller, even if the config has yet to be created.
+`Diagnostics` returns the version, start time, last reload, last incomplete mark operation, app count, mark count, config path, password readiness, and the last configuration read or parse failure. Times are Unix milliseconds and zero means the event has not occurred. A complete reload resets the mark-failure timestamp, and a load that reads every configuration file resets the configuration-failure timestamp. Counts and the config path are for the caller, even if the config has yet to be created.
 
 The password readiness flag checks only the `shisa-lock` password field in `/etc/shadow`. It reports ready if the file cannot be read. Settings uses the flag to show a setup hint. Both diagnostic methods are read-only and require no polkit prompt.
 

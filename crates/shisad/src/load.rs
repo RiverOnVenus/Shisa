@@ -307,7 +307,9 @@ pub fn apply(
 /// Read every `<username>.toml` in `dir`, mark the protected paths and return
 /// the resulting policy. A user whose file cannot be read or parsed keeps the
 /// entry from `old`, so a typo during a reload does not switch protection off.
-pub fn load(marker: &dyn Marker, dir: &Path, old: &Policy, marks: &mut Marks) -> Policy {
+/// The flag is true when any file or account lookup failed, so the daemon can
+/// report it.
+pub fn load(marker: &dyn Marker, dir: &Path, old: &Policy, marks: &mut Marks) -> (Policy, bool) {
     load_with(marker, dir, old, marks, check_owner)
 }
 
@@ -340,13 +342,14 @@ fn load_with(
     old: &Policy,
     marks: &mut Marks,
     owner: fn(&Path, &fs::Metadata) -> io::Result<()>,
-) -> Policy {
+) -> (Policy, bool) {
     let mut policy = Policy::default();
+    let mut failed = false;
     let entries = match read_config_dir(dir, owner) {
         Ok(entries) => entries,
         Err(e) => {
             error!("config directory {}: {e}", dir.display());
-            return old.clone();
+            return (old.clone(), true);
         }
     };
     let mut files: Vec<PathBuf> = Vec::new();
@@ -358,7 +361,7 @@ fn load_with(
                 // protection it lists would go away. Treat it like an
                 // unreadable directory and wait for the next reload.
                 error!("config directory {}: {e}", dir.display());
-                return old.clone();
+                return (old.clone(), true);
             }
         }
     }
@@ -382,6 +385,7 @@ fn load_with(
                 }
                 None => warn!("{}: no such user, ignored", path.display()),
             }
+            failed = true;
             continue;
         };
         let parsed = read_config_with(&path, owner)
@@ -395,6 +399,7 @@ fn load_with(
                     warn!("keeping the previous policy of {name}");
                     policy.users.insert(uid, previous.clone());
                 }
+                failed = true;
                 continue;
             }
         };
@@ -452,7 +457,7 @@ fn load_with(
             },
         );
     }
-    policy
+    (policy, failed)
 }
 
 /// Every configured path that was marked still leads to its inode. A replaced
@@ -970,12 +975,15 @@ mod tests {
         write_config(&dir, &name, &bin);
         let marker = FakeMarker::new(false);
         let mut marks = Marks::new();
-        let first = load_with(&marker, &dir, &Policy::default(), &mut marks, permissive);
+        let (first, first_failed) =
+            load_with(&marker, &dir, &Policy::default(), &mut marks, permissive);
+        assert!(!first_failed);
         let before = &first.users[&uid];
         assert_eq!(before.apps[0].files, vec![FileId { dev: 1, ino: 10 }]);
 
         fs::write(dir.join(format!("{name}.toml")), "this is not toml").unwrap();
-        let second = load_with(&marker, &dir, &first, &mut marks, permissive);
+        let (second, second_failed) = load_with(&marker, &dir, &first, &mut marks, permissive);
+        assert!(second_failed);
         assert!(
             second.users.contains_key(&uid),
             "a broken config dropped the previous policy"
@@ -1003,7 +1011,7 @@ mod tests {
         fs::write(&bin, "x").unwrap();
         write_config(&dir, &name, &bin);
         let marker = FakeMarker::new(false);
-        let first = load_with(
+        let (first, _) = load_with(
             &marker,
             &dir,
             &Policy::default(),
@@ -1016,7 +1024,9 @@ mod tests {
         let path = dir.join(format!("{name}.toml"));
         fs::remove_file(&path).unwrap();
         fs::create_dir(&path).unwrap();
-        let second = load_with(&marker, &dir, &first, &mut Marks::new(), permissive);
+        let (second, second_failed) =
+            load_with(&marker, &dir, &first, &mut Marks::new(), permissive);
+        assert!(second_failed);
         assert!(
             second.users.contains_key(&uid),
             "an unreadable config dropped the previous policy"
@@ -1036,7 +1046,7 @@ mod tests {
         fs::write(&bin, "x").unwrap();
         write_config(&dir, &name, &bin);
         let marker = FakeMarker::new(false);
-        let first = load_with(
+        let (first, _) = load_with(
             &marker,
             &dir,
             &Policy::default(),
@@ -1045,7 +1055,9 @@ mod tests {
         );
 
         let gone = dir.join("gone");
-        let second = load_with(&marker, &gone, &first, &mut Marks::new(), permissive);
+        let (second, second_failed) =
+            load_with(&marker, &gone, &first, &mut Marks::new(), permissive);
+        assert!(second_failed);
         assert!(
             second.users.contains_key(&uid),
             "an unreadable directory dropped the previous policy"
@@ -1070,7 +1082,7 @@ mod tests {
         fs::write(&bin, "x").unwrap();
         write_config(&dir, &name, &bin);
         let marker = FakeMarker::new(false);
-        let first = load_with(
+        let (first, _) = load_with(
             &marker,
             &dir,
             &Policy::default(),
@@ -1078,7 +1090,8 @@ mod tests {
             permissive,
         );
         // The real check runs here, and a temp directory belongs to the user.
-        let second = load(&marker, &dir, &first, &mut Marks::new());
+        let (second, second_failed) = load(&marker, &dir, &first, &mut Marks::new());
+        assert!(second_failed);
         assert!(
             second.users.contains_key(&uid),
             "a config directory owned by the user dropped the previous policy"
@@ -1130,7 +1143,8 @@ mod tests {
             users: HashMap::from([(uid, previous)]),
         };
         let marker = FakeMarker::new(false);
-        let policy = load_with(&marker, &dir, &old, &mut Marks::new(), permissive);
+        let (policy, failed) = load_with(&marker, &dir, &old, &mut Marks::new(), permissive);
+        assert!(failed);
         assert!(
             policy.users.contains_key(&uid),
             "an unresolvable account dropped the previous policy"
@@ -1150,7 +1164,7 @@ mod tests {
         fs::write(&bin, "x").unwrap();
         write_config(&dir, &name, &bin);
         let marker = FakeMarker::new(false);
-        let first = load_with(
+        let (first, _) = load_with(
             &marker,
             &dir,
             &Policy::default(),
@@ -1161,7 +1175,9 @@ mod tests {
         fs::remove_file(dir.join(format!("{name}.toml"))).unwrap();
         // Unlike a read or parse error, an absent file is a user who has no
         // configuration, so the previous entry is not kept.
-        let second = load_with(&marker, &dir, &first, &mut Marks::new(), permissive);
+        let (second, second_failed) =
+            load_with(&marker, &dir, &first, &mut Marks::new(), permissive);
+        assert!(!second_failed);
         assert!(!second.users.contains_key(&uid));
         let _ = fs::remove_dir_all(&dir);
     }
@@ -1172,13 +1188,15 @@ mod tests {
         let bin = dir.join("bin");
         fs::write(&bin, "x").unwrap();
         write_config(&dir, &name, &bin);
-        let policy = load_with(
+        let (policy, failed) = load_with(
             &FakeMarker::new(true),
             &dir,
             &Policy::default(),
             &mut Marks::new(),
             permissive,
         );
+        // The configuration itself read, so only the mark failure is reported.
+        assert!(!failed);
         let app = &policy.users[&uid].apps[0];
         // Settings must still show the path, while `effective` says nothing
         // is watched.

@@ -32,6 +32,7 @@ pub struct Diag {
     started: i64,
     reloaded: AtomicI64,
     failed: AtomicI64,
+    config_failed: AtomicI64,
 }
 
 impl Diag {
@@ -42,6 +43,7 @@ impl Diag {
             started: now_ms(),
             reloaded: AtomicI64::new(0),
             failed: AtomicI64::new(0),
+            config_failed: AtomicI64::new(0),
         }
     }
 
@@ -76,6 +78,21 @@ impl Diag {
 
     pub fn failed(&self) -> i64 {
         self.failed.load(Ordering::Relaxed)
+    }
+
+    /// The latest load could not read or parse a configuration file, or
+    /// resolve an account name. The previous policy stays in force.
+    pub fn note_config_failure(&self) {
+        self.config_failed.store(now_ms(), Ordering::Relaxed);
+    }
+
+    /// The latest load read every configuration file.
+    pub fn clear_config_failure(&self) {
+        self.config_failed.store(0, Ordering::Relaxed);
+    }
+
+    pub fn config_failed(&self) -> i64 {
+        self.config_failed.load(Ordering::Relaxed)
     }
 
     /// One user's policy file, whether or not it exists yet.
@@ -142,6 +159,15 @@ mod tests {
         assert_eq!(diag.started(), diag.started());
         assert!(diag.started() > 0);
         assert_eq!(diag.reloaded(), 0);
+    }
+
+    #[test]
+    fn a_config_failure_has_its_own_timestamp() {
+        let diag = Diag::new(PathBuf::from("/etc/shisa/users"));
+        diag.note_config_failure();
+        assert!(diag.config_failed() > 0);
+        diag.clear_config_failure();
+        assert_eq!(diag.config_failed(), 0);
     }
 
     #[test]

@@ -30,8 +30,10 @@ pub type LaunchRow = (u64, i64, String, i32, String, i64, i64);
 /// version, start time, last reload, and the last load that could not mark
 /// every configured path (unix milliseconds, 0 when the latest load was
 /// complete), the caller's protected app count and marked path count, the
-/// caller's config file, and whether the app-lock account has a password yet.
-pub type DiagRow = (String, i64, i64, i64, u64, u64, String, bool);
+/// caller's config file, whether the app-lock account has a password yet, and
+/// the last configuration read or parse failure (unix milliseconds, 0 when
+/// the latest load read every file).
+pub type DiagRow = (String, i64, i64, i64, u64, u64, String, bool, i64);
 
 #[zbus::proxy(
     interface = "io.github.RiverOnVenus.Shisa.Manager",
