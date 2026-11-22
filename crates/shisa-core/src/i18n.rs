@@ -170,6 +170,10 @@ const ERROR_TEXT: &[(&str, &str)] = &[
     ),
     ("authentication timed out", "认证超时，改动没有生效。"),
     ("authentication cancelled", "认证取消了，改动没有生效。"),
+    (
+        "settings locked",
+        "设置已上锁，关闭并重新打开 Shisa 设置后再试。",
+    ),
     ("cannot start authentication", "无法启动认证，请稍后再试。"),
     ("polkit unavailable", "认证服务不可用，请稍后再试。"),
     ("grace_seconds must be at most", "宽限期超过了允许的上限。"),

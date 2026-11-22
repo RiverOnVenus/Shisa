@@ -1,12 +1,16 @@
 //! shisa-settings: the settings window. A Tauri shell around the system bus.
 //!
-//! Every command connects to the system bus and builds the proxy it needs.
-//! zbus does not reuse the connection between calls, but the window is not hot
-//! enough to justify keeping one around. Changes that need authentication
-//! block here until shisad answers, which the frontend shows as a busy
-//! overlay.
+//! Read commands open the system bus and build the proxy they need. Commands
+//! that may need authentication share one connection for the window's
+//! lifetime. polkit keeps an `auth_admin_keep` decision against the process,
+//! not the connection, so the shared connection is not what makes consecutive
+//! changes prompt once. It gives shisad a stable name for the `SettingsLocked`
+//! signal, which makes the window exit when the desktop is locked and ends
+//! that decision (docs/subsystems/authentication.md). Changes block here until
+//! shisad answers, which the frontend shows as a busy overlay.
 
 use base64::Engine;
+use futures_util::StreamExt;
 use shisa_core::dbus::{AppRow, DiagRow, LaunchRow, ManagerProxy};
 use shisa_core::i18n::{self, Language};
 use std::collections::HashMap;
@@ -209,8 +213,8 @@ async fn diagnostics() -> R<DiagRow> {
 /// Authenticate for one app and leave a ticket, as `shisa unlock` does. Blocks
 /// until the box answers.
 #[tauri::command]
-async fn unlock(app_id: String) -> R<()> {
-    let conn = zbus::Connection::system().await.map_err(err)?;
+async fn unlock(bus: State<'_, Bus>, app_id: String) -> R<()> {
+    let conn = bus.connection().await?;
     let manager = ManagerProxy::new(&conn).await.map_err(err)?;
     manager.unlock(&app_id).await.map_err(err)
 }
@@ -223,8 +227,8 @@ async fn resolve_app(app_id: String) -> R<(Vec<String>, Vec<String>)> {
 }
 
 #[tauri::command]
-async fn set_protected(app_id: String, on: bool) -> R<()> {
-    let conn = zbus::Connection::system().await.map_err(err)?;
+async fn set_protected(bus: State<'_, Bus>, app_id: String, on: bool) -> R<()> {
+    let conn = bus.connection().await?;
     let manager = ManagerProxy::new(&conn).await.map_err(err)?;
     manager.set_protected(&app_id, on).await.map_err(err)
 }
@@ -233,8 +237,8 @@ async fn set_protected(app_id: String, on: bool) -> R<()> {
 // daemon expects seconds. An empty app id addresses the global settings.
 
 #[tauri::command]
-async fn set_grace(app_id: String, seconds: u64) -> R<()> {
-    let conn = zbus::Connection::system().await.map_err(err)?;
+async fn set_grace(bus: State<'_, Bus>, app_id: String, seconds: u64) -> R<()> {
+    let conn = bus.connection().await?;
     let manager = ManagerProxy::new(&conn).await.map_err(err)?;
     manager
         .set_option(
@@ -247,8 +251,8 @@ async fn set_grace(app_id: String, seconds: u64) -> R<()> {
 }
 
 #[tauri::command]
-async fn set_autostart(app_id: String, allow: bool) -> R<()> {
-    let conn = zbus::Connection::system().await.map_err(err)?;
+async fn set_autostart(bus: State<'_, Bus>, app_id: String, allow: bool) -> R<()> {
+    let conn = bus.connection().await?;
     let manager = ManagerProxy::new(&conn).await.map_err(err)?;
     manager
         .set_option(&app_id, "autostart", zbus::zvariant::Value::from(allow))
@@ -257,8 +261,8 @@ async fn set_autostart(app_id: String, allow: bool) -> R<()> {
 }
 
 #[tauri::command]
-async fn set_relock(app_id: String, seconds: u64) -> R<()> {
-    let conn = zbus::Connection::system().await.map_err(err)?;
+async fn set_relock(bus: State<'_, Bus>, app_id: String, seconds: u64) -> R<()> {
+    let conn = bus.connection().await?;
     let manager = ManagerProxy::new(&conn).await.map_err(err)?;
     manager
         .set_option(
@@ -271,8 +275,8 @@ async fn set_relock(app_id: String, seconds: u64) -> R<()> {
 }
 
 #[tauri::command]
-async fn set_paths(app_id: String, paths: Vec<String>) -> R<()> {
-    let conn = zbus::Connection::system().await.map_err(err)?;
+async fn set_paths(bus: State<'_, Bus>, app_id: String, paths: Vec<String>) -> R<()> {
+    let conn = bus.connection().await?;
     let manager = ManagerProxy::new(&conn).await.map_err(err)?;
     manager
         .set_option(&app_id, "paths", zbus::zvariant::Value::from(paths))
@@ -281,8 +285,8 @@ async fn set_paths(app_id: String, paths: Vec<String>) -> R<()> {
 }
 
 #[tauri::command]
-async fn set_clear_on_lock(on: bool) -> R<()> {
-    let conn = zbus::Connection::system().await.map_err(err)?;
+async fn set_clear_on_lock(bus: State<'_, Bus>, on: bool) -> R<()> {
+    let conn = bus.connection().await?;
     let manager = ManagerProxy::new(&conn).await.map_err(err)?;
     manager
         .set_option("", "clear_on_screen_lock", zbus::zvariant::Value::from(on))
@@ -291,8 +295,8 @@ async fn set_clear_on_lock(on: bool) -> R<()> {
 }
 
 #[tauri::command]
-async fn set_prompt_timeout(seconds: u64) -> R<()> {
-    let conn = zbus::Connection::system().await.map_err(err)?;
+async fn set_prompt_timeout(bus: State<'_, Bus>, seconds: u64) -> R<()> {
+    let conn = bus.connection().await?;
     let manager = ManagerProxy::new(&conn).await.map_err(err)?;
     manager
         .set_option(
@@ -324,6 +328,81 @@ async fn lock(app_id: String) -> R<()> {
         })?;
     }
     Ok(())
+}
+
+/// The connection used for commands that may authenticate, and for the lock
+/// watch.
+///
+/// polkit keeps the `auth_admin_keep` decision against the settings process,
+/// not this connection. The shared connection gives shisad one stable name to
+/// send `SettingsLocked` to, and the authenticated commands all use it so the
+/// name that registered is the name that changes settings.
+#[derive(Clone, Default)]
+struct Bus(Arc<futures_util::lock::Mutex<Option<zbus::Connection>>>);
+
+impl Bus {
+    async fn connection(&self) -> R<zbus::Connection> {
+        if let Some(conn) = self.0.lock().await.as_ref()
+            && !conn.is_closed()
+        {
+            return Ok(conn.clone());
+        }
+        // A restarted system bus closes the old connection. Connect without
+        // holding the lock so a slow bus does not block every command, then
+        // prefer a connection another task stored meanwhile.
+        let conn = zbus::Connection::system().await.map_err(err)?;
+        let mut slot = self.0.lock().await;
+        if let Some(existing) = slot.as_ref()
+            && !existing.is_closed()
+        {
+            return Ok(existing.clone());
+        }
+        *slot = Some(conn.clone());
+        Ok(conn)
+    }
+}
+
+/// Exit when shisad reports a global or screen lock.
+///
+/// polkit keeps the settings authorization against this process, so exiting is
+/// what ends it. The retry keeps the watch alive across a daemon start or a
+/// system-bus restart, both of which invalidate the registration.
+fn spawn_lock_watch(app: tauri::AppHandle, bus: Bus) {
+    tauri::async_runtime::spawn(async move {
+        let mut last: Option<String> = None;
+        loop {
+            match watch_lock(&app, &bus).await {
+                Ok(true) => return,
+                Ok(false) => last = None,
+                Err(e) => {
+                    if last.as_deref() != Some(e.as_str()) {
+                        eprintln!("Shisa: lock watch: {e}");
+                        last = Some(e);
+                    }
+                }
+            }
+            // A reconnect is rare, so a blocking sleep is not worth a timer
+            // dependency.
+            let _ = tauri::async_runtime::spawn_blocking(|| {
+                std::thread::sleep(std::time::Duration::from_secs(2));
+            })
+            .await;
+        }
+    });
+}
+
+/// One registration and subscription. True means the lock signal arrived and
+/// the app was told to exit.
+async fn watch_lock(app: &tauri::AppHandle, bus: &Bus) -> Result<bool, String> {
+    let conn = bus.connection().await?;
+    let manager = ManagerProxy::new(&conn).await.map_err(err)?;
+    manager.register_settings().await.map_err(err)?;
+    let mut locked = manager.receive_settings_locked().await.map_err(err)?;
+    if locked.next().await.is_some() {
+        app.exit(0);
+        return Ok(true);
+    }
+    Ok(false)
 }
 
 /// Resolved icon files, as data URLs. The theme lookup happens once per name.
@@ -585,7 +664,7 @@ async fn hidden_apps() -> R<std::collections::HashMap<String, u32>> {
 }
 
 #[tauri::command]
-async fn restore_hidden(app_id: String) -> R<()> {
+async fn restore_hidden(bus: State<'_, Bus>, app_id: String) -> R<()> {
     let connection = zbus::Connection::session().await.map_err(err)?;
     let agent = WindowAgentProxy::new(&connection).await.map_err(err)?;
     let apps = agent.hidden_apps().await.map_err(err)?;
@@ -600,7 +679,7 @@ async fn restore_hidden(app_id: String) -> R<()> {
     // so a cancelled prompt reaches the panel as an error instead of
     // silently closing it. An older shisad has no Unhide and falls through
     // to authentication.
-    let system = zbus::Connection::system().await.map_err(err)?;
+    let system = bus.connection().await?;
     let manager = ManagerProxy::new(&system).await.map_err(err)?;
     if !manager
         .window_states()
@@ -720,6 +799,8 @@ fn main() {
     // looks the desktop file up by it. Without this the titlebar shows a
     // generic icon instead of the Shisa one.
     glib::set_prgname(Some("io.github.RiverOnVenus.Shisa"));
+    let bus = Bus::default();
+    let lock_bus = bus.clone();
     tauri::Builder::default()
         // A second start brings the existing window forward instead of opening
         // another one.
@@ -729,13 +810,15 @@ fn main() {
                 eprintln!("Shisa: {error}");
             }
         }))
-        .setup(|app| {
+        .setup(move |app| {
+            spawn_lock_watch(app.handle().clone(), lock_bus);
             open_window(
                 app.handle(),
                 std::env::args_os().any(|arg| arg == "--restore-windows"),
             )
         })
         .manage(Icons::default())
+        .manage(bus)
         .invoke_handler(tauri::generate_handler![
             list_apps,
             list_installed,
