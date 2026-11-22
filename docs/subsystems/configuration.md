@@ -58,21 +58,23 @@ Hide(app_id: s) -> ()                # hide one app's windows and keep its ticke
 Unhide(app_id: s) -> b               # show them again while the ticket is valid
 Unlock(app_id: s) -> ()              # authorize an unlock for a protected app
 RegisterAgent() -> ()                # subscribe to state notifications as the session agent
+RegisterSettings() -> ()             # register the settings window for the lock signal
 WindowStates() -> as                # apps with window allowance
 RelockSeconds() -> a(su)             # focus-loss delays, omitting disabled apps
 signal StateChanged(app_id: s, unlocked: b)
 signal SessionUnlocked()
+signal SettingsLocked()
 RecentLaunches() -> (a(txsisxx)ttt)
 Diagnostics() -> (sxxxttsbx)
 ```
 
 `ListApps` returns both configured and last successfully marked paths. An unavailable path appears only in the configured list. Settings and `shisa status` identify it as inactive. `GlobalConfig` falls back to a 300-second grace period, clearing on screen lock, and a 60-second prompt timeout.
 
-`SetProtected`, `SetOption`, and `Unlock` authorize the caller's unique name through polkit. Each settings change requires its own authorization even if a launch ticket exists. An empty app ID in `SetOption` selects a global option. Changing an app's grace period drops its current ticket and preserves its window allowance. The first successful settings change creates the user's file as root with mode 0600 when needed, under the root-only directory. `Lock`, `Hide`, and `Unhide` require no authentication.
+`SetProtected`, `SetOption`, and `Unlock` authorize the caller's unique name through polkit. Each settings change is checked even if a launch ticket exists, but polkit's retained `auth_admin_keep` decision can answer a later change from the same window without a prompt. The settings window calls `RegisterSettings` and keeps one system-bus connection, so a global lock or a screen lock can send it `SettingsLocked` and end that decision by exiting (see [Authentication](authentication.md#policy-and-identity)). An empty app ID in `SetOption` selects a global option. Changing an app's grace period drops its current ticket and preserves its window allowance. The first successful settings change creates the user's file as root with mode 0600 when needed, under the root-only directory. `Lock`, `Hide`, and `Unhide` require no authentication.
 
 `Lock` drops both the ticket and the window permission. `Hide` drops only the window permission, so the focus-loss timer conceals a window without ending its grace period. `Unhide` restores the permission and returns true only while the app still holds a valid ticket. A false result means the caller has to authenticate through `Unlock` first. A manual lock always clears the ticket, and a screen lock clears it when `clear_on_screen_lock` is enabled, so both defeat `Unhide`. Among `Lock`, `Hide`, and `Unhide`, only `Lock` accepts an empty app ID.
 
-`StateChanged` is sent to the user's registered agent after settings changes, ticket issue, `Lock`, `Hide`, a ticket- or autostart-covered launch that restores window allowance, screen-lock revocation, consumption of a one-use ticket, or ticket expiry. `Unhide` does not send it: the caller applies the restored window state itself or asks the session agent to do so. `SessionUnlocked` signals the agent to refresh window handling on session unlock. `WindowStates` reports window allowance independently from launch tickets. `RelockSeconds` reports the configured focus-loss delays.
+`StateChanged` is sent to the user's registered agent after settings changes, ticket issue, `Lock`, `Hide`, a ticket- or autostart-covered launch that restores window allowance, screen-lock revocation, consumption of a one-use ticket, or ticket expiry. `Unhide` does not send it: the caller applies the restored window state itself or asks the session agent to do so. `SessionUnlocked` signals the agent to refresh window handling on session unlock. `SettingsLocked` is sent to registered settings windows after a global `Lock` or when every graphical session of the user locks. It asks them to exit so polkit's process-keyed settings authorization cannot outlive the lock. `WindowStates` reports window allowance independently from launch tickets. `RelockSeconds` reports the configured focus-loss delays.
 
 ### Diagnostics
 

@@ -39,9 +39,64 @@ pub enum Msg {
     /// The screen of this user unlocked. KWin ignored the window changes made
     /// while it was locked, so the agent has to reapply the gate.
     SessionUnlocked { uid: u32 },
+    /// Every graphical session of this user locked. Registered settings
+    /// windows have to exit so their retained polkit decision expires with
+    /// the process (docs/subsystems/authentication.md).
+    SettingsLocked { uid: u32 },
 }
 
 type Waiting = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<(), String>>>>>;
+
+/// Settings windows per user, and the windows a lock has already invalidated.
+///
+/// polkit keeps `auth_admin_keep` against the caller's process, not the bus
+/// connection, and its API does not let the root daemon revoke a session's
+/// retained decision. A lock therefore tells the settings window to exit. The
+/// locked names are also refused, so a window that misses the signal cannot
+/// apply a change before the decision expires (docs/subsystems/authentication.md).
+#[derive(Default)]
+struct SettingsClients {
+    registered: HashMap<u32, Vec<String>>,
+    locked: HashMap<u32, Vec<String>>,
+}
+
+/// Registration needs no authentication. The settings app is single-instance
+/// per user, so a small bound covers stale names without letting a local
+/// account grow the daemon without limit.
+const MAX_SETTINGS_CLIENTS: usize = 8;
+
+impl SettingsClients {
+    fn register(&mut self, uid: u32, sender: String) {
+        insert_bounded(self.registered.entry(uid).or_default(), sender);
+    }
+
+    /// Move the user's registered windows to the locked set and return them
+    /// as signal destinations.
+    fn invalidate(&mut self, uid: u32) -> Vec<String> {
+        let clients = self.registered.remove(&uid).unwrap_or_default();
+        let locked = self.locked.entry(uid).or_default();
+        for client in &clients {
+            insert_bounded(locked, client.clone());
+        }
+        clients
+    }
+
+    fn is_locked(&self, uid: u32, sender: &str) -> bool {
+        self.locked
+            .get(&uid)
+            .is_some_and(|clients| clients.iter().any(|client| client == sender))
+    }
+}
+
+fn insert_bounded(clients: &mut Vec<String>, sender: String) {
+    if clients.iter().any(|client| client == &sender) {
+        return;
+    }
+    if clients.len() >= MAX_SETTINGS_CLIENTS {
+        clients.remove(0);
+    }
+    clients.push(sender);
+}
 
 /// Cap on threads doing desktop scans for D-Bus calls. The calls are cheap
 /// and user-triggered, but without a cap any local user could queue them and
@@ -102,6 +157,7 @@ pub fn spawn(
 ) -> Result<mpsc::Sender<Msg>, String> {
     let (tx, rx) = mpsc::channel::<Msg>();
     let agents: Arc<Mutex<HashMap<u32, String>>> = Arc::default();
+    let settings: Arc<Mutex<SettingsClients>> = Arc::default();
     let waiting: Waiting = Arc::default();
     let iface = ManagerIface {
         indexes: Arc::default(),
@@ -109,6 +165,7 @@ pub fn spawn(
         diag,
         state,
         agents: agents.clone(),
+        settings: settings.clone(),
         events: events.clone(),
         waiting: waiting.clone(),
         limits: Arc::default(),
@@ -122,7 +179,7 @@ pub fn spawn(
     .map_err(|e| e.to_string())?;
     thread::Builder::new()
         .name("dbus".into())
-        .spawn(move || run(conn, rx, agents, waiting, events))
+        .spawn(move || run(conn, rx, agents, settings, waiting, events))
         .map_err(|e| e.to_string())?;
     Ok(tx)
 }
@@ -131,6 +188,7 @@ fn run(
     conn: Connection,
     rx: mpsc::Receiver<Msg>,
     agents: Arc<Mutex<HashMap<u32, String>>>,
+    settings: Arc<Mutex<SettingsClients>>,
     waiting: Waiting,
     events: Arc<Events>,
 ) {
@@ -184,6 +242,20 @@ fn run(
                     debug!("SessionUnlocked: {e}");
                 }
             }
+            Msg::SettingsLocked { uid } => {
+                let destinations = settings.lock().unwrap().invalidate(uid);
+                for dest in destinations {
+                    if let Err(e) = conn.emit_signal(
+                        Some(dest.as_str()),
+                        OBJECT_PATH,
+                        INTERFACE,
+                        "SettingsLocked",
+                        &(),
+                    ) {
+                        debug!("SettingsLocked: {e}");
+                    }
+                }
+            }
         }
     }
 }
@@ -200,6 +272,7 @@ struct ManagerIface {
     diag: Arc<Diag>,
     state: Shared,
     agents: Arc<Mutex<HashMap<u32, String>>>,
+    settings: Arc<Mutex<SettingsClients>>,
     events: Arc<Events>,
     waiting: Waiting,
     limits: Arc<Mutex<Limits>>,
@@ -275,9 +348,10 @@ impl ManagerIface {
         #[zbus(connection)] conn: &AsyncConnection,
     ) -> zbus::fdo::Result<()> {
         let uid = caller_uid(conn, &hdr).await?;
+        let global = app_id.is_empty();
         let cleared: Vec<String> = {
             let mut state = self.state.lock().unwrap();
-            if app_id.is_empty() {
+            if global {
                 state.clear_tickets(uid)
             } else {
                 state.lock_app(uid, app_id).into_iter().collect()
@@ -287,6 +361,26 @@ impl ManagerIface {
         if let Some(agent) = agent {
             for app in cleared {
                 state_changed(conn, &agent, app, false).await;
+            }
+        }
+        if global {
+            // A settings window's polkit decision belongs to its process.
+            // Ask it to exit so the decision cannot be used after this
+            // hand-over (docs/subsystems/authentication.md).
+            let destinations = self.settings.lock().unwrap().invalidate(uid);
+            for dest in destinations {
+                if let Err(e) = conn
+                    .emit_signal(
+                        Some(dest.as_str()),
+                        OBJECT_PATH,
+                        INTERFACE,
+                        "SettingsLocked",
+                        &(),
+                    )
+                    .await
+                {
+                    debug!("SettingsLocked: {e}");
+                }
             }
         }
         Ok(())
@@ -567,6 +661,24 @@ impl ManagerIface {
         debug!(uid, "agent registered");
         Ok(())
     }
+
+    /// Register this connection as a settings window. A global lock or screen
+    /// lock sends `SettingsLocked` here so the window can exit and end
+    /// polkit's process-keyed retained authorization.
+    async fn register_settings(
+        &self,
+        #[zbus(header)] hdr: Header<'_>,
+        #[zbus(connection)] conn: &AsyncConnection,
+    ) -> zbus::fdo::Result<()> {
+        let uid = caller_uid(conn, &hdr).await?;
+        let sender = hdr
+            .sender()
+            .ok_or_else(|| zbus::fdo::Error::Failed("no sender".into()))?
+            .to_string();
+        self.settings.lock().unwrap().register(uid, sender);
+        debug!(uid, "settings window registered");
+        Ok(())
+    }
 }
 
 impl ManagerIface {
@@ -605,6 +717,14 @@ impl ManagerIface {
         change: Change,
         sender: String,
     ) -> zbus::fdo::Result<()> {
+        // A lock invalidated this window's retained decision. Refuse the
+        // change even if polkit would still answer from it, so a window that
+        // missed the signal cannot change protection after the hand-over.
+        if self.settings.lock().unwrap().is_locked(uid, &sender) {
+            return Err(zbus::fdo::Error::Failed(
+                "settings locked, reopen Shisa Settings".into(),
+            ));
+        }
         let id = self.events.next_id();
         let (tx, rx) = oneshot::channel();
         self.waiting.lock().unwrap().insert(id, tx);

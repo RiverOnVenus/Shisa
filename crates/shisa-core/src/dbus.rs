@@ -1,7 +1,8 @@
 //! Names and the interface shared by shisad, the session agent and the CLI.
 //!
 //! shisad owns the name on the system bus. The agent calls `RegisterAgent` so
-//! state changes reach it. `ListApps` and `Lock` act on the calling user
+//! state changes reach it, and the settings window calls `RegisterSettings` so
+//! a lock can tell it to exit. `ListApps` and `Lock` act on the calling user
 //! only, identified from the bus credentials.
 
 pub const BUS_NAME: &str = "io.github.RiverOnVenus.Shisa";
@@ -56,6 +57,10 @@ pub trait Manager {
     fn unlock(&self, app_id: &str) -> zbus::Result<()>;
     /// Announce this process as the user's agent, for state changes.
     fn register_agent(&self) -> zbus::Result<()>;
+    /// Announce this connection as a settings window. A global lock or a
+    /// screen lock asks registered windows to exit, which ends polkit's
+    /// process-keyed retained authorization (docs/subsystems/authentication.md).
+    fn register_settings(&self) -> zbus::Result<()>;
     /// Installed applications: id, name, icon.
     fn list_installed(&self) -> zbus::Result<Vec<(String, String, String)>>;
     /// The caller's recent launches, oldest first, and the totals since the
@@ -92,4 +97,10 @@ pub trait Manager {
     /// The screen unlocked and the window layer has to be reapplied.
     #[zbus(signal)]
     fn session_unlocked(&self) -> zbus::Result<()>;
+
+    /// A global lock or screen lock invalidated the settings authorization.
+    /// The window has to exit so its retained polkit decision cannot be
+    /// reused after the desktop changes hands.
+    #[zbus(signal)]
+    fn settings_locked(&self) -> zbus::Result<()>;
 }

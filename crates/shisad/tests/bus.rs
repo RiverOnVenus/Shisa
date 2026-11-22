@@ -490,3 +490,70 @@ fn a_registered_agent_receives_state_changes() {
     assert_eq!(seen, ("app".to_string(), false));
     watcher.join().unwrap();
 }
+
+#[test]
+fn a_global_or_screen_lock_ends_registered_settings_windows() {
+    let _serial = ONE_BUS.lock().unwrap_or_else(|e| e.into_inner());
+    let _bus = PrivateBus::start("settings-lock");
+    let (_events, tx) = start_daemon(state());
+
+    let observer = Connection::system().unwrap();
+    let manager = ManagerProxyBlocking::new(&observer).unwrap();
+
+    // The match rule reaches the bus asynchronously. Repeat the global lock
+    // until the observer sees the signal.
+    let (seen_tx, seen_rx) = mpsc::channel();
+    let watch_conn = observer.clone();
+    let watcher = std::thread::spawn(move || {
+        let manager = ManagerProxyBlocking::new(&watch_conn).unwrap();
+        let mut signals = manager.receive_settings_locked().unwrap();
+        let _ = seen_tx.send(signals.next().is_some());
+    });
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        manager.register_settings().unwrap();
+        manager.lock("").unwrap();
+        match seen_rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(true) => break,
+            Ok(false) => panic!("the signal stream ended"),
+            Err(mpsc::RecvTimeoutError::Timeout) if Instant::now() < deadline => continue,
+            Err(e) => panic!("no SettingsLocked arrived: {e}"),
+        }
+    }
+    watcher.join().unwrap();
+
+    // The same connection is now in the locked set. A change that misses the
+    // exit signal is refused instead of reaching its retained authorization.
+    let (result_tx, result_rx) = mpsc::channel();
+    let caller = observer.clone();
+    std::thread::spawn(move || {
+        let manager = ManagerProxyBlocking::new(&caller).unwrap();
+        let _ = result_tx.send(manager.set_protected("app", false));
+    });
+    let refused = result_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the change was not refused");
+    assert!(refused.unwrap_err().to_string().contains("settings locked"));
+
+    // The screen-lock path arrives as a daemon message and uses the same
+    // registry. The first lock consumed it, so register on every try.
+    let (seen_tx, seen_rx) = mpsc::channel();
+    let watch_conn = observer.clone();
+    let watcher = std::thread::spawn(move || {
+        let manager = ManagerProxyBlocking::new(&watch_conn).unwrap();
+        let mut signals = manager.receive_settings_locked().unwrap();
+        let _ = seen_tx.send(signals.next().is_some());
+    });
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        manager.register_settings().unwrap();
+        tx.send(Msg::SettingsLocked { uid: uid() }).unwrap();
+        match seen_rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(true) => break,
+            Ok(false) => panic!("the signal stream ended"),
+            Err(mpsc::RecvTimeoutError::Timeout) if Instant::now() < deadline => continue,
+            Err(e) => panic!("no screen-lock SettingsLocked arrived: {e}"),
+        }
+    }
+    watcher.join().unwrap();
+}

@@ -225,6 +225,10 @@ fn apply_lock_changes(
                         unlocked: false,
                     });
                 }
+                // The settings window keeps a polkit decision against its
+                // own process. Tell it to exit before the desktop is handed
+                // over (docs/subsystems/authentication.md).
+                let _ = notify.send(Msg::SettingsLocked { uid });
             }
             LockChange::Unlocked => {
                 // KWin drops the window changes the script made while the
