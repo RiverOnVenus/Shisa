@@ -50,6 +50,8 @@ On 2026-11-22, the local test package from the `audit/session-env-hardening` wor
 
 On 2026-11-22, local test packages 0.1.4-1.1 were built from the worktree and installed over 0.1.4-1.1 with `pacman -U`. `makepkg`'s `check()` passed the workspace, settings frontend, Tauri, and KWin script suites. `pacman -Qkk shisa` reported 0 changed files out of 52. `shisad.service` and `shisa-agent.service` were restarted, both active. The user verified the live notification, health-line, transient-scope, and empty-restore-panel flows.
 
+On 2026-11-22, a local test package `shisa-0.1.4-1.1` was built from the worktree with `prepare-build.sh --worktree`. `makepkg`'s `check()` passed the workspace tests, the settings frontend (9 Node and 12 vitest tests), the settings Tauri tests (5), and the KWin script tests (14). `pacman -Qkp` found all 51 files. The package was not installed here. The live checks of the restore panel's two-second refresh, the duplicate-name ids, the folded diagnostics card and the tooltip without the Do Not Disturb advice are still pending.
+
 ## Dependency advisories
 
 On 2026-11-22, the two open Dependabot alerts were reviewed.
