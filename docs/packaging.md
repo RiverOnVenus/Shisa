@@ -33,3 +33,5 @@ With approval, install the generated package using `pacman -U`. After upgrading,
 On 2026-11-17, upgrading a temporary Arch package replaced a protected file and the post-transaction hook marked the new inode before the 30-second polling interval elapsed. On 2026-11-18, the package built with `extra-x86_64-build` in a clean chroot.
 
 On 2026-11-22, four local test packages `0.1.2-1.1` were built from the worktree and three were installed over `0.1.2-1` with `pacman -U`. Each install left `pacman -Qkk shisa` with no changed files. The first restarted both services and confirmed them active, and the later two replaced only the settings frontend. The settings window reopened from `/usr/bin/shisa-settings` after clearing `$XDG_RUNTIME_DIR/shisa-settings`, and its built assets were checked for the new sidebar icons, the trimmed copy and the `system-ui` font stack. The `inter-font` optdepend was removed at the same time.
+
+On 2026-11-22, v0.1.3 built and passed `check()` in the release container. The release attached `shisa-0.1.3-1-x86_64.pkg.tar.zst`, `SHA256SUMS` and `shisa-0.1.3.tar.gz`. The downloaded package and source archive matched their checksums.
