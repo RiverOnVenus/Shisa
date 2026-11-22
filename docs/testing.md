@@ -49,6 +49,8 @@ On 2026-11-22, after the last two shisad hardening commits, `cargo build --relea
 
 On 2026-11-22, the small hardening branch passed `cargo test --workspace --locked` (169 tests), the settings Tauri tests (4), `node --test crates/shisa-agent/tests/*.test.mjs` (12), `npm test` (9 Node and 7 vitest tests), `cargo clippy`, and the format checks. `tests/gate.sh`, `tests/auth.sh`, and `tests/settings.sh` each reported 0 failed, including the Plasma `kioclient` path with KWrite and the 0600/0700 modes.
 
+On 2026-11-22, the user verified the live Wayland session after installing the test package: the settings list and icons loaded, Lock all hid the protected windows while an ordinary window stayed usable, the restore panel returned a window without a prompt inside the grace period, and the app-tray path behaved the same. The config modes were 0700/0600.
+
 ## Window and authentication verification
 
 1. In an isolated KWin session, open a protected window and an ordinary window. Lock all apps and verify that the protected window disappears and the ordinary window stays usable. Repeat the operation and check that the acknowledgement reflects the current state.
