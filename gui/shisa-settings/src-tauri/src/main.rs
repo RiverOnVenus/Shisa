@@ -582,15 +582,39 @@ async fn restore_hidden(app_id: String) -> R<()> {
 /// the margin it reserves for resize grips, as its other windows do. Under
 /// X11 tao installs no titlebar, and this would ask the window manager for
 /// its decorations, so it is Wayland-only.
+///
+/// Adwaita rounds only the decoration's top corners (`border-radius: 8px
+/// 8px 0 0`), and the shadow follows that shape, which makes a frameless
+/// square page look rounded above and square below. The class-scoped rule
+/// squares every corner while keeping the theme's own shadow colour, blur
+/// and resize margin. The class keeps it off the restore window.
 #[cfg(target_os = "linux")]
 fn add_csd_shadow(window: &tauri::WebviewWindow) {
     use gtk::prelude::*;
     let Ok(gtk_window) = window.gtk_window() else {
         return;
     };
-    if gtk_window.display().backend().is_wayland() {
-        gtk_window.set_decorated(true);
+    if !gtk_window.display().backend().is_wayland() {
+        return;
     }
+    gtk_window
+        .style_context()
+        .add_class("shisa-flat-decoration");
+    if let Some(screen) = gtk::prelude::WidgetExt::screen(&gtk_window) {
+        let provider = gtk::CssProvider::new();
+        if let Err(error) =
+            provider.load_from_data(b".shisa-flat-decoration decoration { border-radius: 0; }")
+        {
+            eprintln!("Shisa: flat decoration rule: {error}");
+        } else {
+            gtk::StyleContext::add_provider_for_screen(
+                &screen,
+                &provider,
+                gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+            );
+        }
+    }
+    gtk_window.set_decorated(true);
 }
 
 fn open_window(app: &tauri::AppHandle, restore: bool) -> Result<(), Box<dyn std::error::Error>> {
