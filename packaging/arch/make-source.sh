@@ -16,6 +16,22 @@ git -C "$repo" rev-parse --verify --quiet "refs/tags/v$version" >/dev/null || {
     exit 1
 }
 
+# A release install compares the settings app's own crate version with
+# shisad's. Every manifest must name the release version, or a correct
+# install shows a permanent mismatch notice. Read the tag, not the working
+# tree, because the tag is what goes into the tarball.
+check_version() {
+    found=$(git -C "$repo" show "v$version:$1" 2>/dev/null | sed -n "$2")
+    if [ "$found" != "$version" ]; then
+        echo "$1 in tag v$version names version '${found:-<none>}', expected $version" >&2
+        exit 1
+    fi
+}
+check_version Cargo.toml 's/^version = "\(.*\)"/\1/p'
+check_version gui/shisa-settings/src-tauri/Cargo.toml 's/^version = "\(.*\)"/\1/p'
+check_version gui/shisa-settings/package.json 's/^  "version": "\(.*\)",/\1/p'
+check_version gui/shisa-settings/src-tauri/tauri.conf.json 's/^  "version": "\(.*\)",/\1/p'
+
 # The tarball is taken from the tag. Warn when the working tree differs from
 # it outside packaging, since those changes will not be in the tarball.
 if ! git -C "$repo" diff --quiet "v$version" -- . ':(exclude)packaging'; then
