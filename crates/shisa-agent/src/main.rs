@@ -560,7 +560,7 @@ fn action_loop(
                         Language::ZhCn => format!("全部上锁失败：{e}"),
                         Language::En => format!("Lock all failed: {e}"),
                     };
-                    notify_lock(handle, &message, false, NOTIFY_PROBLEM_TIMEOUT_MS);
+                    notify_lock(handle, &message, None, false, NOTIFY_PROBLEM_TIMEOUT_MS);
                 }
             },
             Action::VerifyLock => verify_lock(gate, handle, dnd_hinted),
@@ -618,7 +618,7 @@ fn verify_lock(
         .unwrap_or_default();
     let hint =
         report.as_ref().is_some_and(|report| report.hidden > 0) && should_hint_dnd(dnd_hinted);
-    let message = lock_summary(report.as_ref(), language, hint, &names);
+    let text = lock_summary(report.as_ref(), language, hint, &names);
     let concealed = report.as_ref().is_some_and(|report| report.hidden > 0);
     let timeout = match &report {
         Some(report) if report.missed.is_empty() && report.matched == report.hidden => {
@@ -626,7 +626,7 @@ fn verify_lock(
         }
         _ => NOTIFY_PROBLEM_TIMEOUT_MS,
     };
-    notify_lock(handle, &message, concealed, timeout);
+    notify_lock(handle, &text.summary, text.hint, concealed, timeout);
 }
 
 /// The display names of the apps that could not be concealed. A malformed or
@@ -657,13 +657,21 @@ fn missed_names(missed: &[(String, u32)], language: Language) -> String {
     text
 }
 
+/// One lock result. `hint` is advice for the notification popup only: the
+/// tray tooltip keeps `summary`, because it stays on screen long after the
+/// popup that the hint explains has expired.
+struct LockSummary {
+    summary: String,
+    hint: Option<&'static str>,
+}
+
 fn lock_summary(
     report: Option<&WindowReport>,
     language: Language,
     hint: bool,
     names: &str,
-) -> String {
-    let mut message = match (report, language) {
+) -> LockSummary {
+    let summary = match (report, language) {
         (Some(report), Language::ZhCn) => {
             if report.matched == 0 {
                 "启动已上锁，当前桌面未匹配到受保护窗口".into()
@@ -701,28 +709,39 @@ fn lock_summary(
     // Only a lock that actually concealed something raises the notification
     // concern. The hint tells the owner what the lock does not cover, so it
     // belongs next to the result rather than only in the documentation.
-    if hint && report.is_some_and(|report| report.hidden > 0) {
-        message.push_str(match language {
-            Language::ZhCn => {
-                "\n建议开启勿扰：受保护应用的通知仍会弹出，通知历史也能打开。"
-            }
+    let hint = if hint && report.is_some_and(|report| report.hidden > 0) {
+        Some(match language {
+            Language::ZhCn => "建议开启勿扰：受保护应用的通知仍会弹出，通知历史也能打开。",
             Language::En => {
-                "\nConsider Do Not Disturb: protected apps' notifications still appear and their history stays accessible."
+                "Consider Do Not Disturb: protected apps' notifications still appear and their history stays accessible."
             }
-        });
-    }
-    message
+        })
+    } else {
+        None
+    };
+    LockSummary { summary, hint }
 }
 
-fn notify_lock(handle: &Handle<TrayState>, message: &str, concealed: bool, timeout_ms: i32) {
+fn notify_lock(
+    handle: &Handle<TrayState>,
+    summary: &str,
+    hint: Option<&str>,
+    concealed: bool,
+    timeout_ms: i32,
+) {
+    let mut message = summary.to_string();
+    if let Some(hint) = hint {
+        message.push('\n');
+        message.push_str(hint);
+    }
     info!("{message}");
-    let _ = handle.update(|tray| tray.last_lock = Some(message.to_string()));
+    let _ = handle.update(|tray| tray.last_lock = Some(summary.to_string()));
     let icon = if concealed {
         LOCKED_ICON
     } else {
         "shisa-tray-symbolic"
     };
-    notify(message, timeout_ms, icon);
+    notify(&message, timeout_ms, icon);
 }
 
 /// Send one notification. Lock results are confirmations with no action,
@@ -1150,40 +1169,78 @@ mod tests {
         let none = report(0, 0, &[]);
         let full = report(2, 2, &[]);
         let partial = report(3, 2, &[("org.kde.kate", 1)]);
-        assert!(lock_summary(Some(&none), Language::ZhCn, false, "").contains("未匹配"));
-        assert!(lock_summary(Some(&full), Language::ZhCn, false, "").contains("已收起 2"));
+        assert!(
+            lock_summary(Some(&none), Language::ZhCn, false, "")
+                .summary
+                .contains("未匹配")
+        );
+        assert!(
+            lock_summary(Some(&full), Language::ZhCn, false, "")
+                .summary
+                .contains("已收起 2")
+        );
         assert!(
             lock_summary(Some(&partial), Language::ZhCn, false, "app.one")
+                .summary
                 .contains("未确认：app.one")
         );
         assert_eq!(
-            lock_summary(Some(&report(2, 1, &[])), Language::ZhCn, false, ""),
-            lock_summary(None, Language::ZhCn, false, "")
+            lock_summary(Some(&report(2, 1, &[])), Language::ZhCn, false, "").summary,
+            lock_summary(None, Language::ZhCn, false, "").summary
         );
-        assert!(lock_summary(None, Language::ZhCn, false, "").contains("未确认"));
+        assert!(
+            lock_summary(None, Language::ZhCn, false, "")
+                .summary
+                .contains("未确认")
+        );
 
-        assert!(lock_summary(Some(&none), Language::En, false, "").contains("no protected window"));
-        assert!(lock_summary(Some(&full), Language::En, false, "").contains("hid 2"));
+        assert!(
+            lock_summary(Some(&none), Language::En, false, "")
+                .summary
+                .contains("no protected window")
+        );
+        assert!(
+            lock_summary(Some(&full), Language::En, false, "")
+                .summary
+                .contains("hid 2")
+        );
         assert!(
             lock_summary(Some(&partial), Language::En, false, "app.one")
+                .summary
                 .contains("Not confirmed: app.one")
         );
         assert_eq!(
-            lock_summary(Some(&report(2, 1, &[])), Language::En, false, ""),
-            lock_summary(None, Language::En, false, "")
+            lock_summary(Some(&report(2, 1, &[])), Language::En, false, "").summary,
+            lock_summary(None, Language::En, false, "").summary
         );
-        assert!(lock_summary(None, Language::En, false, "").contains("not confirmed"));
+        assert!(
+            lock_summary(None, Language::En, false, "")
+                .summary
+                .contains("not confirmed")
+        );
     }
 
     #[test]
     fn the_dnd_hint_follows_a_lock_that_hid_something() {
         let full = report(2, 2, &[]);
-        assert!(lock_summary(Some(&full), Language::ZhCn, true, "").contains("勿扰"));
-        assert!(!lock_summary(Some(&full), Language::ZhCn, false, "").contains("勿扰"));
+        let hinted = lock_summary(Some(&full), Language::ZhCn, true, "");
+        // The hint rides on the notification only. The tooltip keeps the
+        // summary, which is what `notify_lock` stores in `last_lock`.
+        assert!(hinted.summary.contains("已收起 2"));
+        assert!(hinted.hint.is_some_and(|hint| hint.contains("勿扰")));
+        assert!(
+            lock_summary(Some(&full), Language::ZhCn, false, "")
+                .hint
+                .is_none()
+        );
         // Nothing was hidden, so notifications from hidden apps are not the
         // concern this hint addresses.
         let none = report(0, 0, &[]);
-        assert!(!lock_summary(Some(&none), Language::ZhCn, true, "").contains("勿扰"));
+        assert!(
+            lock_summary(Some(&none), Language::ZhCn, true, "")
+                .hint
+                .is_none()
+        );
     }
 
     #[test]
