@@ -14,7 +14,7 @@ use crate::diag::{self, Diag};
 use crate::events::{Event, Events};
 use crate::policy::{Change, State};
 use futures_channel::oneshot;
-use shisa_core::config::valid_app_id;
+use shisa_core::config::{MAX_PROTECTED_PATHS, valid_app_id};
 use shisa_core::dbus::{AppRow, BUS_NAME, DiagRow, INTERFACE, LaunchRow, OBJECT_PATH};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, mpsc};
@@ -673,6 +673,11 @@ fn parse_option(key: &str, value: &zbus::zvariant::Value<'_>) -> zbus::fdo::Resu
             let Value::Array(array) = value else {
                 return Err(invalid());
             };
+            if array.len() > MAX_PROTECTED_PATHS {
+                return Err(zbus::fdo::Error::InvalidArgs(format!(
+                    "at most {MAX_PROTECTED_PATHS} protected paths"
+                )));
+            }
             let mut paths = Vec::new();
             for item in array.iter() {
                 let Ok(path) = item.downcast_ref::<&str>() else {

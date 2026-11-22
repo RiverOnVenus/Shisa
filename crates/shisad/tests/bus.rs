@@ -2,6 +2,7 @@
 //! exercises the served object, the caller identity lookup and the routing of
 //! authentication requests to the registered agent.
 
+use shisa_core::config::MAX_PROTECTED_PATHS;
 use shisa_core::dbus::ManagerProxyBlocking;
 use shisad::activity;
 use shisad::bus::{self, Msg};
@@ -227,6 +228,11 @@ fn interface_and_settings_changes() {
         "prompt_timeout_seconds",
         zbus::zvariant::Value::from(600u64),
     );
+    assert!(bad.is_err());
+    let many: Vec<String> = (0..=MAX_PROTECTED_PATHS)
+        .map(|i| format!("/tmp/shisa-path-{i}"))
+        .collect();
+    let bad = manager.set_option("app", "paths", zbus::zvariant::Value::from(many));
     assert!(bad.is_err());
     assert!(events.drain().is_empty());
 }

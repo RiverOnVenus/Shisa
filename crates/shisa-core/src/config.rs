@@ -16,6 +16,10 @@ pub const MAX_GRACE: u64 = 365 * 24 * 3600;
 /// Upper bound for the unfocus relock delay. A day is already longer than
 /// any window stays open without being touched.
 pub const MAX_RELOCK_SECONDS: u64 = 24 * 3600;
+/// Upper bound for the protected paths of one app. A desktop entry can list
+/// many Exec lines, and the D-Bus API can carry a large array. The daemon
+/// marks every path, so keep one app from growing the list without bound.
+pub const MAX_PROTECTED_PATHS: usize = 64;
 /// Defaults for both the file format and the settings window, which shows
 /// them to a user who has no config file yet.
 pub const DEFAULT_GRACE_SECONDS: u64 = 300;
