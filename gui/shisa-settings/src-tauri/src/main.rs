@@ -571,6 +571,28 @@ async fn restore_hidden(app_id: String) -> R<()> {
     agent.restore_window(&app_id).await.map_err(err)
 }
 
+/// Give the frameless Wayland window the GTK client-side decoration's shadow
+/// and resize edges.
+///
+/// tao makes a Wayland window without decorations client-decorated by giving
+/// it an empty titlebar, so KWin draws no server-side frame on it. GTK then
+/// has `decorated` off, and its `get_shadow_width()` returns zero in that
+/// state, so GTK paints no shadow either. Turning `decorated` back on keeps
+/// the empty titlebar and lets GTK render the theme's decoration shadow in
+/// the margin it reserves for resize grips, as its other windows do. Under
+/// X11 tao installs no titlebar, and this would ask the window manager for
+/// its decorations, so it is Wayland-only.
+#[cfg(target_os = "linux")]
+fn add_csd_shadow(window: &tauri::WebviewWindow) {
+    use gtk::prelude::*;
+    let Ok(gtk_window) = window.gtk_window() else {
+        return;
+    };
+    if gtk_window.display().backend().is_wayland() {
+        gtk_window.set_decorated(true);
+    }
+}
+
 fn open_window(app: &tauri::AppHandle, restore: bool) -> Result<(), Box<dyn std::error::Error>> {
     let label = if restore { "restore" } else { "main" };
     if let Some(window) = app.get_webview_window(label) {
@@ -619,6 +641,8 @@ fn open_window(app: &tauri::AppHandle, restore: bool) -> Result<(), Box<dyn std:
     };
     if !restore {
         let _ = window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
+        #[cfg(target_os = "linux")]
+        add_csd_shadow(&window);
     }
     tauri::async_runtime::spawn(follow_appearance(window));
     Ok(())

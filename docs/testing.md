@@ -57,6 +57,8 @@ On 2026-11-22, `cargo test --workspace --locked` (172 tests) covered the configu
 
 On 2026-11-22, after the session environment and configuration-failure changes, `tests/gate.sh`, `tests/auth.sh`, and `tests/settings.sh` each reported 0 failed, including the exact manager resolution and the nine-field `Diagnostics` tuple. The package check passed 172 workspace tests, 4 settings Tauri tests, and the frontend and KWin script suites. The user verified the live settings checks.
 
+On 2026-11-22, the settings window's Wayland shadow was checked. In `gui/shisa-settings/src-tauri`, `cargo fmt --all -- --check`, `cargo test --features custom-protocol` (4 tests) and `cargo build --features custom-protocol` passed. A standalone GTK 3 probe reproduced tao's frameless setup (an empty titlebar with `decorated` off) with no shadow, and showed the Breeze GTK theme's client-side decoration shadow once `set_decorated(true)` followed the show. The built settings window, run from `target/debug` in the live KDE Plasma 6 Wayland session, then showed that shadow around an otherwise unchanged frameless page. Dragging and edge resizing were not exercised here and still need a check in the live session.
+
 ## Window and authentication verification
 
 1. In an isolated KWin session, open a protected window and an ordinary window. Lock all apps and verify that the protected window disappears and the ordinary window stays usable. Repeat the operation and check that the acknowledgement reflects the current state.
