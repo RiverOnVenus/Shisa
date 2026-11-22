@@ -24,6 +24,7 @@
 
 - Write commit subjects and bodies in English. Prefix the subject with the area the commit changes: a crate name, `settings`, `packaging`, `docs`, or `tests`. Follow it with what the user now sees, for example `shisa-core: wait for KWin to acknowledge the new script before unloading the old one`. Use the body to explain the reason and effect when needed.
 - Keep each commit independently reviewable and focused on one change. An unrelated fix found on the way goes in its own commit, so a revert takes back one change and leaves the rest. Include related tests and documentation. Check `git diff --cached` before committing.
+- `main` requires the `rust` and `frontend` checks on the exact tip, administrators are included, and there is no pull-request-only rule. A locally made commit has no check runs yet, so `git push origin main` is refused with GH006. Without a pull request, push the commit to a temporary branch, wait for the Test workflow on that commit, then fast-forward `main` to it.
 
 ## Documentation
 
