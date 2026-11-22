@@ -25,6 +25,12 @@ FAILED=0
 [ -x "$SHISAD" ] && [ -x "$CLI" ] || { echo "build first: cargo build --release"; exit 1; }
 [ "$(id -u)" -ne 0 ] || { echo "run as the normal user, not root"; exit 1; }
 rm -rf "$W"; mkdir -p "$W"
+# The assertions below match the English interface. The saved language choice
+# lives under XDG_CONFIG_HOME, so point it at the test directory and force the
+# C locale instead of depending on the caller's session.
+export LC_ALL=C
+export XDG_CONFIG_HOME="$W/config"
+mkdir -p "$XDG_CONFIG_HOME"
 : > "$OUT"
 
 . "$HERE/tests/lib.sh"
