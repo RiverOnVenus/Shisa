@@ -42,6 +42,8 @@ On 2026-11-22, a second local test package `shisa-0.1.3-1.2` added the app-tray 
 
 On 2026-11-22, a new local test package `shisa-0.1.3-1.1` was built from the worktree with the policy-mode, scan-budget, and test-harness changes. `makepkg`'s `check()` passed the workspace tests, the settings frontend and Tauri tests, and the KWin script tests. `pacman -Qip` reports the install script, and `bsdtar` shows the four binaries, both units, the polkit action and rule, the D-Bus policy, the sysusers entry, the pacman hook, `ConfigurationDirectoryMode=0700` in `shisad.service`, and `secure_config` in `.INSTALL`. The package was not installed.
 
+On 2026-11-22, a local test package `shisa-0.1.3-1.1` was built from the `audit/small-hardening` worktree. `makepkg`'s `check()` passed the workspace tests, the settings frontend and Tauri tests, and the KWin script tests. `pacman -Qip` reports the install script, and the package carries the `secure_config` migration in `.INSTALL` and `ConfigurationDirectoryMode=0700` in `shisad.service`. The package was not installed.
+
 ## Dependency advisories
 
 On 2026-11-22, the two open Dependabot alerts were reviewed.
