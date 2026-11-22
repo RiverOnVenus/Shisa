@@ -52,6 +52,8 @@ On 2026-11-22, local test packages 0.1.4-1.1 were built from the worktree and in
 
 On 2026-11-22, a local test package `shisa-0.1.4-1.1` was built from the worktree with `prepare-build.sh --worktree`. `makepkg`'s `check()` passed the workspace tests, the settings frontend (9 Node and 12 vitest tests), the settings Tauri tests (5), and the KWin script tests (14). `pacman -Qkp` found all 51 files. The package was not installed here. The live checks of the restore panel's two-second refresh, the duplicate-name ids, the folded diagnostics card and the tooltip without the Do Not Disturb advice are still pending.
 
+On 2026-11-22, a second local test package `shisa-0.1.4-1.1` was built from the worktree after the single-instance GTK main-thread fix. `makepkg`'s `check()` passed the same suites, and `pacman -Qkp` found all 51 files. It was installed over 0.1.4-1.1 with `pacman -U`, `pacman -Qkk shisa` reported 0 changed files out of 52, and `shisad.service` and `shisa-agent.service` restarted, both active. The installed binary was then checked in the live session: with the settings window open, a second `shisa-settings --restore-windows` produced the `恢复窗口` frame and left the settings process running, instead of the earlier GTK main-thread panic and disconnected peer. The settings and restore windows from the check were then closed. The duplicate-name ids and the tooltip's Do Not Disturb exclusion still need a running protected app and an authenticated restore.
+
 ## Dependency advisories
 
 On 2026-11-22, the two open Dependabot alerts were reviewed.
