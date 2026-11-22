@@ -97,10 +97,19 @@ fn uid_of(name: &str) -> Option<u32> {
     shisa_core::users::uid(name)
 }
 
+/// The account name comes from NSS and must not reshape the path it is joined
+/// onto. A name that is empty, `.`, `..`, has a slash, or has a NUL is refused.
+fn config_file_name(name: &str) -> Result<String, String> {
+    if name.is_empty() || name == "." || name == ".." || name.contains('/') || name.contains('\0') {
+        return Err(format!("invalid account name {name:?}"));
+    }
+    Ok(format!("{name}.toml"))
+}
+
 /// Read one user's config for a settings change. A missing file means the
 /// user has none yet, which is not an error here.
 pub fn read_user(dir: &Path, name: &str) -> Result<UserConfig, String> {
-    let path = dir.join(format!("{name}.toml"));
+    let path = dir.join(config_file_name(name)?);
     match read_config(&path) {
         Ok(text) => UserConfig::parse(&text).map_err(|e| format!("{}: {e}", path.display())),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(UserConfig::default()),
@@ -122,6 +131,8 @@ fn write_user_with(
     config: &UserConfig,
     owner: fn(&Path, &fs::Metadata) -> io::Result<()>,
 ) -> io::Result<()> {
+    let file =
+        config_file_name(name).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
     fs::create_dir_all(dir)?;
     // This file is written as root. A directory that is not root's, or that
     // another account can write, would let that account choose what gets
@@ -134,8 +145,8 @@ fn write_user_with(
     let text = config
         .to_toml()
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
-    let path = dir.join(format!("{name}.toml"));
-    let temp = dir.join(format!(".{name}.toml.new"));
+    let path = dir.join(&file);
+    let temp = dir.join(format!(".{file}.new"));
     // A temp file left by a crash is removed before the retry, which also
     // removes a planted symlink instead of following it.
     match fs::remove_file(&temp) {
@@ -828,6 +839,23 @@ mod tests {
         assert!(write_user_with(&dir, "u", &sample(), permissive).is_err());
         assert!(!dir.join(".u.toml.new").exists(), "temp file left behind");
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_name_that_escapes_the_config_directory_is_refused() {
+        let root = std::env::temp_dir().join(format!("shisad-name-{}", std::process::id()));
+        let dir = root.join("config");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&dir).unwrap();
+        for name in ["", ".", "..", "../escape", "a/b", "with\0nul"] {
+            assert!(config_file_name(name).is_err(), "{name:?}");
+            assert!(read_user(&dir, name).is_err(), "{name:?}");
+            assert!(write_user(&dir, name, &sample()).is_err(), "{name:?}");
+        }
+        assert_eq!(config_file_name("alice").unwrap(), "alice.toml");
+        assert!(!root.join("escape.toml").exists());
+        assert!(!dir.join("a").exists());
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
