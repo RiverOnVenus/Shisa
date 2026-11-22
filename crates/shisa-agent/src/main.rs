@@ -17,6 +17,7 @@ use shisa_core::i18n::{self, Language};
 use std::collections::HashMap;
 use std::env;
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -27,6 +28,8 @@ use zbus::blocking::{Connection, MessageIterator, Proxy};
 use zbus::message::Type;
 
 mod window;
+
+use window::WindowReport;
 
 /// What a menu entry asks the worker thread to do.
 #[derive(Clone)]
@@ -41,8 +44,14 @@ enum Action {
 }
 
 const OFFLINE_ICON: &str = "shisa-tray-offline-symbolic";
-/// How long the desktop keeps a lock result notification on screen.
+/// Used while the script reports at least one concealed window, so the
+/// owner can see at a glance that the desktop is still locked.
+const LOCKED_ICON: &str = "shisa-tray-locked-symbolic";
+const NOTIFY_SERVICE: &str = "org.freedesktop.Notifications";
+/// How long the desktop keeps a lock result notification on screen. A
+/// result that still needs attention stays longer.
 const NOTIFY_TIMEOUT_MS: i32 = 5_000;
+const NOTIFY_PROBLEM_TIMEOUT_MS: i32 = 8_000;
 
 struct TrayState {
     protected_count: usize,
@@ -111,6 +120,8 @@ impl Tray for TrayState {
     fn icon_name(&self) -> String {
         if self.offline {
             OFFLINE_ICON
+        } else if self.hidden_count() > 0 {
+            LOCKED_ICON
         } else {
             "shisa-tray-symbolic"
         }
@@ -235,9 +246,20 @@ fn main() -> std::process::ExitCode {
     {
         let gate = gate.clone();
         let handle = handle.clone();
+        let last_notification = Arc::new(AtomicU32::new(0));
+        let dnd_hinted = Arc::new(AtomicBool::new(false));
+        // The watcher needs the same id slot and action channel as the lock
+        // result, so hold both in this block and move the slot into the
+        // action thread.
+        let notify_actions = actions_tx.clone();
+        let notify_last = last_notification.clone();
+        thread::Builder::new()
+            .name("notifications".into())
+            .spawn(move || watch_notification_actions(notify_actions, notify_last))
+            .expect("notifications thread");
         thread::Builder::new()
             .name("actions".into())
-            .spawn(move || action_loop(actions_rx, &gate, &handle))
+            .spawn(move || action_loop(actions_rx, &gate, &handle, &last_notification, &dnd_hinted))
             .expect("actions thread");
     }
 
@@ -358,7 +380,7 @@ fn supervise(
     loop {
         // Each pass follows an owner change or the timer, and registers
         // again: a restarted shisad starts with an empty registry.
-        let present = name_has_owner(conn);
+        let present = name_has_owner(conn, BUS_NAME);
         if present {
             match ManagerProxyBlocking::new(conn).and_then(|manager| manager.register_agent()) {
                 Ok(()) => {
@@ -389,13 +411,13 @@ fn supervise(
     }
 }
 
-fn name_has_owner(conn: &Connection) -> bool {
+fn name_has_owner(conn: &Connection, name: &str) -> bool {
     conn.call_method(
         Some("org.freedesktop.DBus"),
         "/org/freedesktop/DBus",
         Some("org.freedesktop.DBus"),
         "NameHasOwner",
-        &(BUS_NAME,),
+        &(name,),
     )
     .ok()
     .and_then(|reply| reply.body().deserialize::<bool>().ok())
@@ -525,23 +547,29 @@ fn action_loop(
     rx: Receiver<Action>,
     gate: &Arc<Mutex<Option<window::Gate>>>,
     handle: &Handle<TrayState>,
+    last_notification: &AtomicU32,
+    dnd_hinted: &AtomicBool,
 ) {
     for action in rx {
         match action {
             Action::LockAll => match lock("") {
-                Ok(()) => verify_lock(gate, handle),
+                Ok(()) => verify_lock(gate, handle, last_notification, dnd_hinted),
                 Err(e) => {
                     let language = i18n::current();
+                    let message = match language {
+                        Language::ZhCn => format!("全部上锁失败：{e}"),
+                        Language::En => format!("Lock all failed: {e}"),
+                    };
                     notify_lock(
                         handle,
-                        &match language {
-                            Language::ZhCn => format!("全部上锁失败：{e}"),
-                            Language::En => format!("Lock all failed: {e}"),
-                        },
+                        &message,
+                        false,
+                        NOTIFY_PROBLEM_TIMEOUT_MS,
+                        last_notification,
                     );
                 }
             },
-            Action::VerifyLock => verify_lock(gate, handle),
+            Action::VerifyLock => verify_lock(gate, handle, last_notification, dnd_hinted),
             Action::Unlock(app) => unlock(&app, gate),
             Action::RestoreIfTicketed(app) => restore_if_ticketed(&app, gate),
             Action::HiddenWindows(version, counts) => {
@@ -562,8 +590,13 @@ fn lock(app: &str) -> zbus::Result<()> {
     ManagerProxyBlocking::new(&conn)?.lock(app)
 }
 
-fn verify_lock(gate: &Mutex<Option<window::Gate>>, handle: &Handle<TrayState>) {
-    let result = (|| -> Option<(u32, u32)> {
+fn verify_lock(
+    gate: &Mutex<Option<window::Gate>>,
+    handle: &Handle<TrayState>,
+    last_notification: &AtomicU32,
+    dnd_hinted: &AtomicBool,
+) {
+    let report = (|| -> Option<WindowReport> {
         let mut gate = gate.lock().unwrap();
         let gate = gate.as_mut()?;
         let conn = Connection::system().ok()?;
@@ -578,66 +611,264 @@ fn verify_lock(gate: &Mutex<Option<window::Gate>>, handle: &Handle<TrayState>) {
         if !allowed.is_empty() {
             return None;
         }
-        let counts = gate.sync(&protected, &allowed, true)?;
+        let report = gate.sync(&protected, &allowed, true)?;
         // An unlock can complete while KWin is compiling the script.
         if !manager.window_states().ok()?.is_empty() {
             return None;
         }
-        Some(counts)
+        Some(report)
     })();
-    notify_lock(handle, &lock_summary(result, i18n::current()));
+    let language = i18n::current();
+    let names = report
+        .as_ref()
+        .map(|report| missed_names(&report.missed, language))
+        .unwrap_or_default();
+    let hint =
+        report.as_ref().is_some_and(|report| report.hidden > 0) && should_hint_dnd(dnd_hinted);
+    let message = lock_summary(report.as_ref(), language, hint, &names);
+    let restore = report.as_ref().is_some_and(|report| report.hidden > 0);
+    let timeout = match &report {
+        Some(report) if report.missed.is_empty() && report.matched == report.hidden => {
+            NOTIFY_TIMEOUT_MS
+        }
+        _ => NOTIFY_PROBLEM_TIMEOUT_MS,
+    };
+    notify_lock(handle, &message, restore, timeout, last_notification);
 }
 
-fn lock_summary(result: Option<(u32, u32)>, language: Language) -> String {
-    match (result, language) {
-        (Some((0, 0)), Language::ZhCn) => "启动已上锁，当前桌面未匹配到受保护窗口".into(),
-        (Some((0, 0)), Language::En) => {
-            "Locked, but no protected window was found on this desktop".into()
+/// The display names of the apps that could not be concealed. A malformed or
+/// unknown desktop file falls back to the app id, which is still useful.
+fn missed_names(missed: &[(String, u32)], language: Language) -> String {
+    if missed.is_empty() {
+        return String::new();
+    }
+    let env = shisa_core::desktop::Env::current();
+    let mut names: Vec<String> = missed
+        .iter()
+        .map(|(app, _)| shisa_core::desktop::display_name(app, &env))
+        .collect();
+    names.sort();
+    names.dedup();
+    let shown = names.len().min(3);
+    let mut text = names[..shown].join(match language {
+        Language::ZhCn => "、",
+        Language::En => ", ",
+    });
+    if names.len() > shown {
+        let rest = names.len() - shown;
+        text.push_str(&match language {
+            Language::ZhCn => format!(" 等 {rest} 个应用"),
+            Language::En => format!(" and {rest} more"),
+        });
+    }
+    text
+}
+
+fn lock_summary(
+    report: Option<&WindowReport>,
+    language: Language,
+    hint: bool,
+    names: &str,
+) -> String {
+    let mut message = match (report, language) {
+        (Some(report), Language::ZhCn) => {
+            if report.matched == 0 {
+                "启动已上锁，当前桌面未匹配到受保护窗口".into()
+            } else if !report.missed.is_empty() && !names.is_empty() {
+                format!(
+                    "启动已上锁，已收起 {}/{} 个受保护窗口，未确认：{names}",
+                    report.hidden, report.matched
+                )
+            } else if report.missed.is_empty() && report.matched == report.hidden {
+                format!("启动已上锁，已收起 {} 个受保护窗口", report.hidden)
+            } else {
+                "已执行启动上锁，窗口状态未确认".into()
+            }
         }
-        (Some((matched, hidden)), Language::ZhCn) if matched == hidden => {
-            format!("启动已上锁，已收起 {hidden} 个受保护窗口")
+        (Some(report), Language::En) => {
+            if report.matched == 0 {
+                "Locked, but no protected window was found on this desktop".into()
+            } else if !report.missed.is_empty() && !names.is_empty() {
+                format!(
+                    "Locked and hid {} of {} protected windows. Not confirmed: {names}",
+                    report.hidden, report.matched
+                )
+            } else if report.missed.is_empty() && report.matched == report.hidden {
+                match report.hidden {
+                    1 => "Locked and hid 1 protected window".into(),
+                    hidden => format!("Locked and hid {hidden} protected windows"),
+                }
+            } else {
+                "Lock applied, but the window state was not confirmed".into()
+            }
         }
-        (Some((matched, hidden)), Language::En) if matched == hidden => match hidden {
-            1 => "Locked and hid 1 protected window".into(),
-            hidden => format!("Locked and hid {hidden} protected windows"),
-        },
-        (_, Language::ZhCn) => "已执行启动上锁，窗口状态未确认".into(),
-        (_, Language::En) => "Lock applied, but the window state was not confirmed".into(),
+        (None, Language::ZhCn) => "已执行启动上锁，窗口状态未确认".into(),
+        (None, Language::En) => "Lock applied, but the window state was not confirmed".into(),
+    };
+    // Only a lock that actually concealed something raises the notification
+    // concern. The hint tells the owner what the lock does not cover, so it
+    // belongs next to the result rather than only in the documentation.
+    if hint && report.is_some_and(|report| report.hidden > 0) {
+        message.push_str(match language {
+            Language::ZhCn => {
+                "\n建议开启勿扰：受保护应用的通知仍会弹出，通知历史也能打开。"
+            }
+            Language::En => {
+                "\nConsider Do Not Disturb: protected apps' notifications still appear and their history stays accessible."
+            }
+        });
+    }
+    message
+}
+
+fn notify_lock(
+    handle: &Handle<TrayState>,
+    message: &str,
+    restore: bool,
+    timeout_ms: i32,
+    last_notification: &AtomicU32,
+) {
+    info!("{message}");
+    let _ = handle.update(|tray| tray.last_lock = Some(message.to_string()));
+    let action = restore.then(|| text(i18n::current(), "恢复窗口", "Restore windows"));
+    let icon = if restore {
+        LOCKED_ICON
+    } else {
+        "shisa-tray-symbolic"
+    };
+    // Replace the previous lock result instead of stacking notifications.
+    // The returned id becomes the only one whose action can open the panel.
+    let replaces = last_notification.load(Ordering::Relaxed);
+    if let Some(id) = notify(message, action, timeout_ms, icon, replaces) {
+        last_notification.store(id, Ordering::Relaxed);
+    } else {
+        last_notification.store(0, Ordering::Relaxed);
     }
 }
 
-fn notify_lock(handle: &Handle<TrayState>, message: &str) {
-    info!("{message}");
-    let _ = handle.update(|tray| tray.last_lock = Some(message.to_string()));
-    notify(message);
-}
-
-fn notify(message: &str) {
+fn notify(
+    message: &str,
+    action: Option<&str>,
+    timeout_ms: i32,
+    icon: &str,
+    replaces_id: u32,
+) -> Option<u32> {
     let result = (|| -> zbus::Result<u32> {
         let conn = Connection::session()?;
         let proxy = Proxy::new(
             &conn,
-            "org.freedesktop.Notifications",
+            NOTIFY_SERVICE,
             "/org/freedesktop/Notifications",
-            "org.freedesktop.Notifications",
+            NOTIFY_SERVICE,
         )?;
+        let actions = match action {
+            Some(label) => vec!["restore".to_string(), label.to_string()],
+            None => Vec::new(),
+        };
         let hints = HashMap::<String, zbus::zvariant::Value>::new();
-        proxy.call(
+        let id = proxy.call(
             "Notify",
             &(
                 "Shisa",
-                0u32,
-                "shisa-tray-symbolic",
+                replaces_id,
+                icon,
                 "Shisa",
                 message,
-                Vec::<String>::new(),
+                actions,
                 hints,
-                NOTIFY_TIMEOUT_MS,
+                timeout_ms,
             ),
-        )
+        )?;
+        Ok(id)
     })();
-    if let Err(e) = result {
-        warn!("lock notification: {e}");
+    match result {
+        Ok(id) => Some(id),
+        Err(e) => {
+            warn!("lock notification: {e}");
+            None
+        }
+    }
+}
+
+/// Act on the "Restore windows" button of the lock notification. Only the
+/// newest notification is remembered, and a new lock replaces that one.
+fn watch_notification_actions(actions: Sender<Action>, last: Arc<AtomicU32>) {
+    loop {
+        let Ok(conn) = Connection::session() else {
+            thread::sleep(Duration::from_secs(2));
+            continue;
+        };
+        let rule = MatchRule::builder()
+            .msg_type(Type::Signal)
+            .sender(NOTIFY_SERVICE)
+            .and_then(|rule| rule.interface(NOTIFY_SERVICE))
+            .and_then(|rule| rule.member("ActionInvoked"))
+            .map(|rule| rule.build());
+        let Ok(rule) = rule else {
+            return;
+        };
+        let Ok(mut signals) = MessageIterator::for_match_rule(rule, &conn, None) else {
+            thread::sleep(Duration::from_secs(2));
+            continue;
+        };
+        for message in &mut signals {
+            let Ok(message) = message else { break };
+            let Ok((id, key)) = message.body().deserialize::<(u32, String)>() else {
+                continue;
+            };
+            if id != 0 && id == last.load(Ordering::Relaxed) && key == "restore" {
+                // Only clear the slot if no newer notification took it while
+                // this action was in flight.
+                let _ = last.compare_exchange(id, 0, Ordering::Relaxed, Ordering::Relaxed);
+                let _ = actions.send(Action::OpenRestore);
+            }
+        }
+        thread::sleep(Duration::from_secs(1));
+    }
+}
+
+/// Plasma's effective Do Not Disturb state, read from the notification
+/// service. `None` means the property is absent, the service is not running,
+/// or the session bus is unavailable.
+fn do_not_disturb() -> Option<bool> {
+    // A hung plasmashell can still own the name, so the property read gets a
+    // short timeout instead of the connection's default 25 seconds. The lock
+    // notification must not wait on a desktop that stopped answering.
+    let conn = zbus::blocking::connection::Builder::session()
+        .ok()?
+        .method_timeout(Duration::from_millis(750))
+        .build()
+        .ok()?;
+    // Reading the property can activate the notification service and block
+    // when plasmashell is not running. The name check keeps a lock from
+    // waiting on that.
+    if !name_has_owner(&conn, NOTIFY_SERVICE) {
+        return None;
+    }
+    let reply = conn
+        .call_method(
+            Some(NOTIFY_SERVICE),
+            "/org/freedesktop/Notifications",
+            Some("org.freedesktop.DBus.Properties"),
+            "Get",
+            &(NOTIFY_SERVICE, "Inhibited"),
+        )
+        .ok()?;
+    let value = reply
+        .body()
+        .deserialize::<zbus::zvariant::OwnedValue>()
+        .ok()?;
+    bool::try_from(value).ok()
+}
+
+/// Whether to add the Do Not Disturb reminder. A known false is worth saying
+/// on every lock. An unknown state is Plasma-specific, so remind once per
+/// session instead of on every lock.
+fn should_hint_dnd(shown: &AtomicBool) -> bool {
+    match do_not_disturb() {
+        Some(true) => false,
+        Some(false) => true,
+        None => !shown.swap(true, Ordering::Relaxed),
     }
 }
 
@@ -709,11 +940,17 @@ fn restore_window(app: &str, gate: &Mutex<Option<window::Gate>>) {
         Some(allowed.iter().any(|id| id == app) && gate.restore(&protected, &allowed, app))
     })();
     if confirmed != Some(true) {
-        notify(text(
-            i18n::current(),
-            "窗口恢复未确认",
-            "Window restore was not confirmed",
-        ));
+        notify(
+            text(
+                i18n::current(),
+                "窗口恢复未确认",
+                "Window restore was not confirmed",
+            ),
+            None,
+            NOTIFY_PROBLEM_TIMEOUT_MS,
+            "shisa-tray-symbolic",
+            0,
+        );
     }
 }
 
@@ -878,22 +1115,73 @@ mod tests {
     }
 
     #[test]
-    fn lock_feedback_requires_all_matched_windows_to_be_concealed() {
-        assert!(lock_summary(Some((0, 0)), Language::ZhCn).contains("未匹配"));
-        assert!(lock_summary(Some((2, 2)), Language::ZhCn).contains("已收起 2"));
-        assert_eq!(
-            lock_summary(Some((2, 1)), Language::ZhCn),
-            lock_summary(None, Language::ZhCn)
-        );
-        assert!(lock_summary(None, Language::ZhCn).contains("未确认"));
+    fn the_tray_icon_shows_a_lock_while_windows_are_hidden() {
+        let (actions, _requests) = mpsc::channel();
+        let mut tray = TrayState {
+            hidden_windows: Default::default(),
+            protected_count: 1,
+            last_lock: None,
+            offline: false,
+            language: Language::ZhCn,
+            actions,
+        };
+        assert_eq!(tray.icon_name(), "shisa-tray-symbolic");
+        tray.hidden_windows = ((1, 1), HashMap::from([("org.kde.kate".into(), 2)]));
+        assert_eq!(tray.icon_name(), LOCKED_ICON);
+        tray.offline = true;
+        assert_eq!(tray.icon_name(), OFFLINE_ICON);
+    }
 
-        assert!(lock_summary(Some((0, 0)), Language::En).contains("no protected window"));
-        assert!(lock_summary(Some((2, 2)), Language::En).contains("hid 2"));
-        assert_eq!(
-            lock_summary(Some((2, 1)), Language::En),
-            lock_summary(None, Language::En)
+    fn report(matched: u32, hidden: u32, missed: &[(&str, u32)]) -> WindowReport {
+        WindowReport {
+            matched,
+            hidden,
+            missed: missed
+                .iter()
+                .map(|(app, count)| ((*app).to_string(), *count))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn lock_feedback_requires_all_matched_windows_to_be_concealed() {
+        let none = report(0, 0, &[]);
+        let full = report(2, 2, &[]);
+        let partial = report(3, 2, &[("org.kde.kate", 1)]);
+        assert!(lock_summary(Some(&none), Language::ZhCn, false, "").contains("未匹配"));
+        assert!(lock_summary(Some(&full), Language::ZhCn, false, "").contains("已收起 2"));
+        assert!(
+            lock_summary(Some(&partial), Language::ZhCn, false, "app.one")
+                .contains("未确认：app.one")
         );
-        assert!(lock_summary(None, Language::En).contains("not confirmed"));
+        assert_eq!(
+            lock_summary(Some(&report(2, 1, &[])), Language::ZhCn, false, ""),
+            lock_summary(None, Language::ZhCn, false, "")
+        );
+        assert!(lock_summary(None, Language::ZhCn, false, "").contains("未确认"));
+
+        assert!(lock_summary(Some(&none), Language::En, false, "").contains("no protected window"));
+        assert!(lock_summary(Some(&full), Language::En, false, "").contains("hid 2"));
+        assert!(
+            lock_summary(Some(&partial), Language::En, false, "app.one")
+                .contains("Not confirmed: app.one")
+        );
+        assert_eq!(
+            lock_summary(Some(&report(2, 1, &[])), Language::En, false, ""),
+            lock_summary(None, Language::En, false, "")
+        );
+        assert!(lock_summary(None, Language::En, false, "").contains("not confirmed"));
+    }
+
+    #[test]
+    fn the_dnd_hint_follows_a_lock_that_hid_something() {
+        let full = report(2, 2, &[]);
+        assert!(lock_summary(Some(&full), Language::ZhCn, true, "").contains("勿扰"));
+        assert!(!lock_summary(Some(&full), Language::ZhCn, false, "").contains("勿扰"));
+        // Nothing was hidden, so notifications from hidden apps are not the
+        // concern this hint addresses.
+        let none = report(0, 0, &[]);
+        assert!(!lock_summary(Some(&none), Language::ZhCn, true, "").contains("勿扰"));
     }
 
     #[test]

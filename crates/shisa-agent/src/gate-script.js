@@ -137,6 +137,23 @@ function reconcile(foreground) {
   const concealed = targets.filter(
     (window) => looksHidden(window) && window.skipSwitcher && window.skipPager,
   );
+  // Apps with a window the script could not conceal. The agent names them in
+  // a lock result, so the user learns which app stayed visible instead of
+  // only that the total did not match.
+  const missed = new Map();
+  for (const window of targets) {
+    if (looksHidden(window) && window.skipSwitcher && window.skipPager)
+      continue;
+    const app = appOf(window);
+    // The snapshot is line-based, so an id that would split a line must not
+    // reach it. reportHiddenWindows applies the same guard.
+    if (app && !/[\x00\r\n]/.test(app))
+      missed.set(app, (missed.get(app) || 0) + 1);
+  }
+  const missedSnapshot = Array.from(
+    missed,
+    ([app, count]) => count + "\t" + app,
+  ).join("\n");
   if (
     foreground &&
     ALLOWED.includes(foreground) &&
@@ -155,6 +172,7 @@ function reconcile(foreground) {
     String(generation),
     String(targets.length),
     String(concealed.length),
+    missedSnapshot,
     function () {},
   );
   reportHiddenWindows();
