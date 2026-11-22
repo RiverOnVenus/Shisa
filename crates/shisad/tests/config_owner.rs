@@ -128,7 +128,8 @@ fn a_root_owned_config_is_loaded() {
     );
     let (dir, user) = config_dir("accepted");
     write_config(&dir, &user, 0o644);
-    let policy = load::load(&FakeMarker, &dir, &Policy::default(), &mut Marks::new());
+    let (policy, failed) = load::load(&FakeMarker, &dir, &Policy::default(), &mut Marks::new());
+    assert!(!failed);
     let uid = shisa_core::users::uid(&user).unwrap();
     let loaded = policy
         .users
@@ -146,7 +147,8 @@ fn a_group_writable_config_keeps_the_previous_policy() {
     let (dir, user) = config_dir("file-mode");
     write_config(&dir, &user, 0o664);
     let (old, uid) = previous_policy(&user);
-    let policy = load::load(&FakeMarker, &dir, &old, &mut Marks::new());
+    let (policy, failed) = load::load(&FakeMarker, &dir, &old, &mut Marks::new());
+    assert!(failed);
     let kept = policy
         .users
         .get(&uid)
@@ -164,7 +166,8 @@ fn a_group_writable_directory_keeps_the_previous_policy() {
     write_config(&dir, &user, 0o644);
     fs::set_permissions(&dir, fs::Permissions::from_mode(0o775)).unwrap();
     let (old, uid) = previous_policy(&user);
-    let policy = load::load(&FakeMarker, &dir, &old, &mut Marks::new());
+    let (policy, failed) = load::load(&FakeMarker, &dir, &old, &mut Marks::new());
+    assert!(failed);
     let kept = policy
         .users
         .get(&uid)

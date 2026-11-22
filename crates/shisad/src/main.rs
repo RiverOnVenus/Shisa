@@ -211,7 +211,12 @@ fn reload(gate: &Gate, dir: &Path, state: &Mutex<State>, marks: &mut Marks, diag
     let old = state.lock().unwrap().policy().clone();
     // New marks are placed before the policy that refers to them is
     // installed. Events from them in between are allowed.
-    let new = load::load(gate, dir, &old, marks);
+    let (new, config_failed) = load::load(gate, dir, &old, marks);
+    if config_failed {
+        diag.note_config_failure();
+    } else {
+        diag.clear_config_failure();
+    }
     note_marks(diag, &new);
     let keep = new.files();
     state.lock().unwrap().set_policy(new);
@@ -531,7 +536,13 @@ fn main() {
     let mut marks = HashMap::new();
     // The window's diagnostics card reads this, never the fanotify loop.
     let diag = Arc::new(diag::Diag::new(opts.config_dir.clone()));
-    let policy = load::load(&gate, &opts.config_dir, &Default::default(), &mut marks);
+    let (policy, config_failed) =
+        load::load(&gate, &opts.config_dir, &Default::default(), &mut marks);
+    if config_failed {
+        diag.note_config_failure();
+    } else {
+        diag.clear_config_failure();
+    }
     note_marks(&diag, &policy);
     let state = Arc::new(Mutex::new(State::default()));
     state.lock().unwrap().set_policy(policy);
