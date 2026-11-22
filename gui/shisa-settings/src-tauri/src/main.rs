@@ -806,10 +806,17 @@ fn main() {
     let lock_bus = bus.clone();
     tauri::Builder::default()
         // A second start brings the existing window forward instead of opening
-        // another one.
+        // another one. The plugin calls back from its D-Bus thread, and GTK
+        // may only be used from the main thread (the CSD shadow creates a CSS
+        // provider), so window creation is scheduled there.
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
-            if let Err(error) = open_window(app, args.iter().any(|arg| arg == "--restore-windows"))
-            {
+            let handle = app.clone();
+            let restore = args.iter().any(|arg| arg == "--restore-windows");
+            if let Err(error) = app.run_on_main_thread(move || {
+                if let Err(error) = open_window(&handle, restore) {
+                    eprintln!("Shisa: {error}");
+                }
+            }) {
                 eprintln!("Shisa: {error}");
             }
         }))
