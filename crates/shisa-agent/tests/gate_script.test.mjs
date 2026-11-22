@@ -94,10 +94,35 @@ test("a locked app's window is concealed in every surface", () => {
   const checked = methodCalls(env, "WindowsChecked");
   assert.equal(checked.length, 1);
   assert.deepEqual(checked[0].slice(4, 7), ["1", "1", "1"]);
+  assert.equal(checked[0][7], "", "a fully concealed window has no missed app");
 
   const hidden = methodCalls(env, "HiddenWindows");
   assert.equal(hidden.length, 1);
   assert.equal(hidden[0][6], "1\torg.kde.kate");
+});
+
+test("a window the script could not conceal is named in the report", () => {
+  const window = makeWindow("org.kde.kate", "kate");
+  // KWin accepted the hide() calls but did not give this window the switcher
+  // flag, so it is not concealed even though it looks hidden.
+  Object.defineProperty(window, "skipSwitcher", {
+    get: () => false,
+    set: () => {},
+  });
+  const env = boot({ locked: ["org.kde.kate"], windows: [window] });
+  const checked = methodCalls(env, "WindowsChecked");
+  assert.deepEqual(checked[0].slice(4, 8), ["1", "1", "0", "1\torg.kde.kate"]);
+});
+
+test("an app id that would split the report line is left out", () => {
+  const window = makeWindow("a\nb", "a\nb");
+  Object.defineProperty(window, "skipSwitcher", {
+    get: () => false,
+    set: () => {},
+  });
+  const env = boot({ locked: ["a\nb"], windows: [window] });
+  const checked = methodCalls(env, "WindowsChecked");
+  assert.deepEqual(checked[0].slice(4, 8), ["1", "1", "0", ""]);
 });
 
 test("an allowed app is left visible", () => {

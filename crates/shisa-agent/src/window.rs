@@ -91,9 +91,29 @@ struct Inventory {
     counts: HashMap<String, u32>,
 }
 
+/// What one script-generation reported about the protected windows it found.
+/// `missed` names the apps that still have at least one window the script
+/// could not conceal, so a lock result can say which app needs attention
+/// instead of only how many windows are unconfirmed.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WindowReport {
+    pub matched: u32,
+    pub hidden: u32,
+    /// App id to the number of windows that stayed visible, sorted by id.
+    pub missed: Vec<(String, u32)>,
+}
+
+#[derive(Default)]
+struct Check {
+    generation: u64,
+    matched: u32,
+    hidden: u32,
+    missed: HashMap<String, u32>,
+}
+
 #[derive(Default)]
 pub struct Ready {
-    generation: Mutex<(u64, u32, u32)>,
+    check: Mutex<Check>,
     /// The newest generation the agent published. A report above it cannot
     /// come from the script this agent loaded.
     expected: AtomicU64,
@@ -111,32 +131,57 @@ impl Ready {
         self.expected.store(generation, Ordering::SeqCst);
     }
 
-    fn note(&self, generation: u64, matched: u32, hidden: u32) {
+    fn note(&self, generation: u64, matched: u32, hidden: u32, missed: HashMap<String, u32>) {
         if generation > self.expected.load(Ordering::SeqCst) {
             return;
         }
-        let mut current = self.generation.lock().unwrap();
-        if generation > current.0 {
-            *current = (generation, matched, hidden);
+        let mut current = self.check.lock().unwrap();
+        if generation > current.generation {
+            *current = Check {
+                generation,
+                matched,
+                hidden,
+                missed,
+            };
             self.changed.notify_all();
         }
     }
 
     fn wait(&self, generation: u64, timeout: Duration) -> bool {
-        let mut current = self.generation.lock().unwrap();
+        let mut current = self.check.lock().unwrap();
         let deadline = Instant::now() + timeout;
-        while current.0 < generation {
+        while current.generation < generation {
             let now = Instant::now();
             if now >= deadline {
                 return false;
             }
             let (guard, result) = self.changed.wait_timeout(current, deadline - now).unwrap();
             current = guard;
-            if result.timed_out() && current.0 < generation {
+            if result.timed_out() && current.generation < generation {
                 return false;
             }
         }
-        current.0 == generation
+        current.generation == generation
+    }
+
+    /// The report of one generation, if that script has checked. A later
+    /// generation's report does not stand in for a missing one.
+    fn report(&self, generation: u64) -> Option<WindowReport> {
+        let current = self.check.lock().unwrap();
+        if current.generation != generation {
+            return None;
+        }
+        let mut missed = current
+            .missed
+            .iter()
+            .map(|(app, count)| (app.clone(), *count))
+            .collect::<Vec<_>>();
+        missed.sort_by(|left, right| left.0.cmp(&right.0));
+        Some(WindowReport {
+            matched: current.matched,
+            hidden: current.hidden,
+            missed,
+        })
     }
 }
 
@@ -164,6 +209,18 @@ async fn from_kwin(conn: &AsyncConnection, hdr: &Header<'_>) -> bool {
         return false;
     };
     owner == sender.to_string()
+}
+
+/// The script reports one app per line as `<count>\t<app id>`. A malformed
+/// line is skipped: the window layer is best effort, and one bad entry must
+/// not discard the rest of the report.
+fn parse_counts(text: &str) -> HashMap<String, u32> {
+    text.lines()
+        .filter_map(|line| {
+            let (count, app) = line.split_once('\t')?;
+            Some((app.to_owned(), count.parse().ok()?))
+        })
+        .collect()
 }
 
 /// The script reports focus changes and its own generation once it has
@@ -262,6 +319,7 @@ impl WindowService {
         generation: &str,
         matched: &str,
         hidden: &str,
+        missed: &str,
         #[zbus(header)] hdr: Header<'_>,
         #[zbus(connection)] conn: &AsyncConnection,
     ) {
@@ -271,7 +329,8 @@ impl WindowService {
         if let (Ok(generation), Ok(matched), Ok(hidden)) =
             (generation.parse(), matched.parse(), hidden.parse())
         {
-            self.ready.note(generation, matched, hidden);
+            self.ready
+                .note(generation, matched, hidden, parse_counts(missed));
         }
     }
 
@@ -289,13 +348,7 @@ impl WindowService {
         let (Ok(generation), Ok(sequence)) = (generation.parse(), sequence.parse()) else {
             return;
         };
-        let counts = counts
-            .lines()
-            .filter_map(|line| {
-                let (count, app) = line.split_once('\t')?;
-                Some((app.to_owned(), count.parse().ok()?))
-            })
-            .collect::<HashMap<_, _>>();
+        let counts = parse_counts(counts);
         {
             let mut current = self.ready.inventory.lock().unwrap();
             if (generation, sequence) <= current.version {
@@ -392,14 +445,15 @@ impl Gate {
     }
 
     /// Match the windows to the protected apps and the apps whose windows
-    /// are allowed to show. A verification requests a fresh revision and returns
-    /// its matched and concealed window counts. Missing reports return None.
+    /// are allowed to show. A verification requests a fresh revision and
+    /// returns what the script found, including the apps it could not
+    /// conceal. Missing reports return None.
     pub fn sync(
         &mut self,
         protected: &[String],
         allowed: &[String],
         verify: bool,
-    ) -> Option<(u32, u32)> {
+    ) -> Option<WindowReport> {
         let mut protected = protected.to_vec();
         let mut allowed = allowed.to_vec();
         protected.sort();
@@ -460,8 +514,7 @@ impl Gate {
                     "window gate loaded"
                 );
                 self.loaded = Some((protected, allowed));
-                let report = *self.ready.generation.lock().unwrap();
-                return (report.0 == self.generation).then_some((report.1, report.2));
+                return self.ready.report(self.generation);
             }
             // KWin is not there, which is normal on other desktops. Ask
             // again on the next refresh in case it just started.
@@ -974,9 +1027,9 @@ mod tests {
         let handle = thread::spawn(move || waiter.wait(2, Duration::from_millis(500)));
         thread::sleep(Duration::from_millis(20));
         ready.expect(2);
-        ready.note(2, 3, 2);
-        ready.note(1, 0, 0);
-        assert_eq!(*ready.generation.lock().unwrap(), (2, 3, 2));
+        ready.note(2, 3, 2, HashMap::new());
+        ready.note(1, 0, 0, HashMap::new());
+        assert_eq!(ready.report(2).map(|r| (r.matched, r.hidden)), Some((3, 2)));
         assert!(!ready.wait(1, Duration::ZERO));
         assert!(handle.join().unwrap());
         assert!(ready.wait(2, Duration::from_millis(1)));
@@ -986,10 +1039,31 @@ mod tests {
     fn a_report_above_the_expected_generation_is_ignored() {
         let ready = Ready::new();
         ready.expect(5);
-        ready.note(u64::MAX, 0, 0);
-        assert_eq!(*ready.generation.lock().unwrap(), (0, 0, 0));
-        ready.note(5, 1, 1);
-        assert_eq!(*ready.generation.lock().unwrap(), (5, 1, 1));
+        ready.note(u64::MAX, 0, 0, HashMap::new());
+        assert!(ready.report(u64::MAX).is_none());
+        ready.note(5, 1, 1, HashMap::new());
+        assert_eq!(ready.report(5).map(|r| (r.matched, r.hidden)), Some((1, 1)));
+    }
+
+    #[test]
+    fn a_window_report_names_the_apps_that_stayed_visible() {
+        let ready = Ready::new();
+        ready.expect(3);
+        ready.note(
+            3,
+            3,
+            2,
+            HashMap::from([("org.kde.kate".into(), 1), ("org.kde.dolphin".into(), 2)]),
+        );
+        let report = ready.report(3).unwrap();
+        assert_eq!(report.matched, 3);
+        assert_eq!(report.hidden, 2);
+        assert_eq!(
+            report.missed,
+            vec![("org.kde.dolphin".into(), 2), ("org.kde.kate".into(), 1),]
+        );
+        // A check for another generation does not borrow this report.
+        assert!(ready.report(2).is_none());
     }
 
     #[test]
