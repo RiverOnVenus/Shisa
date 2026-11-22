@@ -48,6 +48,8 @@ On 2026-11-22, the local test package `shisa-0.1.3-1.1` was installed over the i
 
 On 2026-11-22, the local test package from the `audit/session-env-hardening` worktree was installed over 0.1.3-1.1 with `pacman -U`. `pacman -Qkk shisa` reported 0 changed files out of 49. The config modes stayed 0700/0600. `shisad.service` and `shisa-agent.service` were restarted, both active, and `Diagnostics` reported 0.1.3 with the configuration-failure timestamp at zero. The user verified the live settings checks.
 
+On 2026-11-22, local test packages 0.1.4-1.1 were built from the worktree and installed over 0.1.4-1.1 with `pacman -U`. `makepkg`'s `check()` passed the workspace, settings frontend, Tauri, and KWin script suites. `pacman -Qkk shisa` reported 0 changed files out of 52. `shisad.service` and `shisa-agent.service` were restarted, both active. The user verified the live notification, health-line, transient-scope, and empty-restore-panel flows.
+
 ## Dependency advisories
 
 On 2026-11-22, the two open Dependabot alerts were reviewed.

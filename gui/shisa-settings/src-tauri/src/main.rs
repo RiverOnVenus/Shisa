@@ -148,10 +148,18 @@ async fn agent_status() -> bool {
         .unwrap_or(false)
 }
 
-/// Open or focus the settings window from the restore panel.
+/// Open or focus the settings window from the restore panel. GTK and window
+/// creation must run on the main thread, and the command handler may not be
+/// there, so schedule the work and return.
 #[tauri::command]
-async fn open_settings(app: tauri::AppHandle) -> R<()> {
-    open_window(&app, false).map_err(|e| e.to_string())
+fn open_settings(app: tauri::AppHandle) -> R<()> {
+    let main = app.clone();
+    app.run_on_main_thread(move || {
+        if let Err(error) = open_window(&main, false) {
+            eprintln!("Shisa: {error}");
+        }
+    })
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]

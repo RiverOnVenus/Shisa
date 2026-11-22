@@ -34,6 +34,10 @@ const zh = {
   "agent.hint.on": "托盘和窗口隐藏由 shisa-agent 提供，窗口隐藏需要 KWin。",
   "agent.hint.off":
     "shisa-agent 没有运行，托盘和窗口隐藏都不可用。运行 systemctl --user start shisa-agent.service。",
+  "health.ok": "运行正常",
+  "health.daemonOff": "应用锁无响应",
+  "health.agentOff": "会话代理未运行",
+  "health.bothOff": "应用锁和会话代理都未运行",
   "dot.unlocked": "启动凭证有效",
   "dot.locked": "启动需认证",
 
@@ -215,6 +219,10 @@ const en = {
     "shisa-agent provides the tray and window hiding, which needs KWin.",
   "agent.hint.off":
     "shisa-agent is not running, so the tray and window hiding are unavailable. Run systemctl --user start shisa-agent.service.",
+  "health.ok": "Running normally",
+  "health.daemonOff": "App lock is not responding",
+  "health.agentOff": "Session agent is not running",
+  "health.bothOff": "Both services are down",
   "dot.unlocked": "Launch ticket valid",
   "dot.locked": "Authentication required to launch",
 
