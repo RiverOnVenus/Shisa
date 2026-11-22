@@ -15,7 +15,7 @@ Shisa is not a screen lock and not a user isolation tool.
 Download the x86_64 Arch package from [GitHub Releases](https://github.com/RiverOnVenus/Shisa/releases), or [build a local test package](docs/packaging.md#build-a-local-test-package), then install it and complete the initial setup:
 
 ```sh
-sudo pacman -U ./shisa-0.1.3-1-x86_64.pkg.tar.zst
+sudo pacman -U ./shisa-0.1.4-1-x86_64.pkg.tar.zst
 sudo passwd shisa-lock
 sudo systemctl enable --now shisad.service
 systemctl --user enable --now shisa-agent.service
