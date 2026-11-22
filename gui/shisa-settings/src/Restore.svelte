@@ -29,7 +29,27 @@
   let notice = $state("");
   let error = $state("");
   let list;
+  // A quiet reload is already reading. A second one would only paint the same
+  // snapshot twice.
+  let refreshing = false;
+  // Bumped by every read. A read that started earlier cannot put its
+  // pre-change snapshot back after a newer one finished.
+  let generation = 0;
+  // The panel keeps the desktop-entry index for a while. The daemon walks the
+  // application directories for every ListInstalled call, so a two-second
+  // poll must not repeat that work. A failed read waits less before retrying.
+  let installed = null;
+  let installedNextTry = 0;
+  const INSTALLED_AGE = 30_000;
+  const INSTALLED_RETRY = 5_000;
   const total = $derived(rows.reduce((sum, row) => sum + row.count, 0));
+  // Several desktop files can share one display name. Those rows show the id
+  // too, because the name alone would not tell them apart.
+  const nameCounts = $derived.by(() => {
+    const counts = new Map();
+    for (const row of rows) counts.set(row.name, (counts.get(row.name) ?? 0) + 1);
+    return counts;
+  });
 
   function theme(dark) {
     if (dark !== null) document.documentElement.dataset.theme = dark ? "dark" : "light";
@@ -39,36 +59,82 @@
     const unlisten = listen("color_scheme", (event) => theme(event.payload));
     invoke("color_scheme").then(theme).catch(() => {});
     load();
-    // The window can stay open while the tray, the CLI or a focus-loss
-    // relock changes what is hidden. A focus reload keeps the list honest.
-    const onFocus = () => {
-      if (!opening && !busyLock) load(false);
-    };
+    // The list can change while the panel stays open: a focus-loss hide can
+    // fire just after the panel took focus, and the tray or the CLI can
+    // restore or conceal an app. Poll quietly so the rows and their ticket
+    // hints stay honest. A focus reload covers a window that was hidden
+    // behind a dialog, and the minutes between polls.
+    const poll = setInterval(() => {
+      if (!document.hidden) void reload();
+    }, 2000);
+    const onFocus = () => void reload();
     window.addEventListener("focus", onFocus);
     return () => {
       unlisten.then((stop) => stop()).catch(() => {});
+      clearInterval(poll);
       window.removeEventListener("focus", onFocus);
     };
   });
+
+  /// Reload behind the user's back. It must not move focus, clear the notice
+  /// from the last action or replace a shown error with a transient read
+  /// failure.
+  async function reload() {
+    if (loading || refreshing || opening || busyLock) return;
+    refreshing = true;
+    try {
+      await load(false, true);
+    } finally {
+      refreshing = false;
+    }
+  }
 
   async function focusFirst() {
     await tick();
     list?.querySelector("button:not(:disabled)")?.focus();
   }
 
-  async function load(focus = true) {
-    error = "";
-    agentMissing = false;
+  /// Names and icons for the hidden apps. A failed read keeps the last good
+  /// index, and a missing entry falls back to the app id.
+  async function installedApps() {
+    if (Date.now() < installedNextTry) return installed;
     try {
-      const [counts, installed, protectedRows] = await Promise.all([
+      const rows = await invoke("list_installed");
+      installed = new Map(rows.map(([id, name, icon]) => [id, { name, icon }]));
+      installedNextTry = Date.now() + INSTALLED_AGE;
+    } catch {
+      // Keep the previous index, or none on the first read, and do not
+      // repeat the daemon's directory walk on every poll.
+      installedNextTry = Date.now() + INSTALLED_RETRY;
+    }
+    return installed;
+  }
+
+  /// `background` marks a refresh the user did not ask for. It keeps the
+  /// notice from the last action, clears a read error once a read succeeds,
+  /// and leaves the last good rows and names in place when the daemon cannot
+  /// answer but the agent still does.
+  async function load(focus = true, background = false) {
+    const gen = ++generation;
+    if (!background) error = "";
+    try {
+      // A failed daemon read is `null`, not an empty list: the rows then keep
+      // the names and ticket hints they already showed.
+      const [counts, apps, protectedRows] = await Promise.all([
         invoke("hidden_apps"),
-        invoke("list_installed").catch(() => []),
+        installedApps(),
         invoke("list_apps").catch(() => null),
       ]);
-      const apps = new Map(installed.map(([id, name, icon]) => [id, { name, icon }]));
-      hasProtected = protectedRows ? protectedRows.length > 0 : null;
+      // A newer read or a user action started while this one was in flight.
+      // Its own reload knows the newer state, so this one is dropped.
+      if (gen !== generation || (background && (opening || busyLock))) return;
+      agentMissing = false;
+      if (background && error === t("restore.error.read")) error = "";
+      const previous = new Map(rows.map((row) => [row.id, row]));
+      if (protectedRows) hasProtected = protectedRows.length > 0;
+      else if (!background) hasProtected = null;
       // A valid ticket restores the window without a prompt. When the daemon
-      // cannot answer, the hint stays unknown rather than guessed.
+      // cannot answer, the hint stays as it was rather than guessed.
       const ticketed = protectedRows
         ? new Set(
             protectedRows
@@ -78,13 +144,17 @@
         : null;
       rows = Object.entries(counts)
         .filter(([, count]) => count > 0)
-        .map(([id, count]) => ({
-          id,
-          count,
-          name: id,
-          needsAuth: ticketed ? !ticketed.has(id) : null,
-          ...apps.get(id),
-        }))
+        .map(([id, count]) => {
+          const app = apps?.get(id);
+          const old = previous.get(id);
+          return {
+            id,
+            count,
+            name: app?.name ?? old?.name ?? id,
+            icon: app?.icon ?? old?.icon,
+            needsAuth: ticketed ? !ticketed.has(id) : (old?.needsAuth ?? null),
+          };
+        })
         .sort((left, right) => left.name.localeCompare(right.name));
       for (const row of rows) {
         if (row.icon && !(row.icon in icons)) {
@@ -96,13 +166,25 @@
     } catch {
       // A missing agent is not a read error: it explains why the tray and
       // window hiding are unavailable and offers the command that fixes it.
-      agentMissing = !(await invoke("agent_status").catch(() => false));
+      const missing = !(await invoke("agent_status").catch(() => false));
+      if (gen !== generation) return;
+      if (!missing && background) return;
+      agentMissing = missing;
       hasProtected = null;
       rows = [];
-      if (!agentMissing) error = t("restore.error.read");
+      if (agentMissing) {
+        // The missing-agent screen replaces the read-error banner, which
+        // would otherwise stay on screen below it.
+        if (error === t("restore.error.read")) error = "";
+      } else {
+        error = t("restore.error.read");
+      }
     } finally {
-      loading = false;
-      if (focus) await focusFirst();
+      // The newest read owns the spinner and the focus.
+      if (gen === generation) {
+        loading = false;
+        if (focus) await focusFirst();
+      }
     }
   }
 
@@ -273,6 +355,9 @@
               {/if}
               <span class="who">
                 <span class="name">{row.name}</span>
+                {#if (nameCounts.get(row.name) ?? 0) > 1 && row.id !== row.name}
+                  <span class="sub id">{row.id}</span>
+                {/if}
                 <span class="sub">
                   {opening === row.id
                     ? t("restore.waiting")
@@ -360,6 +445,13 @@
 
   .row:disabled {
     cursor: wait;
+  }
+
+  /* the app id, shown only when two apps share a display name */
+  .row .id {
+    font-family: var(--code);
+    font-size: 11px;
+    color: var(--muted);
   }
 
   .chev {
