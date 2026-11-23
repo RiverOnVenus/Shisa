@@ -124,6 +124,9 @@ impl PtyAgent {
             return PtyAgent(None);
         }
         unsafe { libc::close(tty) };
+        // The absolute path keeps a user-writable directory earlier in PATH
+        // from supplying the authentication helper. Arch, Fedora, and Debian
+        // install polkit's helper at this path.
         let child = process::Command::new("/usr/bin/pkttyagent")
             .arg("--process")
             .arg(process::id().to_string())

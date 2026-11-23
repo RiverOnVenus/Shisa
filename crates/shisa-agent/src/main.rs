@@ -1033,6 +1033,10 @@ fn select_display_vars(
 }
 
 fn open_settings(gate: &Arc<Mutex<Option<window::Gate>>>, restore: bool) {
+    // The absolute settings path keeps a user-writable directory earlier in
+    // PATH from supplying the launcher. SHISA_SETTINGS_BIN overrides it for
+    // development. Arch, Fedora, and Debian install the settings binary and
+    // systemd-run at these paths.
     let bin = env::var_os("SHISA_SETTINGS_BIN")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| "/usr/bin/shisa-settings".into());
