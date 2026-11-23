@@ -1,8 +1,9 @@
 name: Build Arch package
 
+# Releases use the packages workflow, which builds all three distributions
+# and attaches their packages together. This workflow stays as a manual
+# Arch-only build for testing the PKGBUILD in isolation.
 on:
-  release:
-    types: [published]
   workflow_dispatch:
 
 permissions:
@@ -11,21 +12,15 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Prepare package sources
-        env:
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
           input="$RUNNER_TEMP/shisa-arch-input"
-          if [[ "$GITHUB_EVENT_NAME" == release ]]; then
-            [[ $(git rev-parse HEAD) == "$GITHUB_SHA" ]]
-            packaging/arch/prepare-build.sh --release "$RELEASE_TAG" "$input"
-          else
-            packaging/arch/prepare-build.sh --worktree "$input"
-          fi
+          packaging/arch/prepare-build.sh --worktree "$input"
       - name: Build and check package in Arch Linux
         run: |
           out="$RUNNER_TEMP/shisa-arch-output"
@@ -44,46 +39,3 @@ jobs:
           name: shisa-arch-x86_64
           path: ${{ runner.temp }}/shisa-arch-output/*.pkg.tar.zst
           if-no-files-found: error
-
-  upload:
-    if: github.event_name == 'release'
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    concurrency:
-      group: shisa-arch-release-${{ github.event.release.tag_name }}
-    steps:
-      - uses: actions/download-artifact@v8
-        with:
-          name: shisa-arch-x86_64
-          path: package
-      - name: Attach package to the release
-        working-directory: package
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
-        run: |
-          shopt -s nullglob
-          packages=(shisa-*.pkg.tar.zst)
-          [[ ${#packages[@]} == 1 ]]
-          package=${packages[0]}
-          version=${RELEASE_TAG#v}
-          [[ $package == "shisa-$version-"*"-x86_64.pkg.tar.zst" ]]
-          sha256sum "$package" > SHA256SUMS
-
-          existing=$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
-            --json assets --jq '.assets[].name')
-          assets=()
-          for asset in "$package" SHA256SUMS; do
-            if grep -Fxq -- "$asset" <<< "$existing"; then
-              gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
-                --pattern "$asset" --output "$RUNNER_TEMP/$asset"
-              cmp "$asset" "$RUNNER_TEMP/$asset"
-            else
-              assets+=("$asset")
-            fi
-          done
-          if (( ${#assets[@]} )); then
-            gh release upload "$RELEASE_TAG" "${assets[@]}" --repo "$GITHUB_REPOSITORY"
-          fi

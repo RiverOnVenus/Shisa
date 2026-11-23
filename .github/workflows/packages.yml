@@ -1,0 +1,240 @@
+name: Build packages
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: gui/shisa-settings
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: gui/shisa-settings/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Settings window tests
+        run: npm test
+      - name: Build the settings frontend
+        run: npm run build
+      - name: KWin script tests
+        working-directory: .
+        run: node --test crates/shisa-agent/tests/*.test.mjs
+      - uses: actions/upload-artifact@v7
+        with:
+          name: shisa-frontend-dist
+          path: gui/shisa-settings/dist
+          if-no-files-found: error
+
+  arch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Prepare package sources
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          input="$RUNNER_TEMP/shisa-arch-input"
+          if [[ "$GITHUB_EVENT_NAME" == release ]]; then
+            [[ $(git rev-parse HEAD) == "$GITHUB_SHA" ]]
+            packaging/arch/prepare-build.sh --release "$RELEASE_TAG" "$input"
+          else
+            packaging/arch/prepare-build.sh --worktree "$input"
+          fi
+      - name: Build and check package in Arch Linux
+        run: |
+          out="$RUNNER_TEMP/shisa-arch-output"
+          mkdir "$out"
+          docker run --rm \
+            -e MAKEFLAGS="-j$(nproc)" \
+            -e CARGO_BUILD_JOBS="$(nproc)" \
+            -e PACKAGER="Shisa GitHub Actions" \
+            -v "$RUNNER_TEMP/shisa-arch-input:/input:ro" \
+            -v "$PWD/.github/scripts/build-arch.sh:/build-arch.sh:ro" \
+            -v "$out:/out" \
+            archlinux:base-devel bash /build-arch.sh
+          find "$out" -mindepth 1 ! -type f -delete
+      - uses: actions/upload-artifact@v7
+        with:
+          name: shisa-arch-x86_64
+          path: ${{ runner.temp }}/shisa-arch-output/*.pkg.tar.zst
+          if-no-files-found: error
+
+  fedora:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    needs: frontend
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          name: shisa-frontend-dist
+          path: gui/shisa-settings/dist
+      - name: Set the package version
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == release ]]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version=$(sed -n 's/^pkgver=//p' packaging/arch/PKGBUILD)
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+      - name: Build and check in Fedora
+        run: |
+          out="$RUNNER_TEMP/shisa-fedora-output"
+          mkdir -p "$out/bin"
+          docker run --rm \
+            -e CARGO_BUILD_JOBS="$(nproc)" \
+            -e HOST_UID="$(id -u)" \
+            -e HOST_GID="$(id -g)" \
+            -v "$PWD:/src:ro" \
+            -v "$PWD/.github/scripts/build-fedora.sh:/build-fedora.sh:ro" \
+            -v "$out:/out" \
+            fedora:latest bash /build-fedora.sh
+      - name: Build the RPM
+        run: |
+          out="$RUNNER_TEMP/shisa-fedora-output"
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
+            -e VERSION="$VERSION" \
+            -e ARCH=amd64 \
+            -e BINDIR=/out/bin \
+            -v "$PWD:/src:ro" \
+            -v "$out:/out" \
+            -w /src \
+            goreleaser/nfpm:v2.49.0 package --config packaging/nfpm.yaml --packager rpm --target /out
+          find "$out" -mindepth 1 -maxdepth 1 ! -name '*.rpm' -exec rm -rf {} +
+      - uses: actions/upload-artifact@v7
+        with:
+          name: shisa-fedora-x86_64
+          path: ${{ runner.temp }}/shisa-fedora-output/*.rpm
+          if-no-files-found: error
+
+  debian:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    needs: frontend
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          name: shisa-frontend-dist
+          path: gui/shisa-settings/dist
+      - name: Set the package version
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == release ]]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version=$(sed -n 's/^pkgver=//p' packaging/arch/PKGBUILD)
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+      - name: Build and check in Debian
+        run: |
+          out="$RUNNER_TEMP/shisa-debian-output"
+          mkdir -p "$out/bin"
+          docker run --rm \
+            -e CARGO_BUILD_JOBS="$(nproc)" \
+            -e HOST_UID="$(id -u)" \
+            -e HOST_GID="$(id -g)" \
+            -v "$PWD:/src:ro" \
+            -v "$PWD/.github/scripts/build-debian.sh:/build-debian.sh:ro" \
+            -v "$out:/out" \
+            debian:12 bash /build-debian.sh
+      - name: Build the DEB
+        run: |
+          out="$RUNNER_TEMP/shisa-debian-output"
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
+            -e VERSION="$VERSION" \
+            -e ARCH=amd64 \
+            -e BINDIR=/out/bin \
+            -v "$PWD:/src:ro" \
+            -v "$out:/out" \
+            -w /src \
+            goreleaser/nfpm:v2.49.0 package --config packaging/nfpm.yaml --packager deb --target /out
+          find "$out" -mindepth 1 -maxdepth 1 ! -name '*.deb' -exec rm -rf {} +
+      - uses: actions/upload-artifact@v7
+        with:
+          name: shisa-debian-x86_64
+          path: ${{ runner.temp }}/shisa-debian-output/*.deb
+          if-no-files-found: error
+
+  upload:
+    # Run even when a distro build failed, so a verified Arch package is not
+    # dropped from the release because a new distro job broke. The job still
+    # fails at the end when fewer than three packages are present.
+    if: always() && github.event_name == 'release'
+    needs: [arch, fedora, debian]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: shisa-packages-${{ github.event.release.tag_name }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: shisa-*-x86_64
+          path: packages
+          merge-multiple: true
+      - name: Attach packages to the release
+        working-directory: packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          packages=(*.pkg.tar.zst *.rpm *.deb)
+          version="${RELEASE_TAG#v}"
+          if (( ${#packages[@]} == 0 )); then
+            echo "::error::no package artifacts were produced"
+            exit 1
+          fi
+          for package in "${packages[@]}"; do
+            case "$package" in
+              shisa-${version}-*-x86_64.pkg.tar.zst|shisa-${version}-*.x86_64.rpm|shisa_${version}*_amd64.deb) ;;
+              *) echo "::error::unexpected package name: $package"; exit 1 ;;
+            esac
+          done
+          sha256sum "${packages[@]}" > SHA256SUMS
+
+          existing=$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --json assets --jq '.assets[].name')
+          assets=()
+          for asset in "${packages[@]}" SHA256SUMS; do
+            if grep -Fxq -- "$asset" <<< "$existing"; then
+              gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+                --pattern "$asset" --output "$RUNNER_TEMP/$asset"
+              cmp "$asset" "$RUNNER_TEMP/$asset"
+            else
+              assets+=("$asset")
+            fi
+          done
+          if (( ${#assets[@]} )); then
+            gh release upload "$RELEASE_TAG" "${assets[@]}" --repo "$GITHUB_REPOSITORY"
+          fi
+          if (( ${#packages[@]} != 3 )); then
+            echo "::error::expected 3 packages, found ${#packages[@]}"
+            exit 1
+          fi
