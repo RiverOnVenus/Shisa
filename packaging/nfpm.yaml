@@ -1,0 +1,136 @@
+# Shared nfpm recipe for the Fedora RPM and Debian DEB packages.
+#
+# The Arch recipe stays in packaging/arch/PKGBUILD. The packages workflow
+# builds the four binaries inside the target distribution's container and
+# points BINDIR at them. VERSION and ARCH come from the release tag and the
+# x86_64 build. Run nfpm from the repository root so the data paths, scripts,
+# and LICENSE resolve.
+name: shisa
+arch: ${ARCH}
+platform: linux
+version: ${VERSION}
+release: 1
+section: admin
+priority: optional
+maintainer: RiverOnVenus <aur@zhui.dev>
+description: |
+  App lock for KDE Plasma 6 on Wayland. Hides private windows and gates launches through fanotify.
+vendor: RiverOnVenus
+homepage: https://github.com/RiverOnVenus/Shisa
+license: GPL-3.0-or-later
+
+contents:
+  - src: ${BINDIR}/shisad
+    dst: /usr/bin/shisad
+    expand: true
+    file_info:
+      mode: 0755
+  - src: ${BINDIR}/shisa
+    dst: /usr/bin/shisa
+    expand: true
+    file_info:
+      mode: 0755
+  - src: ${BINDIR}/shisa-agent
+    dst: /usr/bin/shisa-agent
+    expand: true
+    file_info:
+      mode: 0755
+  - src: ${BINDIR}/shisa-settings
+    dst: /usr/bin/shisa-settings
+    expand: true
+    file_info:
+      mode: 0755
+
+  - src: data/shisad.service
+    dst: /usr/lib/systemd/system/shisad.service
+    file_info:
+      mode: 0644
+  - src: data/shisa-agent.service
+    dst: /usr/lib/systemd/user/shisa-agent.service
+    file_info:
+      mode: 0644
+  - src: data/io.github.RiverOnVenus.Shisa.policy
+    dst: /usr/share/polkit-1/actions/io.github.RiverOnVenus.Shisa.policy
+    file_info:
+      mode: 0644
+  - src: data/49-shisa-admin.rules
+    dst: /usr/share/polkit-1/rules.d/49-shisa-admin.rules
+    file_info:
+      mode: 0644
+  - src: data/io.github.RiverOnVenus.Shisa.conf
+    dst: /usr/share/dbus-1/system.d/io.github.RiverOnVenus.Shisa.conf
+    file_info:
+      mode: 0644
+  - src: data/shisa-lock.sysusers
+    dst: /usr/lib/sysusers.d/shisa-lock.conf
+    file_info:
+      mode: 0644
+  - src: data/io.github.RiverOnVenus.Shisa.desktop
+    dst: /usr/share/applications/io.github.RiverOnVenus.Shisa.desktop
+    file_info:
+      mode: 0644
+
+  - src: data/icons/shisa.svg
+    dst: /usr/share/icons/hicolor/scalable/apps/io.github.RiverOnVenus.Shisa.svg
+    file_info:
+      mode: 0644
+  - src: data/icons/shisa.svg
+    dst: /usr/share/icons/hicolor/scalable/apps/io.github.RiverOnVenus.Shisa-launcher.svg
+    file_info:
+      mode: 0644
+  - src: data/icons/16x16/*.svg
+    dst: /usr/share/icons/hicolor/16x16/status/
+    file_info:
+      mode: 0644
+  - src: data/icons/22x22/*.svg
+    dst: /usr/share/icons/hicolor/22x22/status/
+    file_info:
+      mode: 0644
+  - src: data/icons/22x22/*.svg
+    dst: /usr/share/icons/hicolor/scalable/status/
+    file_info:
+      mode: 0644
+
+  - src: LICENSE
+    dst: /usr/share/licenses/shisa/LICENSE
+    type: license
+  - src: packaging/debian/copyright
+    dst: /usr/share/doc/shisa/copyright
+    packager: deb
+
+scripts:
+  postinstall: packaging/scripts/postinstall.sh
+  preremove: packaging/scripts/preremove.sh
+
+# The runtime library names differ between the two distributions. Keep the
+# full list here instead of relying on shared names.
+overrides:
+  deb:
+    depends:
+      - polkitd
+      - dbus
+      - libwebkit2gtk-4.1-0
+      - libgtk-3-0
+      - hicolor-icon-theme
+      - systemd
+  rpm:
+    depends:
+      - polkit
+      - dbus
+      - webkit2gtk4.1
+      - gtk3
+      - hicolor-icon-theme
+      - systemd
+
+rpm:
+  summary: App lock for KDE Plasma 6 on Wayland
+  group: Applications/System
+  compression: zstd
+  # The postinstall runs systemctl, so the RPM transaction needs systemd
+  # installed before the script runs.
+  requires:
+    post:
+      - systemd
+
+deb:
+  compression: zstd
