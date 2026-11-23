@@ -6,16 +6,18 @@ English · [简体中文](README.zh-CN.md)
 
 Shisa is an app lock for Linux with KDE Plasma 6 on Wayland. Packages are built for Arch Linux, Fedora, and Debian. Its main use is briefly lending your unlocked desktop: hide private windows such as chat and mail, then require a separate app-lock password to restore them or launch their apps again through a protected entry point.
 
-Shisa is not a screen lock and not a user isolation tool.
+> **Note:** Shisa is not a screen lock and not a user isolation tool. It is a casual deterrent, meant for briefly lending an unlocked desktop to a child, family member, or friend, or for keeping private windows out of sight during a temporary handover. A determined attacker, or anyone who can use the same account, can bypass it. See [Protection scope](#protection-scope) for the specific limits.
 
 ![Shisa Settings](docs/images/settings.png)
 
 ## Installation
 
-Download the package for your distribution from [GitHub Releases](https://github.com/RiverOnVenus/Shisa/releases), or [build a local test package](docs/packaging.md#build-a-local-test-package), then install it and complete the initial setup:
+Download the package for your distribution from [GitHub Releases](https://github.com/RiverOnVenus/Shisa/releases), install `shisa` from the AUR on Arch Linux, or [build a local test package](docs/packaging.md#build-a-local-test-package), then complete the initial setup:
 
 ```sh
-# Arch Linux
+# Arch Linux (AUR)
+paru -S shisa
+# Arch Linux (release package)
 sudo pacman -U ./shisa-<version>-1-x86_64.pkg.tar.zst
 # Fedora
 sudo dnf install ./shisa-<version>-1.x86_64.rpm
@@ -28,7 +30,7 @@ systemctl --user daemon-reload
 systemctl --user enable --now shisa-agent.service
 ```
 
-Replace `<version>` with the release you downloaded. The app-lock password is separate from your login password. After upgrading, restart both services and reopen the settings window. Fedora and Debian packages are built in CI and remain unverified until a live KDE check is recorded in the [packaging guide](docs/packaging.md#distribution-specific-verification).
+The AUR package may lag the GitHub release. The app-lock password is separate from your login password. After upgrading, restart both services and reopen the settings window. Fedora and Debian packages are built in CI and remain unverified until a live KDE check is recorded in the [packaging guide](docs/packaging.md#distribution-specific-verification).
 
 ## Usage
 
@@ -40,7 +42,7 @@ Bind `shisa lock` to a KDE keyboard shortcut for the same manual lock from the k
 
 ## Protection scope
 
-Shisa guards against casually opening private apps. Launch authentication covers only protected entry points that are active. Apps running under the same account can still read application data, which is not encrypted, or interfere with window hiding. Hiding covers windows only, so notifications from hidden apps still appear and the notification history can still be opened. The lock notification reminds you when Do Not Disturb is off, so enable it before lending the desktop.
+Launch authentication covers only protected entry points that are active. Apps running under the same account can still read application data, which is not encrypted, or interfere with window hiding. Hiding covers windows only, so notifications from hidden apps still appear and the notification history can still be opened.
 
 See the [threat model](docs/architecture.md#threat-model) for the situations Shisa covers and the ones it does not.
 
