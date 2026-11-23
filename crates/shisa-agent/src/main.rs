@@ -12,7 +12,9 @@
 use ksni::blocking::{Handle, TrayMethods};
 use ksni::menu::{MenuItem, StandardItem};
 use ksni::{Category, Status, Tray};
-use shisa_core::dbus::{BUS_NAME, INTERFACE, ManagerProxyBlocking, WINDOW_BUS_NAME, WINDOW_PATH};
+use shisa_core::dbus::{
+    AppRow, BUS_NAME, INTERFACE, ManagerProxyBlocking, WINDOW_BUS_NAME, WINDOW_PATH,
+};
 use shisa_core::i18n::{self, Language};
 use std::collections::HashMap;
 use std::env;
@@ -44,9 +46,12 @@ enum Action {
 }
 
 const OFFLINE_ICON: &str = "shisa-tray-offline-symbolic";
-/// Used while the script reports at least one concealed window, so the
-/// owner can see at a glance that the desktop is still locked.
+/// Used while at least one concealed window would ask for the app-lock
+/// password to restore it.
 const LOCKED_ICON: &str = "shisa-tray-locked-symbolic";
+/// Used while at least one concealed app still has a valid launch ticket, so
+/// restoring it within the grace period asks no password.
+const RESTORABLE_ICON: &str = "shisa-tray-restorable-symbolic";
 const NOTIFY_SERVICE: &str = "org.freedesktop.Notifications";
 /// How long the desktop keeps a lock result notification on screen. A
 /// result that still needs attention stays longer.
@@ -65,6 +70,10 @@ const RELOCK_HINT_MAX_ATTEMPTS: u8 = 3;
 struct TrayState {
     protected_count: usize,
     hidden_windows: ((u64, u64), HashMap<String, u32>),
+    /// Concealed apps that still have a valid launch ticket, so restoring
+    /// them would not ask for the app-lock password. `None` means no daemon
+    /// read has confirmed it, and the tray keeps the locked state.
+    hidden_ticketed: Option<usize>,
     last_lock: Option<String>,
     offline: bool,
     /// The interface language, re-read while the tray runs.
@@ -105,6 +114,61 @@ fn watch_language(handle: Handle<TrayState>) -> ! {
     }
 }
 
+/// Concealed apps that still have a valid launch ticket, so the restore panel
+/// can bring them back without a prompt.
+fn ticketed_hidden(apps: &[AppRow], hidden: &HashMap<String, u32>) -> usize {
+    apps.iter()
+        .filter(|(id, unlocked, _, _)| *unlocked && hidden.contains_key(id))
+        .count()
+}
+
+/// Keep the hidden apps' ticket state fresh. A ticket expiring is a lazy
+/// check with no signal, so the tray would keep showing the password-free
+/// dot after the grace period ended. Two seconds matches the language
+/// watcher and the restore panel's poll, and the bus call only runs while a
+/// window is hidden and shisad is known to be online.
+fn watch_ticket_state(handle: Handle<TrayState>) {
+    let mut connection: Option<Connection> = None;
+    loop {
+        thread::sleep(Duration::from_secs(2));
+        let Some((hidden, offline)) =
+            handle.update(|tray| (tray.hidden_windows.1.clone(), tray.offline))
+        else {
+            return;
+        };
+        if offline {
+            continue;
+        }
+        if hidden.is_empty() {
+            let _ = handle.update(|tray| tray.hidden_ticketed = Some(0));
+            continue;
+        }
+        if connection.is_none() {
+            connection = Connection::system().ok();
+        }
+        let ticketed = {
+            let Some(conn) = connection.as_ref() else {
+                let _ = handle.update(|tray| tray.hidden_ticketed = None);
+                continue;
+            };
+            ManagerProxyBlocking::new(conn)
+                .and_then(|manager| manager.list_apps())
+                .map(|apps| ticketed_hidden(&apps, &hidden))
+        };
+        match ticketed {
+            Ok(ticketed) => {
+                let _ = handle.update(|tray| tray.hidden_ticketed = Some(ticketed));
+            }
+            Err(_) => {
+                // A failed read is not proof that a ticket is still valid.
+                // Drop to the locked state and reconnect on the next tick.
+                connection = None;
+                let _ = handle.update(|tray| tray.hidden_ticketed = None);
+            }
+        }
+    }
+}
+
 impl Tray for TrayState {
     fn id(&self) -> String {
         "shisa-agent".into()
@@ -129,10 +193,12 @@ impl Tray for TrayState {
     fn icon_name(&self) -> String {
         if self.offline {
             OFFLINE_ICON
-        } else if self.hidden_count() > 0 {
-            LOCKED_ICON
-        } else {
+        } else if self.hidden_count() == 0 {
             "shisa-tray-symbolic"
+        } else if self.hidden_ticketed.unwrap_or(0) > 0 {
+            RESTORABLE_ICON
+        } else {
+            LOCKED_ICON
         }
         .into()
     }
@@ -171,6 +237,25 @@ impl Tray for TrayState {
                 (1, Language::En) => "\nShisa hid 1 window".to_string(),
                 (hidden, Language::En) => format!("\nShisa hid {hidden} windows"),
             });
+            let ticketed = self.hidden_ticketed.unwrap_or(0);
+            if ticketed > 0 {
+                description.push_str(&match (ticketed, self.language) {
+                    (1, Language::ZhCn) => "\n其中 1 个应用可免密还原".to_string(),
+                    (ticketed, Language::ZhCn) => format!("\n其中 {ticketed} 个应用可免密还原"),
+                    (1, Language::En) => {
+                        "\n1 app can restore without the app-lock password".to_string()
+                    }
+                    (ticketed, Language::En) => {
+                        format!("\n{ticketed} apps can restore without the app-lock password")
+                    }
+                });
+            } else {
+                description.push_str(text(
+                    self.language,
+                    "\n恢复需要应用锁密码",
+                    "\nRestoring asks for the app-lock password",
+                ));
+            }
         }
         ksni::ToolTip {
             icon_name: self.icon_name(),
@@ -229,6 +314,7 @@ fn main() -> std::process::ExitCode {
     let tray = TrayState {
         protected_count: 0,
         hidden_windows: Default::default(),
+        hidden_ticketed: None,
         last_lock: None,
         offline: true,
         language: i18n::current(),
@@ -251,6 +337,13 @@ fn main() -> std::process::ExitCode {
             .name("language".into())
             .spawn(move || watch_language(handle))
             .expect("language thread");
+    }
+    {
+        let handle = handle.clone();
+        thread::Builder::new()
+            .name("tickets".into())
+            .spawn(move || watch_ticket_state(handle))
+            .expect("ticket thread");
     }
     {
         let gate = gate.clone();
@@ -522,7 +615,13 @@ fn refresh(
     let protected: Vec<String> = apps.iter().map(|(id, _, _, _)| id.clone()).collect();
     // Publish the count before the window-state sync. A failed WindowStates
     // call must not leave the tray's Lock all disabled with a stale zero.
-    let _ = handle.update(|tray| tray.protected_count = protected.len());
+    // The ticket state comes from the same rows and decides between the
+    // the locked state and the password-free state.
+    let _ = handle.update(|tray| {
+        let ticketed = ticketed_hidden(&apps, &tray.hidden_windows.1);
+        tray.protected_count = protected.len();
+        tray.hidden_ticketed = Some(ticketed);
+    });
     // A failed call is not "nothing is allowed". Keep the window layer as it
     // is rather than hiding every protected window on a transient error.
     let mut gate = gate.lock().unwrap();
@@ -1114,6 +1213,7 @@ mod tests {
         let (actions, requests) = mpsc::channel();
         let mut tray = TrayState {
             hidden_windows: ((1, 1), HashMap::from([("org.kde.kate".into(), 2)])),
+            hidden_ticketed: None,
             protected_count: 2,
             last_lock: Some("已收起 2 个窗口".into()),
             offline: false,
@@ -1142,6 +1242,7 @@ mod tests {
         let (actions, _requests) = mpsc::channel();
         let tray = TrayState {
             hidden_windows: Default::default(),
+            hidden_ticketed: None,
             protected_count: 0,
             last_lock: None,
             offline: false,
@@ -1156,10 +1257,11 @@ mod tests {
     }
 
     #[test]
-    fn the_tray_icon_shows_a_lock_while_windows_are_hidden() {
+    fn the_tray_icon_shows_the_normal_locked_and_password_free_states() {
         let (actions, _requests) = mpsc::channel();
         let mut tray = TrayState {
             hidden_windows: Default::default(),
+            hidden_ticketed: None,
             protected_count: 1,
             last_lock: None,
             offline: false,
@@ -1168,9 +1270,55 @@ mod tests {
         };
         assert_eq!(tray.icon_name(), "shisa-tray-symbolic");
         tray.hidden_windows = ((1, 1), HashMap::from([("org.kde.kate".into(), 2)]));
+        // An unconfirmed ticket state stays on the safe locked state.
         assert_eq!(tray.icon_name(), LOCKED_ICON);
+        tray.hidden_ticketed = Some(0);
+        assert_eq!(tray.icon_name(), LOCKED_ICON);
+        tray.hidden_ticketed = Some(1);
+        assert_eq!(tray.icon_name(), RESTORABLE_ICON);
         tray.offline = true;
         assert_eq!(tray.icon_name(), OFFLINE_ICON);
+    }
+
+    #[test]
+    fn the_tray_tooltip_names_the_password_free_hidden_apps() {
+        let (actions, _requests) = mpsc::channel();
+        let mut tray = TrayState {
+            hidden_windows: (
+                (1, 1),
+                HashMap::from([("org.kde.kate".into(), 2), ("org.kde.okular".into(), 1)]),
+            ),
+            hidden_ticketed: Some(1),
+            protected_count: 2,
+            last_lock: None,
+            offline: false,
+            language: Language::ZhCn,
+            actions,
+        };
+        let description = tray.tool_tip().description;
+        assert!(description.contains("已隐藏 3 个窗口"));
+        assert!(description.contains("其中 1 个应用可免密还原"));
+        tray.hidden_ticketed = Some(0);
+        assert!(tray.tool_tip().description.contains("恢复需要应用锁密码"));
+        tray.language = Language::En;
+        tray.hidden_ticketed = Some(2);
+        assert!(
+            tray.tool_tip()
+                .description
+                .contains("2 apps can restore without the app-lock password")
+        );
+    }
+
+    #[test]
+    fn only_ticketed_hidden_apps_count_as_password_free() {
+        let apps: Vec<AppRow> = vec![
+            ("org.kde.kate".into(), true, Vec::new(), Vec::new()),
+            ("org.kde.okular".into(), true, Vec::new(), Vec::new()),
+            ("org.kde.ark".into(), false, Vec::new(), Vec::new()),
+        ];
+        let hidden = HashMap::from([("org.kde.kate".into(), 2), ("org.kde.ark".into(), 1)]);
+        assert_eq!(ticketed_hidden(&apps, &hidden), 1);
+        assert_eq!(ticketed_hidden(&apps, &HashMap::new()), 0);
     }
 
     fn report(matched: u32, hidden: u32, missed: &[(&str, u32)]) -> WindowReport {
