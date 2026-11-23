@@ -1316,6 +1316,13 @@ mod tests {
 
     #[test]
     fn files_read_for_an_account_must_be_its_own() {
+        // Root can read every file, so the ownership check below cannot fail.
+        // The Fedora and Debian package jobs run their tests as root inside
+        // the build containers.
+        if unsafe { libc::geteuid() } == 0 {
+            eprintln!("skip files_read_for_an_account_must_be_its_own: running as root");
+            return;
+        }
         let fx = fixture("owner");
         let home = fx.dir.join("share");
         let file = home.join("applications/mine.desktop");
