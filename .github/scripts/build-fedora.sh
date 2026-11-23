@@ -5,7 +5,7 @@ set -euo pipefail
 
 dnf install -y --setopt=install_weak_deps=False \
     ca-certificates curl tar gzip \
-    dbus dbus-devel gcc gcc-c++ make pkgconf-pkg-config \
+    dbus dbus-daemon dbus-devel gcc gcc-c++ make pkgconf-pkg-config \
     webkit2gtk4.1-devel gtk3-devel librsvg2-devel openssl-devel
 
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
