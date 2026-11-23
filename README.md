@@ -36,7 +36,7 @@ Replace `<version>` with the release you downloaded. The app-lock password is se
 2. Before lending your desktop, right-click the Shisa tray icon and choose **Lock all**. Check the notification to confirm the protected windows were hidden. It also reminds you to enable Do Not Disturb when that is off.
 3. When you get your desktop back, left-click the tray icon, select an app in **Restore windows**, and authenticate. The original window and unsaved content are preserved.
 
-Bind `shisa lock` to a KDE keyboard shortcut for the same manual lock from the keyboard. **Hide when focus is lost** is a separate convenience: it hides a window after it loses focus but keeps the app's launch ticket, so restoring it within the grace period does not ask for the app-lock password. It does not replace **Lock all** before lending the desktop.
+Bind `shisa lock` to a KDE keyboard shortcut for the same manual lock from the keyboard. **Hide when focus is lost** is a separate convenience: it hides a window after it loses focus but keeps the app's launch ticket, so restoring it within the grace period does not ask for the app-lock password. It does not replace **Lock all** before lending the desktop. The Shisa's eyes in the tray show the state: green when nothing is hidden, blue when restoring a hidden window asks for the app-lock password, amber when a hidden app can restore without it, and red when shisad is offline. The tooltip says how many hidden apps can restore without the password.
 
 ## Protection scope
 

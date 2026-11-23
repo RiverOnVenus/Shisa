@@ -109,6 +109,8 @@ On 2026-11-23, the cross-distribution packaging changes passed the local checks.
 
 On 2026-11-23, a local test package `shisa-0.1.5-1.1` was built from the worktree with `prepare-build.sh --worktree`. `makepkg`'s `check()` passed the workspace tests, the settings frontend (9 Node and 12 vitest tests), the settings Tauri tests (5), and the KWin script tests (14). It was installed over `0.1.5-1` with `pacman -U`, `pacman -Qkk shisa` reported 0 changed files out of 52, and `shisad.service` and `shisa-agent.service` restarted, both active. The user reported the verification steps passing in the live Plasma Wayland session, and the README screenshots were regenerated from the installed build.
 
+On 2026-11-23, a local test package `shisa-0.1.5-1.1` with the four eye-color tray icons was built from the worktree. `makepkg`'s `check()` passed, it installed over the previous `0.1.5-1.1`, and `pacman -Qkk shisa` reported 0 changed files out of 55. Only `shisa-agent.service` was restarted, so shisad kept the existing tickets and window permissions. Plasma served the old icon pixmaps for the existing icon names until `plasma-plasmashell.service` was restarted. The user confirmed the tray after that restart.
+
 ## Dependency advisories
 
 On 2026-11-22, the two open Dependabot alerts were reviewed.

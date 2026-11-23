@@ -2,17 +2,12 @@
       <title>Shisa Offline</title>
       <style id="current-color-scheme">.ColorScheme-Text { color: #212320; }</style>
       <g class="ColorScheme-Text" fill="currentColor" fill-rule="evenodd">
-      <defs>
-        <mask id="gap-16" x="0" y="0" width="16" height="16" maskUnits="userSpaceOnUse">
-          <rect width="16" height="16" fill="white"/>
-          <circle cx="12.8" cy="13.0" r="3.5" fill="black"/>
-        </mask>
-      </defs>
-      <g mask="url(#gap-16)"><path d="
+      <path d="
           M8 6.6a4.2 4.2 0 1 1 0 8.4 4.2 4.2 0 1 1 0-8.4Z
           M8 8a2.8 2.8 0 1 0 0 5.6 2.8 2.8 0 1 0 0-5.6Z"/><path d="
           M5 1h6l4 3v3.25L12.3 9.6h-2.05L9 11H7L5.75 9.6H3.7L1 7.25V4Z
           M3 5l3.4 1v1.2H4.75L3 5.8Z
-          M13 5l-3.4 1v1.2h1.65L13 5.8Z"/></g>
-      <path d="M12.8 10.2a2.8 2.8 0 1 1 0 5.6 2.8 2.8 0 1 1 0 -5.6Z M12.3 11.35h1v1.8h-1Z M12.3 13.75h1v.95h-1Z"/></g>
+          M13 5l-3.4 1v1.2h1.65L13 5.8Z"/>
+      <path d="M3 5l3.4 1v1.2H4.75L3 5.8Z" fill="#e5484d"/>
+      <path d="M13 5l-3.4 1v1.2h1.65L13 5.8Z" fill="#e5484d"/></g>
     </svg>
