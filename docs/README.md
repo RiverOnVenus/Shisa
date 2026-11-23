@@ -3,7 +3,7 @@
 - [Architecture and threat model](architecture.md)
 - [Code standards](code-standards.md)
 - [Tests and verification](testing.md)
-- [Arch packaging and installation verification](packaging.md)
+- [Packaging and installation verification](packaging.md)
 - Subsystems
   - [Launch gating](subsystems/launch-gate.md)
   - [Authentication](subsystems/authentication.md)

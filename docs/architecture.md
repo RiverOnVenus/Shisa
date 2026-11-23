@@ -2,7 +2,7 @@
 
 ## Scope
 
-Shisa targets Arch Linux, KDE Plasma 6, Wayland, and systemd. Its primary use is briefly lending an unlocked desktop while keeping private apps out of casual reach. Use the screen lock when nobody needs the desktop and separate system accounts when people need isolated data. GNOME and X11 are outside the v1 scope.
+Shisa targets Linux with systemd and polkit, KDE Plasma 6 on Wayland. Packages are built for Arch Linux, Fedora, and Debian. Its primary use is briefly lending an unlocked desktop while keeping private apps out of casual reach. Use the screen lock when nobody needs the desktop and separate system accounts when people need isolated data. GNOME and X11 are outside the v1 scope.
 
 Before lending the desktop, the owner selects Lock all. The daemon revokes launch tickets and window allowance. The session agent and KWin hide protected windows while leaving their processes running. The owner can later authenticate to restore an app. Apps can also be configured individually to hide on focus loss. That hide keeps the app's launch ticket, so restoring a window inside its grace period does not ask again.
 

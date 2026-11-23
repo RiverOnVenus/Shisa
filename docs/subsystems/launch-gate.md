@@ -21,7 +21,7 @@ shisa-core derives protected paths from an app's desktop entry. Settings lists t
 
 The resolver reads `XDG_DATA_HOME`, `XDG_DATA_DIRS`, `XDG_CONFIG_HOME`, `PATH`, and the locale (`LC_ALL`, `LC_MESSAGES`, `LANG`) from the user's systemd manager process and falls back to standard directories if the manager is missing. Only the process in the account's `user@<uid>.service/init.scope` with the account's real uid supplies that environment. A file read on the account's behalf must be under `/usr`, `/opt`, or `/var/lib/flatpak`, or belong to the account. A scan visits at most 8,192 directory entries and reads at most 8 MiB of text. It follows symlinked desktop files and skips symlinked directories. For localized `Name[locale]` it tries `lang_COUNTRY` before `lang`.
 
-The daemon checks protected paths every 30 seconds and refreshes marks when an inode changes or a missing path reappears. A path that remains unavailable does not cause repeated full reloads. This covers Flatpak deployments and manual file replacement. The Arch package also ships a post-transaction hook that reloads a running daemon after a pacman upgrade.
+The daemon checks protected paths every 30 seconds and refreshes marks when an inode changes or a missing path reappears. A path that remains unavailable does not cause repeated full reloads. This covers Flatpak deployments and manual file replacement. The Arch package also ships a post-transaction hook that reloads a running daemon after a pacman upgrade. The Fedora and Debian packages run the same reload from their package postinstall, and the 30-second path check covers an upgrade whose package script did not run.
 
 ## Launch decisions
 

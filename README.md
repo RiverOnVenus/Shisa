@@ -4,7 +4,7 @@
 
 English · [简体中文](README.zh-CN.md)
 
-Shisa is an app lock for Arch Linux and KDE Plasma 6 on Wayland. Its main use is briefly lending your unlocked desktop: hide private windows such as chat and mail, then require a separate app-lock password to restore them or launch their apps again through a protected entry point.
+Shisa is an app lock for Linux with KDE Plasma 6 on Wayland. Packages are built for Arch Linux, Fedora, and Debian. Its main use is briefly lending your unlocked desktop: hide private windows such as chat and mail, then require a separate app-lock password to restore them or launch their apps again through a protected entry point.
 
 Shisa is not a screen lock and not a user isolation tool.
 
@@ -12,16 +12,23 @@ Shisa is not a screen lock and not a user isolation tool.
 
 ## Installation
 
-Download the x86_64 Arch package from [GitHub Releases](https://github.com/RiverOnVenus/Shisa/releases), or [build a local test package](docs/packaging.md#build-a-local-test-package), then install it and complete the initial setup:
+Download the package for your distribution from [GitHub Releases](https://github.com/RiverOnVenus/Shisa/releases), or [build a local test package](docs/packaging.md#build-a-local-test-package), then install it and complete the initial setup:
 
 ```sh
-sudo pacman -U ./shisa-0.1.5-1-x86_64.pkg.tar.zst
+# Arch Linux
+sudo pacman -U ./shisa-<version>-1-x86_64.pkg.tar.zst
+# Fedora
+sudo dnf install ./shisa-<version>-1.x86_64.rpm
+# Debian or Ubuntu
+sudo apt install ./shisa_<version>-1_amd64.deb
+
 sudo passwd shisa-lock
 sudo systemctl enable --now shisad.service
+systemctl --user daemon-reload
 systemctl --user enable --now shisa-agent.service
 ```
 
-Replace the example package filename with the file you downloaded or built. The app-lock password is separate from your login password. After upgrading, restart both services and reopen the settings window.
+Replace `<version>` with the release you downloaded. The app-lock password is separate from your login password. After upgrading, restart both services and reopen the settings window. Fedora and Debian packages are built in CI and remain unverified until a live KDE check is recorded in the [packaging guide](docs/packaging.md#distribution-specific-verification).
 
 ## Usage
 
@@ -41,7 +48,7 @@ See the [threat model](docs/architecture.md#threat-model) for the situations Shi
 
 Run `cargo test --workspace` to check the Rust workspace. To build the settings app, run `npm ci` and `npm run build` in `gui/shisa-settings`, then run `cargo build --release --features custom-protocol` in `gui/shisa-settings/src-tauri`.
 
-See the [developer documentation](docs/README.md) for architecture, coding standards, and testing, and the [packaging guide](docs/packaging.md) for Arch builds and upgrade verification.
+See the [developer documentation](docs/README.md) for architecture, coding standards, and testing, and the [packaging guide](docs/packaging.md) for distribution builds and upgrade verification.
 
 ## License
 

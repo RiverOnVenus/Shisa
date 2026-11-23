@@ -4,7 +4,7 @@
 
 [English](README.md) · 简体中文
 
-Shisa 是 Arch Linux 和 KDE Plasma 6（Wayland）上的应用锁，主要用于短时间把已解锁的桌面借给别人：收起聊天、邮件等私密窗口，之后要输入单独的应用锁密码，才能恢复窗口或从受保护的入口重新启动应用。
+Shisa 是 Linux 上 KDE Plasma 6（Wayland）的应用锁，为 Arch Linux、Fedora 和 Debian 构建安装包。主要用于短时间把已解锁的桌面借给别人：收起聊天、邮件等私密窗口，之后要输入单独的应用锁密码，才能恢复窗口或从受保护的入口重新启动应用。
 
 Shisa 不是屏幕锁，也不是用户隔离工具。
 
@@ -12,16 +12,23 @@ Shisa 不是屏幕锁，也不是用户隔离工具。
 
 ## 安装
 
-从 [GitHub Releases](https://github.com/RiverOnVenus/Shisa/releases) 下载 x86_64 Arch 包，或[在本地构建测试包](docs/packaging.md#build-a-local-test-package)，然后安装并完成首次设置：
+从 [GitHub Releases](https://github.com/RiverOnVenus/Shisa/releases) 下载对应发行版的包，或在本地[构建测试包](docs/packaging.md#build-a-local-test-package)，然后安装并完成首次设置：
 
 ```sh
-sudo pacman -U ./shisa-0.1.5-1-x86_64.pkg.tar.zst
+# Arch Linux
+sudo pacman -U ./shisa-<version>-1-x86_64.pkg.tar.zst
+# Fedora
+sudo dnf install ./shisa-<version>-1.x86_64.rpm
+# Debian 或 Ubuntu
+sudo apt install ./shisa_<version>-1_amd64.deb
+
 sudo passwd shisa-lock
 sudo systemctl enable --now shisad.service
+systemctl --user daemon-reload
 systemctl --user enable --now shisa-agent.service
 ```
 
-把第一行的包文件名换成你下载或构建的文件。应用锁密码和登录密码是分开的。升级后重启这两个服务，再重新打开设置窗口。
+把 `<version>` 换成你下载的版本。应用锁密码和登录密码是分开的。升级后重启这两个服务，再重新打开设置窗口。Fedora 和 Debian 包由 CI 构建，真机 KDE 验收记录写进[打包指南](docs/packaging.md#distribution-specific-verification)之前按未验证处理。
 
 ## 使用
 
@@ -41,7 +48,7 @@ Shisa 防的只是顺手打开隐私应用。启动认证只覆盖当前生效�
 
 运行 `cargo test --workspace` 检查 Rust 工作区。构建设置程序时，先在 `gui/shisa-settings` 运行 `npm ci` 和 `npm run build`，再在 `gui/shisa-settings/src-tauri` 运行 `cargo build --release --features custom-protocol`。
 
-架构、开发规范和测试方法见[开发文档](docs/README.md)。Arch 构建与升级验证见[打包指南](docs/packaging.md)。
+架构、开发规范和测试方法见[开发文档](docs/README.md)。各发行版的构建与升级验证见[打包指南](docs/packaging.md)。
 
 ## 许可证
 

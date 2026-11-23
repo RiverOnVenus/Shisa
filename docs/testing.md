@@ -23,6 +23,12 @@ CI runs the formatting check, clippy, the workspace, settings window and KWin sc
 
 The owner-check tests in `crates/shisad/tests/config_owner.rs` cannot create root-owned files as the normal user, so each re-executes itself under `unshare --user --map-root-user`. They print a skip when user namespaces are unavailable instead of passing a different check.
 
+## Distribution packages
+
+The [packages workflow](../.github/workflows/packages.yml) builds the Arch, Fedora, and Debian packages on a published release and on manual dispatch. The workflow runs the Rust workspace tests, the settings frontend tests, the Tauri tests, and the KWin script tests across its jobs: the frontend job runs the settings and KWin script suites, the Fedora and Debian jobs run the Rust workspace and Tauri suites, and the Arch job's `makepkg` check covers all four. The Fedora and Debian jobs build the binaries in `fedora:latest` and `debian:12` and package them with nfpm.
+
+The Fedora and Debian packages still need a live KDE check and, on Fedora, an SELinux check before they are treated as verified. See [Distribution-specific verification](packaging.md#distribution-specific-verification).
+
 ## Fuzzing
 
 The fuzz targets cover the config file parser, the desktop `Exec` splitter and the fanotify record decoder. They need a nightly toolchain and `cargo-fuzz`, and run for a bounded time, so they are not part of `cargo test`:
