@@ -69,7 +69,8 @@ const zh = {
     "开启时锁屏会收回已打开的受保护窗口，解锁后恢复要重新认证。关掉后锁屏不改变正在使用的窗口，只影响下一次启动。",
   "general.timeout.name": "认证框等待上限",
   "general.timeout.sub":
-    "最多等这么久，超时就拒绝启动。取消或超时也会被系统记一次认证失败，连续 3 次后应用锁暂停约 10 分钟，不影响登录。",
+    "最多等这么久，超时就拒绝启动。取消或超时也会被系统记一次认证失败，连续 3 次后应用锁暂停约 10 分钟，不影响登录。需要立即解除暂停时运行",
+  "general.timeout.after": "。",
   "general.timeout.unit": "秒 · 5 到 85",
   "general.custom": "自定义",
   "general.language.name": "语言",
@@ -116,6 +117,8 @@ const zh = {
   "app.relock.name": "失焦后隐藏",
   "app.relock.sub":
     "失焦达到设定时长后收起窗口。宽限期内恢复不再询问，过期后需要认证。",
+  "app.relock.warn":
+    "注意：失焦隐藏会保留启动凭证，宽限期内任何人都能从恢复面板免密还原窗口。借出桌面前请使用「全部上锁」。",
   "app.advanced": "高级设置",
   "app.customRelock": "自定义失焦时长",
   "app.autostart.name": "自启动",
@@ -253,7 +256,8 @@ const en = {
     "When on, locking the screen hides protected windows, and restoring them asks again after unlock. When off, the screen lock leaves windows in use alone and only affects the next launch.",
   "general.timeout.name": "Authentication prompt timeout",
   "general.timeout.sub":
-    "After this long the launch is refused. Cancelling or timing out also counts as a failed authentication, and three in a row pause the app lock for about 10 minutes without affecting login.",
+    "After this long the launch is refused. Cancelling or timing out also counts as a failed authentication, and three in a row pause the app lock for about 10 minutes without affecting login. To clear it immediately, run",
+  "general.timeout.after": ".",
   "general.timeout.unit": "seconds · 5 to 85",
   "general.custom": "Custom",
   "general.language.name": "Language",
@@ -305,6 +309,8 @@ const en = {
   "app.relock.name": "Hide when focus is lost",
   "app.relock.sub":
     "After this long without focus the window is hidden. Restoring it within the grace period does not ask again, and asks after it expires.",
+  "app.relock.warn":
+    "Note: a focus-loss hide keeps the launch ticket, so until the grace period ends anyone can restore the window from the restore panel without the app-lock password. Use Lock all before lending the desktop.",
   "app.advanced": "Advanced settings",
   "app.customRelock": "Custom focus-loss delay",
   "app.autostart.name": "Autostart",

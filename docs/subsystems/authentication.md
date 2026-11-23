@@ -46,7 +46,7 @@ Each check is bound to a request ID. Launch authorization resumes the waiting ex
 - The default wait is 60 seconds, configurable with `prompt_timeout_seconds`. On expiry the daemon rejects the operation and calls `CancelCheckAuthorization` on the same persistent bus connection that started it. Late approval cannot authorize the request. The activity record reports `timeout` or `cancelled`.
 - A check error, including a bus error, rejects the request immediately and records `failed`.
 
-The system PAM policy controls failure accounting. On systems using `pam_faillock`, incorrect passwords, cancellation, and timeout can count against the separate `shisa-lock` account. The threshold and lockout duration depend on the system.
+The system PAM policy controls failure accounting. On systems using `pam_faillock`, incorrect passwords, cancellation, and timeout can count against the separate `shisa-lock` account. The threshold and lockout duration depend on the system. On Arch, `pam_faillock` defaults to `deny=3` and `unlock_time=600`, so an untouched lockout ends after about ten minutes. To clear the count immediately, run `sudo faillock --user shisa-lock --reset`. The reset changes neither the password nor the login account.
 
 When there is no graphical authentication agent, `shisa unlock <app-id>` can start `/usr/bin/pkttyagent --process <its-pid>` for terminal authentication. The absolute path keeps a user-writable directory earlier in PATH from supplying the helper, and Arch, Fedora, and Debian install it there. Unlock applies only to protected apps. The ticket cannot authorize a settings change.
 

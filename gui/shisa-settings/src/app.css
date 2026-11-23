@@ -830,6 +830,12 @@ button.prefrow {
   color: var(--red);
 }
 
+/* A convenience that changes the meaning of the grace period, not an error.
+   The note sits under the control that creates the combination. */
+.prefrow .sub.warn {
+  color: var(--amber);
+}
+
 /* a path or a config location, set apart from the sentence around it */
 .prefrow .sub.mono {
   font-family: var(--code);
