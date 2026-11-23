@@ -103,6 +103,20 @@ pub struct WindowReport {
     pub missed: Vec<(String, u32)>,
 }
 
+/// Why a sync produced no report. A desktop without KWin is a different
+/// result from a KWin that did not answer: the first is an unsupported window
+/// layer, and the second is a state that still needs checking.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NoReport {
+    /// KWin's scripting interface is not on the session bus. Other desktops
+    /// are out of scope, so there is no window layer to report from.
+    NoWindowLayer,
+    /// KWin is present but no report was available for this revision: the
+    /// script failed to load, the requested generation stayed silent, or the
+    /// caller asked for no new revision.
+    Unconfirmed,
+}
+
 #[derive(Default)]
 struct Check {
     generation: u64,
@@ -447,13 +461,13 @@ impl Gate {
     /// Match the windows to the protected apps and the apps whose windows
     /// are allowed to show. A verification requests a fresh revision and
     /// returns what the script found, including the apps it could not
-    /// conceal. Missing reports return None.
+    /// conceal. A missing report says whether KWin is absent or silent.
     pub fn sync(
         &mut self,
         protected: &[String],
         allowed: &[String],
         verify: bool,
-    ) -> Option<WindowReport> {
+    ) -> Result<WindowReport, NoReport> {
         let mut protected = protected.to_vec();
         let mut allowed = allowed.to_vec();
         protected.sort();
@@ -463,7 +477,9 @@ impl Gate {
             // telling the agent. Load it again instead of trusting the
             // cached list.
             if self.is_loaded() {
-                return None;
+                // Nothing changed and the script is still loaded. The caller
+                // that runs this path ignores the result.
+                return Err(NoReport::Unconfirmed);
             }
             self.loaded = None;
         }
@@ -485,7 +501,7 @@ impl Gate {
             if restore.is_empty() {
                 self.unload();
                 self.loaded = Some((protected, allowed));
-                return None;
+                return Err(NoReport::Unconfirmed);
             }
             // Nothing stays protected, but the windows of the dropped apps
             // are still hidden by the running script. Load one generation
@@ -498,12 +514,13 @@ impl Gate {
                 Err(LoadError::Missing) => {
                     // No KWin, so nothing is hidden by a script any more.
                     self.loaded = Some((protected, allowed));
+                    return Err(NoReport::NoWindowLayer);
                 }
                 // Keep the previous lists so the next refresh retries; the
                 // old script still hides those windows.
                 Err(LoadError::Other(why)) => warn!("window gate: {why}"),
             }
-            return None;
+            return Err(NoReport::Unconfirmed);
         }
         match self.load(&protected, &allowed, &restore) {
             Ok(()) => {
@@ -514,14 +531,21 @@ impl Gate {
                     "window gate loaded"
                 );
                 self.loaded = Some((protected, allowed));
-                return self.ready.report(self.generation);
+                self.ready
+                    .report(self.generation)
+                    .ok_or(NoReport::Unconfirmed)
             }
             // KWin is not there, which is normal on other desktops. Ask
             // again on the next refresh in case it just started.
-            Err(LoadError::Missing) => debug!("window gate: KWin scripting is not available"),
-            Err(LoadError::Other(why)) => warn!("window gate: {why}"),
+            Err(LoadError::Missing) => {
+                debug!("window gate: KWin scripting is not available");
+                Err(NoReport::NoWindowLayer)
+            }
+            Err(LoadError::Other(why)) => {
+                warn!("window gate: {why}");
+                Err(NoReport::Unconfirmed)
+            }
         }
-        None
     }
 
     /// Bring one app's window to the front after the tray unlocked it. The
@@ -536,7 +560,7 @@ impl Gate {
 
     pub fn restore(&mut self, protected: &[String], allowed: &[String], app: &str) -> bool {
         self.foreground = app.to_owned();
-        let confirmed = self.sync(protected, allowed, true).is_some();
+        let confirmed = self.sync(protected, allowed, true).is_ok();
         self.foreground.clear();
         confirmed
     }

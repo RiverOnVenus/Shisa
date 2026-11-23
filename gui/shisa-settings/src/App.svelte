@@ -918,7 +918,10 @@
               <div class="prefrow">
                 <div class="who">
                   <div class="name">{t("general.timeout.name")}</div>
-                  <div class="sub">{t("general.timeout.sub")}</div>
+                  <div class="sub">
+                    {t("general.timeout.sub")}
+                    <code>sudo faillock --user {adminUser} --reset</code>{t("general.timeout.after")}
+                  </div>
                 </div>
                 <div class="val">
                   <input
@@ -1140,6 +1143,13 @@
                     {#if relockApp}<span class="unit">{config.relock} {t("common.seconds")}</span>{/if}
                   </div>
                 </div>
+                {#if config.relock > 0 && config.grace > 0}
+                  <div class="prefrow">
+                    <div class="who">
+                      <div class="sub warn">{t("app.relock.warn")}</div>
+                    </div>
+                  </div>
+                {/if}
                 <details class="advanced">
                 <summary class="prefrow adv-toggle">
                   <span class="name">{t("app.advanced")}</span>
