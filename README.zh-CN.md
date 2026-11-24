@@ -1,12 +1,16 @@
+<p align="center">
+  <img src="data/icons/shisa.svg" width="96" height="96" alt="Shisa 图标">
+</p>
+
 # Shisa
 
 [![Test](https://github.com/RiverOnVenus/Shisa/actions/workflows/test.yml/badge.svg)](https://github.com/RiverOnVenus/Shisa/actions/workflows/test.yml)
 
 [English](README.md) · 简体中文
 
-Shisa 是 Linux 上 KDE Plasma 6（Wayland）的应用锁，为 Arch Linux、Fedora 和 Debian 构建安装包。主要用于短时间把已解锁的桌面借给别人：收起聊天、邮件等私密窗口，之后要输入单独的应用锁密码，才能恢复窗口或从受保护的入口重新启动应用。
+Shisa 是 Linux 上 KDE Plasma 6（Wayland）的应用锁。主要用于短时间把已解锁的桌面借给别人：收起聊天、邮件等私密窗口，之后要输入单独的应用锁密码，才能恢复窗口或从受保护的入口重新启动应用。
 
-> **注意：** Shisa 不是屏幕锁，也不是用户隔离工具，它只是一道随手的门槛。它适合把已解锁的桌面短时间借给小孩、家人或朋友，或者在临时交接时把私密窗口收起来。有心或懂技术的攻击者，以及任何能使用同一账号的人，都可以绕过它。具体边界见[保护范围](#保护范围)。
+> **注意：** Shisa 不是屏幕锁，也不是用户隔离工具，它的作用很有限。它适合把已解锁的桌面短时间借给小孩、家人或朋友，或者暂时把私密窗口收起来。有心或懂技术的攻击者，以及任何知道登录密码的人，都可以绕过它。具体边界见[保护范围](#保护范围)。
 
 ![Shisa 设置](docs/images/settings-zh.png)
 
@@ -30,7 +34,7 @@ systemctl --user daemon-reload
 systemctl --user enable --now shisa-agent.service
 ```
 
-AUR 包可能落后于 GitHub Release。应用锁密码和登录密码是分开的。升级后重启这两个服务，再重新打开设置窗口。Fedora 和 Debian 包由 CI 构建，真机 KDE 验收记录写进[打包指南](docs/packaging.md#distribution-specific-verification)之前按未验证处理。
+应用锁密码和登录密码是分开的。升级后重启这两个服务，再重新打开设置窗口。Fedora 和 Debian 包由 CI 构建，暂无真机 KDE 验收。
 
 ## 使用
 
@@ -38,7 +42,18 @@ AUR 包可能落后于 GitHub Release。应用锁密码和登录密码是分开�
 2. 借出电脑前，右键点击 Shisa 托盘图标，选择「全部上锁」，再查看通知，确认受保护的窗口已收起。勿扰没开时，通知还会提醒你先开启。
 3. 拿回电脑后，左键点击托盘图标，在「恢复窗口」面板选择应用并认证。原窗口和其中未保存的内容都会保留。
 
-可以在 KDE 快捷键设置中绑定 `shisa lock`，从键盘执行同样的手动上锁。「失焦后隐藏」是另一项便利功能：窗口失焦后收起，但保留应用的启动凭证，所以宽限期内恢复不会再询问应用锁密码。借出桌面前请使用「全部上锁」，「失焦后隐藏」不能替代它。托盘里 Shisa 的眼睛表示状态：绿色是没有隐藏窗口，蓝色是恢复隐藏窗口需要应用锁密码，琥珀色是有隐藏应用可以免密还原，红色是 shisad 离线。tooltip 会说明有几个隐藏应用可以免密还原。
+可以在 KDE 快捷键设置中绑定 `shisa lock`，从键盘执行同样的手动上锁。「失焦后隐藏」是另一项便利功能：窗口失焦后收起，但保留应用的启动凭证，所以宽限期内恢复不会再询问应用锁密码。借出桌面前请使用「全部上锁」，「失焦后隐藏」不能替代它。
+
+托盘里 Shisa 图标是一个圆环包着锁孔，圆环表示状态：
+
+|                                   图标                                    | 颜色   | 状态                           |
+| :-----------------------------------------------------------------------: | ------ | ------------------------------ |
+|   <img src="docs/images/tray-ready.svg" width="24" height="24" alt="">    | 绿色   | 没有隐藏窗口                   |
+|   <img src="docs/images/tray-locked.svg" width="24" height="24" alt="">   | 蓝色   | 有隐藏窗口，恢复需要应用锁密码 |
+| <img src="docs/images/tray-restorable.svg" width="24" height="24" alt=""> | 琥珀色 | 有隐藏应用，宽限期内可免密还原 |
+|  <img src="docs/images/tray-offline.svg" width="24" height="24" alt="">   | 红色   | shisad 离线                    |
+
+tooltip 会说明有几个隐藏应用可以免密还原。
 
 ## 保护范围
 

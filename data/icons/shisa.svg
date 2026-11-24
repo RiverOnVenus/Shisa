@@ -5,14 +5,11 @@
   <stop offset="1" stop-color="#eeece6"/>
 </linearGradient></defs>
   <rect x="9" y="10" width="110" height="110" rx="26" fill="#d6d4ce"/>
-      <rect x="9" y="8" width="110" height="110" rx="26" fill="url(#tile)"/>
-      <rect x="9.4" y="8.4" width="109.2" height="109.2" rx="25.6" fill="none" stroke="#fff" stroke-opacity=".6" stroke-width=".8"/>
-  <g fill="#212320" fill-rule="evenodd" transform="translate(64 65) scale(4.666666667) translate(-11 -11.45)">
-      <path d="
-          M11 9.7a5.6 5.6 0 1 1 0 11.2 5.6 5.6 0 1 1 0-11.2Z
-          M11 11.55a3.75 3.75 0 1 0 0 7.5 3.75 3.75 0 1 0 0-7.5Z"/><path d="
-          M7 2h8l5 4v4.5l-3.7 3.3h-2.95L12.1 15.4H9.9l-1.25-1.6H5.7L2 10.5V6Z
-          M4.5 7l4.3 1.35v1.7h-2L4.5 8.25Z
-          M17.5 7l-4.3 1.35v1.7h2l2.3-1.8Z"/>
-    </g>
+  <rect x="9" y="8" width="110" height="110" rx="26" fill="url(#tile)"/>
+  <rect x="9.4" y="8.4" width="109.2" height="109.2" rx="25.6" fill="none" stroke="#fff" stroke-opacity=".6" stroke-width=".8"/>
+  <g transform="translate(64 65) scale(6) translate(-8 -8)" stroke-linejoin="round">
+    <ellipse cx="8" cy="8" rx="4.65" ry="5.3" fill="none" stroke="#212320" stroke-width="1.5"/>
+    <circle cx="8" cy="7.15" r="1.65" fill="#b4462e"/>
+    <path d="M7.5 8.239L8.5 8.239L8.775 11.55L7.225 11.55Z" fill="#b4462e"/>
+  </g>
 </svg>

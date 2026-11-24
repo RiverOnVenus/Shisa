@@ -1,13 +1,9 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 22 22">
-      <title>Shisa Locked</title>
-      <style id="current-color-scheme">.ColorScheme-Text { color: #212320; }</style>
-      <g class="ColorScheme-Text" fill="currentColor" fill-rule="evenodd">
-      <path d="
-          M11 9.7a5.6 5.6 0 1 1 0 11.2 5.6 5.6 0 1 1 0-11.2Z
-          M11 11.55a3.75 3.75 0 1 0 0 7.5 3.75 3.75 0 1 0 0-7.5Z"/><path d="
-          M7 2h8l5 4v4.5l-3.7 3.3h-2.95L12.1 15.4H9.9l-1.25-1.6H5.7L2 10.5V6Z
-          M4.5 7l4.3 1.35v1.7h-2L4.5 8.25Z
-          M17.5 7l-4.3 1.35v1.7h2l2.3-1.8Z"/>
-      <path d="M4.5 7l4.3 1.35v1.7h-2L4.5 8.25Z" fill="#3b82f6"/>
-      <path d="M17.5 7l-4.3 1.35v1.7h2l2.3-1.8Z" fill="#3b82f6"/></g>
-    </svg>
+<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 16 16">
+  <title>Shisa</title>
+  <style id="current-color-scheme">.ColorScheme-Text { color: #212320; }</style>
+  <circle cx="8" cy="8" r="6.05" fill="none" stroke="#3b82f6" stroke-width="1.5"/>
+  <g class="ColorScheme-Text" fill="currentColor" stroke-linejoin="round">
+    <circle cx="8" cy="7" r="1.9"/>
+    <path d="M7.45 8.254L8.55 8.254L8.725 11.6L7.275 11.6Z"/>
+  </g>
+</svg>
