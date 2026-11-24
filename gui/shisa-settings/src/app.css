@@ -25,7 +25,16 @@
   --font: system-ui, "Noto Sans CJK SC", sans-serif;
   --code:
     ui-monospace, "SF Mono", Menlo, Consolas, "Noto Sans Mono CJK SC", monospace;
+  /* One motion language. Entrances settle, exits leave quickly, and presses
+     answer within one frame. Every duration here has a matching helper in
+     motion.js so script-driven transitions keep the same rhythm. */
   --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in: cubic-bezier(0.4, 0, 1, 1);
+  --ease-spring: cubic-bezier(0.32, 1.28, 0.56, 1);
+  --dur-fast: 120ms;
+  --dur-base: 180ms;
+  --dur-slow: 240ms;
   color-scheme: light;
 }
 
@@ -291,8 +300,14 @@ input:focus-visible {
   font-size: 11px;
   color: var(--muted);
   transition:
-    color 0.18s var(--ease),
-    background 0.12s;
+    color var(--dur-base) var(--ease-out),
+    background-color var(--dur-base) var(--ease-out),
+    box-shadow var(--dur-base) var(--ease-out),
+    transform var(--dur-fast) var(--ease-out);
+}
+
+.segs .opt:active {
+  transform: scale(0.96);
 }
 
 .segs.two .opt {
@@ -340,8 +355,9 @@ input:focus-visible {
   text-align: left;
   white-space: nowrap;
   transition:
-    background 0.12s,
-    color 0.12s;
+    background-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-base) var(--ease-out);
 }
 
 .sidebar .row:hover:not(.on) {
@@ -356,6 +372,10 @@ input:focus-visible {
   font-weight: 500;
 }
 
+.sidebar .row:active:not(.on) {
+  background: color-mix(in srgb, var(--fg) 7%, var(--pill));
+}
+
 .sidebar .row img,
 .sidebar .row svg {
   flex: none;
@@ -365,6 +385,13 @@ input:focus-visible {
 
 .sidebar .row img {
   object-fit: contain;
+  animation: icon-in var(--dur-base) var(--ease-out);
+}
+
+@keyframes icon-in {
+  from {
+    opacity: 0;
+  }
 }
 
 .icon-gap {
@@ -399,6 +426,9 @@ input:focus-visible {
   margin-right: 3px;
   border-radius: 50%;
   background: var(--fg-2);
+  transition:
+    background-color var(--dur-slow) var(--ease-out),
+    box-shadow var(--dur-slow) var(--ease-out);
 }
 
 .dot.open {
@@ -433,6 +463,7 @@ input:focus-visible {
   font-size: 11.5px;
   color: var(--muted);
   white-space: nowrap;
+  transition: color var(--dur-base) var(--ease-out);
 }
 
 .gw > i {
@@ -442,6 +473,9 @@ input:focus-visible {
   border-radius: 50%;
   background: var(--green);
   box-shadow: 0 0 0 3px var(--green-soft);
+  transition:
+    background-color var(--dur-slow) var(--ease-out),
+    box-shadow var(--dur-slow) var(--ease-out);
 }
 
 .gw > span {
@@ -450,9 +484,13 @@ input:focus-visible {
   text-overflow: ellipsis;
 }
 
-.gw.off > i {
-  background: var(--muted);
-  box-shadow: none;
+.gw.bad {
+  color: var(--red);
+}
+
+.gw.bad > i {
+  background: var(--red);
+  box-shadow: 0 0 0 3px var(--red-soft);
 }
 
 .gw.warn {
@@ -526,13 +564,18 @@ input:focus-visible {
   justify-content: center;
   color: var(--muted);
   transition:
-    background 0.12s,
-    color 0.12s;
+    background-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out),
+    transform var(--dur-fast) var(--ease-out);
 }
 
 .icon:hover {
   background: var(--pill);
   color: var(--fg);
+}
+
+.icon:active:not(:disabled) {
+  transform: scale(0.94);
 }
 
 .icon:disabled {
@@ -563,7 +606,7 @@ input:focus-visible {
 .view {
   flex: 1;
   min-height: 0;
-  overflow-y: scroll;
+  overflow-y: auto;
   padding: 10px 16px 16px;
   display: flex;
   flex-direction: column;
@@ -599,6 +642,11 @@ input:focus-visible {
   text-align: center;
 }
 
+.set-none .text,
+.empty-state .text {
+  margin-top: 6px;
+}
+
 /* ---- the activity page: the launch audit, in the app's own rows ---- */
 
 .act-head {
@@ -625,11 +673,15 @@ button.prefrow {
 /* an audit row opens the app it names */
 .prefrow.click {
   cursor: pointer;
-  transition: background 0.12s;
+  transition: background-color var(--dur-fast) var(--ease-out);
 }
 
 .prefrow.click:hover {
   background: var(--pill);
+}
+
+.prefrow.click:active {
+  background: color-mix(in srgb, var(--fg) 7%, var(--pill));
 }
 
 .prefrow.click:focus-visible {
@@ -645,6 +697,7 @@ button.prefrow {
   gap: 6px;
   font-size: 11.5px;
   color: var(--muted);
+  transition: color var(--dur-base) var(--ease-out);
 }
 
 .state::before {
@@ -653,6 +706,9 @@ button.prefrow {
   height: 6px;
   border-radius: 50%;
   background: var(--fg-2);
+  transition:
+    background-color var(--dur-slow) var(--ease-out),
+    box-shadow var(--dur-slow) var(--ease-out);
 }
 
 .state.open {
@@ -669,6 +725,7 @@ button.prefrow {
   font-size: 12.5px;
   line-height: 1.5;
   color: var(--muted);
+  font-variant-numeric: tabular-nums;
 }
 
 .prefrow .name .when {
@@ -773,6 +830,10 @@ button.prefrow {
   background: var(--pill);
 }
 
+.adv-toggle:active {
+  background: color-mix(in srgb, var(--fg) 7%, var(--pill));
+}
+
 .adv-toggle:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
@@ -788,11 +849,17 @@ button.prefrow {
   stroke-linecap: round;
   stroke-linejoin: round;
   stroke-width: 1.5;
-  transition: transform 0.12s var(--ease);
+  transition: transform var(--dur-base) var(--ease-out);
 }
 
 .advanced[open] .adv-toggle .chev {
   transform: rotate(180deg);
+}
+
+/* While the fold is closing, `open` stays set until the height has finished,
+   so the chevron needs its own signal to turn back with the animation. */
+.advanced.closing .adv-toggle .chev {
+  transform: rotate(0deg);
 }
 
 .num:focus-visible,
@@ -860,6 +927,7 @@ button.prefrow {
   width: 22px;
   height: 22px;
   object-fit: contain;
+  animation: icon-in var(--dur-base) var(--ease-out);
 }
 
 .val {
@@ -923,7 +991,13 @@ button.prefrow {
   height: 19px;
   border-radius: 10px;
   background: var(--line);
-  transition: background 0.2s var(--ease);
+  transition:
+    background-color var(--dur-base) var(--ease-out),
+    transform var(--dur-fast) var(--ease-out);
+}
+
+.lib-switch:active {
+  transform: scale(0.97);
 }
 
 .lib-switch i {
@@ -936,8 +1010,8 @@ button.prefrow {
   background: #fff;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
   transition:
-    transform 0.22s var(--ease),
-    background 0.2s var(--ease);
+    transform var(--dur-slow) var(--ease-spring),
+    background-color var(--dur-base) var(--ease-out);
 }
 
 .lib-switch.on {
@@ -949,20 +1023,42 @@ button.prefrow {
   background: var(--card);
 }
 
+/* A short stretch while pressed, as the knob travels. */
+.lib-switch:active i {
+  transform: scale(1.1);
+}
+
+.lib-switch.on:active i {
+  transform: translateX(13px) scale(1.1);
+}
+
+.lib-switch:disabled {
+  opacity: 0.42;
+}
+
+.lib-switch:disabled:active {
+  transform: none;
+}
+
 .text {
   font-size: 12px;
   color: var(--ctl-fg);
   padding: 3px 7px;
   border-radius: 0;
   transition:
-    background 0.12s,
-    color 0.12s;
+    background-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out),
+    transform var(--dur-fast) var(--ease-out);
   white-space: nowrap;
 }
 
 .text:hover {
   color: var(--fg);
   background: var(--pill);
+}
+
+.text:active:not(:disabled) {
+  transform: scale(0.96);
 }
 
 .text.action {
@@ -1048,6 +1144,11 @@ button.prefrow {
   background: color-mix(in srgb, var(--bg) 55%, transparent);
 }
 
+/* A fade-out must not keep blocking the pointer. */
+.overlay.leaving {
+  pointer-events: none;
+}
+
 .busy {
   display: flex;
   align-items: center;
@@ -1061,6 +1162,14 @@ button.prefrow {
     0 2px 8px rgba(20, 22, 30, 0.06);
   font-size: 13px;
   color: var(--fg-2);
+  animation: sheet-in var(--dur-base) var(--ease-out);
+}
+
+@keyframes sheet-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(0.98);
+  }
 }
 
 .spinner {
@@ -1083,7 +1192,7 @@ button.prefrow {
 .banner {
   position: absolute;
   z-index: 45;
-  left: 16px;
+  left: 228px;
   right: 16px;
   bottom: 16px;
   display: flex;
@@ -1098,6 +1207,21 @@ button.prefrow {
   box-shadow:
     0 8px 24px rgba(20, 22, 30, 0.12),
     0 0 0 0.5px rgba(20, 22, 30, 0.08);
+  transition:
+    background-color var(--dur-base) var(--ease-out),
+    color var(--dur-base) var(--ease-out),
+    border-color var(--dur-base) var(--ease-out);
+}
+
+/* The restore panel has no sidebar, so its line spans the whole window. */
+main .banner {
+  left: 16px;
+}
+
+.banner.ok {
+  border-color: color-mix(in srgb, var(--green) 26%, var(--line));
+  background: var(--green-soft);
+  color: var(--green);
 }
 
 .banner span {
@@ -1114,9 +1238,176 @@ button.prefrow {
   color: var(--red);
 }
 
+.banner.ok .text {
+  color: var(--green);
+}
+
+.banner.ok .text:hover {
+  background: color-mix(in srgb, var(--green) 14%, transparent);
+  color: var(--green);
+}
+
+/* ---- loading and new content ---- */
+
+.sk {
+  position: relative;
+  display: block;
+  overflow: hidden;
+  background: var(--line-2);
+  border-radius: 3px;
+}
+
+.sk::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--card) 75%, transparent),
+    transparent
+  );
+  animation: shimmer 1.4s var(--ease) infinite;
+}
+
+@keyframes shimmer {
+  to {
+    transform: translateX(100%);
+  }
+}
+
+.sk-name {
+  width: 92px;
+  height: 10px;
+}
+
+.sk-sub {
+  width: min(180px, 60%);
+  height: 9px;
+  margin-top: 7px;
+}
+
+.sk-pill {
+  flex: none;
+  width: 108px;
+  height: 22px;
+  margin-left: auto;
+}
+
+.sk-ic {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+}
+
+.sk-row {
+  min-height: 48px;
+}
+
+.sk-row + .sk-row {
+  border-top: 1px solid var(--line-2);
+}
+
+.skeleton-card {
+  margin-top: 14px;
+  background: var(--card);
+  border: 1px solid var(--line);
+}
+
+.skeleton-card .prefrow {
+  min-height: 48px;
+}
+
+/* A row that just appeared or changed outcome. The static tint is what
+   reduced-motion users see; the animation only fades it out. */
+.prefrow.fresh {
+  background-color: color-mix(in srgb, var(--accent) 9%, transparent);
+  animation: fresh-row 1.2s var(--ease-out) forwards;
+}
+
+@keyframes fresh-row {
+  to {
+    background-color: transparent;
+  }
+}
+
+/* A launch that is still waiting on a password box. */
+.outcome.wait::before {
+  content: "";
+  align-self: center;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: wait-pulse 1.8s var(--ease) infinite;
+}
+
+@keyframes wait-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.8);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* A theme switch is a state change too: fade the large surfaces rather than
+   snapping every colour at once. The class is removed after the transition. */
+html.theme-fade body,
+html.theme-fade main,
+html.theme-fade .app,
+html.theme-fade .sidebar,
+html.theme-fade .side-foot,
+html.theme-fade .segs,
+html.theme-fade .search,
+html.theme-fade .num,
+html.theme-fade .set .list,
+html.theme-fade .skeleton-card,
+html.theme-fade .text.action,
+html.theme-fade .busy,
+html.theme-fade .banner {
+  transition:
+    background-color var(--dur-slow) var(--ease-out),
+    color var(--dur-slow) var(--ease-out),
+    border-color var(--dur-slow) var(--ease-out),
+    box-shadow var(--dur-slow) var(--ease-out);
+}
+
+/* At the settings window's narrow end, a label and its controls share a row
+   only at the price of a three-line sentence. Let a control group drop to its
+   own line instead of squeezing the explanation. */
+@media (max-width: 860px) {
+  .prefrow {
+    flex-wrap: wrap;
+  }
+
+  .prefrow > .val,
+  .prefrow > .segs {
+    width: 100%;
+    margin-left: 0;
+    justify-content: flex-start;
+  }
+
+  .prefrow > .lib-switch {
+    margin-left: auto;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   * {
     transition: none !important;
     animation: none !important;
+  }
+
+  /* A frozen arc reads as a broken progress ring. The label carries the
+     state without it. */
+  .spinner,
+  .row-spinner {
+    display: none;
   }
 }

@@ -22,11 +22,12 @@ const zh = {
 
   "filters.all": "全部",
   "filters.protected": "受保护",
-  "filters.unlocked": "已解锁",
+  "filters.unlocked": "已认证",
   "sidebar.search": "搜索应用",
   "sidebar.group": "应用",
   "sidebar.empty.match": "没有匹配的应用",
   "sidebar.empty.none": "没有可显示的应用",
+  "sidebar.empty.clear": "清除筛选",
   "sidebar.general": "通用",
   "daemon.online": "应用锁在运行",
   "daemon.offline": "应用锁没有响应",
@@ -39,8 +40,13 @@ const zh = {
   "health.daemonOff": "应用锁无响应",
   "health.agentOff": "会话代理未运行",
   "health.bothOff": "应用锁和会话代理都未运行",
-  "dot.unlocked": "启动凭证有效",
-  "dot.locked": "启动需认证",
+  "health.password": "应用锁密码未设置",
+  "health.version": "shisad 版本不一致",
+  "health.hint.password": "设置应用锁密码：sudo passwd shisa-lock",
+  "health.hint.version":
+    "shisad 与设置程序版本不一致，重启 shisad 和 shisa-agent 后再打开设置。",
+  "dot.unlocked": "已认证，有效期内启动和恢复不再询问",
+  "dot.locked": "需认证，启动和恢复需要应用锁密码",
 
   "crumb.settings": "设置",
   "crumb.apps": "应用",
@@ -49,6 +55,7 @@ const zh = {
   "top.search": "查找设置",
   "top.lockAll": "全部上锁",
   "top.lockAllNone": "没有受保护的应用",
+  "top.lockAllHint": "全部上锁。设置窗口会关闭，以结束本次授权。",
   "top.minimize": "最小化",
   "top.close": "关闭",
 
@@ -58,17 +65,20 @@ const zh = {
   "password.name": "还没设置应用锁密码",
   "password.sub":
     "受保护的应用要输入应用锁密码，这个密码还没设，现在所有认证都会失败。请管理员在终端运行",
-  "password.after": "，完成后重新打开这个窗口。",
+  "password.after": "，完成后点「重新检查」。",
+  "password.recheck": "重新检查",
+  "password.ready": "应用锁密码已设置。",
+  "password.missing": "应用锁密码仍未设置。",
   "version.name": "shisad 与设置程序设计版本不一致",
   "version.sub":
     "shisad {daemon}，设置程序 {app}。升级后请运行 sudo systemctl restart shisad.service，并运行 systemctl --user restart shisa-agent.service。",
 
   "general.grace.name": "默认宽限期",
   "general.grace.sub": "认证通过后这段时间内再打开不再询问。",
-  "general.clear.name": "锁屏时清除已通过的认证",
+  "general.clear.name": "锁屏时收回认证",
   "general.clear.sub": "开启后锁屏收回受保护窗口，解锁后重新认证。",
   "general.clear.note": "关闭时，锁屏不改变正在使用的窗口，只影响下一次启动。",
-  "general.timeout.name": "认证框等待上限",
+  "general.timeout.name": "认证等待上限",
   "general.timeout.sub":
     "超时即拒绝启动。连续 3 次认证失败会暂停应用锁约 10 分钟。",
   "general.timeout.note":
@@ -93,6 +103,7 @@ const zh = {
   "diag.config": "配置文件",
   "diag.unavailable": "当前守护进程不提供诊断信息，装上新版 shisad 后可用。",
   "settings.empty.match": "没有匹配的设置",
+  "settings.empty.clear": "清除搜索",
   "settings.loading": "正在读取设置…",
 
   "activity.title": "最近启动",
@@ -107,17 +118,20 @@ const zh = {
   "activity.empty.denied": "没有拒绝的记录。",
   "activity.open": "打开这个应用的页面",
 
-  "app.state.unlocked": "启动凭证有效",
-  "app.state.locked": "启动需认证",
-  "app.lockNow": "立即上锁",
-  "app.unlockNow": "立即解锁",
+  "app.state.unlocked": "已认证",
+  "app.state.locked": "需认证",
+  "app.lockNow": "收回认证",
+  "app.unlockNow": "现在认证",
   "app.failure": "最近一次启动失败",
   "app.protect.name": "启动前要求认证",
+  "app.protect.sub": "开启后，启动这个应用要输入应用锁密码。",
+  "app.protect.nopath": "没有可拦截的启动入口，无法开启保护。",
+  "app.inactive.count": "{count} 条保护路径未生效，启动拦截不完整。",
   "app.grace.name": "宽限期",
   "app.relock.name": "失焦后隐藏",
   "app.relock.sub": "失焦这么久后隐藏窗口。宽限期内恢复不再询问。",
   "app.relock.warn":
-    "失焦隐藏会保留启动凭证，宽限期内可从恢复面板免密还原。借出桌面前请先使用「全部上锁」。",
+    "失焦隐藏保留启动凭证，宽限期内可免密还原。借出桌面前请先「全部上锁」。",
   "app.advanced": "高级设置",
   "app.customRelock": "自定义失焦时长",
   "app.autostart.name": "自启动",
@@ -132,9 +146,11 @@ const zh = {
     "至少保留一条保护路径。要放开这个应用，请关掉上面的保护开关。",
   "app.path.none": "还没有路径。",
   "app.path.placeholder": "/usr/bin/程序 或 /opt/游戏/启动器",
-  "app.coverage.name": "覆盖情况",
-  "app.coverage.note":
-    "覆盖情况列出从 desktop 文件解析出的入口，未生效的路径会单独标出。",
+  "app.coverage.name": "保护范围",
+  "app.coverage.note": "保护范围列出启动会拦截的路径，以及窗口隐藏的实际边界。",
+  "app.paths.name": "启动入口",
+  "app.paths.potential": "开启保护后会拦截这些路径。",
+  "app.paths.noneEffective": "当前没有路径在生效。",
   "app.windows.name": "已打开的窗口",
   "app.windows.sub": "锁屏后隐藏，重开时重新认证。",
   "app.windows.note": "窗口层以用户身份运行，同账号的程序可以绕过隐藏和恢复。",
@@ -143,9 +159,12 @@ const zh = {
   "app.none": "选择左侧的应用",
   "app.addPath.absolute": "保护路径要写绝对路径，例如 /usr/bin/程序。",
 
+  "toast.locked": "{app} 的认证已收回",
+  "toast.authorized": "{app} 已认证",
+
   "restore.windows": "{count} 个窗口",
-  "restore.ticketed": "点击直接恢复 · {count} 个窗口",
-  "restore.auth": "需要应用锁密码 · {count} 个窗口",
+  "restore.ticketed": "点击恢复，不需要密码 · {count} 个窗口",
+  "restore.auth": "点击恢复，需要应用锁密码 · {count} 个窗口",
   "restore.loading": "正在查找窗口…",
   "restore.empty": "没有隐藏的窗口",
   "restore.agentMissing": "会话代理没有运行",
@@ -153,8 +172,10 @@ const zh = {
     "托盘和窗口隐藏都不可用。在终端运行 systemctl --user start shisa-agent.service，然后重试。",
   "restore.retry": "重试",
   "restore.openSettings": "打开设置",
+  "restore.settings": "设置",
   "restore.lockAll": "全部上锁",
   "restore.lockedAll": "已全部上锁。",
+  "restore.restored": "已恢复，窗口马上回来。",
   "restore.waiting": "正在恢复…",
   "restore.error.read": "无法读取隐藏窗口。",
   "restore.error.restore": "无法恢复窗口，请重试。",
@@ -172,8 +193,8 @@ const zh = {
   "relock.30m": "30 分钟",
 
   "outcome.granted": "认证通过",
-  "outcome.ticket": "票据",
-  "outcome.instance": "进程",
+  "outcome.ticket": "已认证",
+  "outcome.instance": "已在运行",
   "outcome.autostart": "自启动",
   "outcome.selfexec": "子进程",
   "outcome.asked": "认证中",
@@ -208,11 +229,12 @@ const en = {
 
   "filters.all": "All",
   "filters.protected": "Protected",
-  "filters.unlocked": "Unlocked",
+  "filters.unlocked": "Authorized",
   "sidebar.search": "Search apps",
   "sidebar.group": "Apps",
   "sidebar.empty.match": "No matching apps",
   "sidebar.empty.none": "No apps to show",
+  "sidebar.empty.clear": "Clear filters",
   "sidebar.general": "General",
   "daemon.online": "App lock is running",
   "daemon.offline": "App lock is not responding",
@@ -226,8 +248,14 @@ const en = {
   "health.daemonOff": "App lock is not responding",
   "health.agentOff": "Session agent is not running",
   "health.bothOff": "Both services are down",
-  "dot.unlocked": "Launch ticket valid",
-  "dot.locked": "Authentication required to launch",
+  "health.password": "App-lock password is not set",
+  "health.version": "shisad version differs",
+  "health.hint.password":
+    "Set the app-lock password: translate passwd shisa-lock",
+  "health.hint.version":
+    "shisad and the settings app differ. Restart shisad and shisa-agent, then reopen settings.",
+  "dot.unlocked": "Authorized. Launches and restores do not ask while valid.",
+  "dot.locked": "Authentication required for launches and restores.",
 
   "crumb.settings": "Settings",
   "crumb.apps": "Apps",
@@ -236,6 +264,8 @@ const en = {
   "top.search": "Search settings",
   "top.lockAll": "Lock all",
   "top.lockAllNone": "No protected apps",
+  "top.lockAllHint":
+    "Locks all apps. This window closes to end the current authorization.",
   "top.minimize": "Minimize",
   "top.close": "Close",
 
@@ -245,7 +275,10 @@ const en = {
   "password.name": "The app-lock password is not set",
   "password.sub":
     "Protected apps ask for the app-lock password, which has not been set, so every authentication will fail. Ask an administrator to run",
-  "password.after": " in a terminal, then reopen this window.",
+  "password.after": " in a terminal, then choose Check again.",
+  "password.recheck": "Check again",
+  "password.ready": "The app-lock password is set.",
+  "password.missing": "The app-lock password is still not set.",
   "version.name": "shisad and the settings app have different versions",
   "version.sub":
     "shisad {daemon}, settings {app}. After an upgrade, run sudo systemctl restart shisad.service and systemctl --user restart shisa-agent.service.",
@@ -253,12 +286,12 @@ const en = {
   "general.grace.name": "Default grace period",
   "general.grace.sub":
     "After a successful authentication, launches in this period do not ask again.",
-  "general.clear.name": "Clear authentication on screen lock",
+  "general.clear.name": "Revoke authorization on screen lock",
   "general.clear.sub":
     "Takes back protected windows when the screen locks. Unlocking asks again.",
   "general.clear.note":
     "When off, a screen lock leaves windows in use alone and only affects the next launch.",
-  "general.timeout.name": "Authentication prompt timeout",
+  "general.timeout.name": "Authentication timeout",
   "general.timeout.sub":
     "Timing out refuses the launch. Three failures in a row pause the app lock for about 10 minutes.",
   "general.timeout.note":
@@ -285,6 +318,7 @@ const en = {
   "diag.unavailable":
     "This daemon does not provide diagnostics. Install a newer shisad to see them.",
   "settings.empty.match": "No matching settings",
+  "settings.empty.clear": "Clear search",
   "settings.loading": "Reading settings…",
 
   "activity.title": "Recent launches",
@@ -301,18 +335,24 @@ const en = {
   "activity.empty.denied": "No refusals.",
   "activity.open": "Open this app's page",
 
-  "app.state.unlocked": "Launch ticket valid",
-  "app.state.locked": "Authentication required to launch",
-  "app.lockNow": "Lock now",
-  "app.unlockNow": "Unlock now",
+  "app.state.unlocked": "Authorized",
+  "app.state.locked": "Authentication required",
+  "app.lockNow": "Revoke",
+  "app.unlockNow": "Authenticate now",
   "app.failure": "Last launch failed",
   "app.protect.name": "Require authentication before launch",
+  "app.protect.sub":
+    "When on, launching this app asks for the app-lock password.",
+  "app.protect.nopath":
+    "No launch entry can be gated, so protection cannot be turned on.",
+  "app.inactive.count":
+    "{count} protected path does not take effect, so launch gating is incomplete.|{count} protected paths do not take effect, so launch gating is incomplete.",
   "app.grace.name": "Grace period",
   "app.relock.name": "Hide when focus is lost",
   "app.relock.sub":
     "Hides the window after this long without focus. Restoring in the grace period does not ask again.",
   "app.relock.warn":
-    "A focus-loss hide keeps the launch ticket, so the restore panel reopens the window without a password until the grace period ends. Use Lock all before lending the desktop.",
+    "A focus-loss hide keeps the launch ticket, so restores stay password-free until the grace period ends. Use Lock all before lending the desktop.",
   "app.advanced": "Advanced settings",
   "app.customRelock": "Custom focus-loss delay",
   "app.autostart.name": "Autostart",
@@ -328,9 +368,12 @@ const en = {
     "Keep at least one protected path. To release this app, turn off protection above.",
   "app.path.none": "No paths yet.",
   "app.path.placeholder": "/usr/bin/program or /opt/game/launcher",
-  "app.coverage.name": "Coverage",
+  "app.coverage.name": "Protection coverage",
   "app.coverage.note":
-    "Coverage lists the entries resolved from the desktop file, and marks paths that are not in effect.",
+    "Protection coverage lists the paths that gate launches and the limits of window hiding.",
+  "app.paths.name": "Launch paths",
+  "app.paths.potential": "Turning on protection gates these paths.",
+  "app.paths.noneEffective": "No path is in effect right now.",
   "app.windows.name": "Open windows",
   "app.windows.sub": "Hidden after a lock, and asks again when reopened.",
   "app.windows.note":
@@ -342,11 +385,14 @@ const en = {
   "app.addPath.absolute":
     "Protected paths must be absolute, for example /usr/bin/program.",
 
+  "toast.locked": "Revoked authorization for {app}",
+  "toast.authorized": "{app} is authorized",
+
   "restore.windows": "{count} window|{count} windows",
   "restore.ticketed":
-    "Restores without a prompt · {count} window|Restores without a prompt · {count} windows",
+    "Click to restore without a password · {count} window|Click to restore without a password · {count} windows",
   "restore.auth":
-    "Asks for the app-lock password · {count} window|Asks for the app-lock password · {count} windows",
+    "Click to restore, asks for the app-lock password · {count} window|Click to restore, asks for the app-lock password · {count} windows",
   "restore.loading": "Looking for windows…",
   "restore.empty": "No hidden windows",
   "restore.agentMissing": "The session agent is not running",
@@ -354,8 +400,10 @@ const en = {
     "The tray and window hiding are unavailable. Run systemctl --user start shisa-agent.service in a terminal, then retry.",
   "restore.retry": "Retry",
   "restore.openSettings": "Open settings",
+  "restore.settings": "Settings",
   "restore.lockAll": "Lock all",
   "restore.lockedAll": "Locked all apps.",
+  "restore.restored": "Restored. The window is coming back.",
   "restore.waiting": "Restoring…",
   "restore.error.read": "Could not read hidden windows.",
   "restore.error.restore": "Could not restore the window. Try again.",
@@ -373,8 +421,8 @@ const en = {
   "relock.30m": "30 minutes",
 
   "outcome.granted": "authenticated",
-  "outcome.ticket": "ticket",
-  "outcome.instance": "process",
+  "outcome.ticket": "authorized",
+  "outcome.instance": "already running",
   "outcome.autostart": "autostart",
   "outcome.selfexec": "child process",
   "outcome.asked": "authenticating",

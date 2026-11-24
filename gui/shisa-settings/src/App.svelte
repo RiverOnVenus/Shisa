@@ -2,7 +2,10 @@
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { getCurrentWindow } from "@tauri-apps/api/window";
+  import { flip } from "svelte/animate";
+  import { cubicOut } from "svelte/easing";
   import { onMount, tick, untrack } from "svelte";
+  import { fade, fly, slide } from "svelte/transition";
   import {
     ago,
     detail,
@@ -22,6 +25,7 @@
     languages,
     plural,
   } from "./i18n.js";
+  import { fold, motionMs, pageIn, paintTheme } from "./motion.js";
 
   let { language: initialLanguage = "en" } = $props();
   // The language is read once when the window mounts. Later changes come
@@ -41,9 +45,15 @@
   const adminUser = "shisa-lock";
 
   let apps = $state([]); // {id, name, icon, protected, unlocked, paths, effective}
+  // Until the first list read finishes, the sidebar shows nothing rather than
+  // a false "no apps" state.
+  let appsReady = $state(false);
   let query = $state("");
   let filter = $state("all");
   let currentId = $state(null);
+  // The row that owns the sidebar list's single tab stop.
+  let rovingId = $state(null);
+  let viewEl;
   // "app" is the selected application's page, "general" the shared settings,
   // "activity" the live list of the daemon's launch decisions.
   let page = $state("app");
@@ -53,6 +63,10 @@
   let config = $state({ grace: 300, autostart: false, relock: 0, protected: false, ready: false });
   let resolved = $state([]);
   let notes = $state([]);
+  // Null while the resolve request is in flight, true on a successful read,
+  // false when it failed. Only a successful empty read proves that the app
+  // has no launch entry worth protecting.
+  let resolveOk = $state(null);
   // Whether the grace picker shows its number field. Set when the stored value
   // is not one of the presets, or when the custom button is clicked.
   let graceApp = $state(false);
@@ -68,10 +82,21 @@
   let globalReady = $state(false);
 
   let busy = $state(0);
+  // A change that finishes quickly must not flash a full-window sheet. The
+  // overlay only appears after the work has lasted long enough to notice.
+  let busyShown = $state(false);
   // What the busy overlay says. A lock takes no authentication, so it must
   // not claim to be waiting for one.
   let busyLabel = $state("");
   let error = $state("");
+  // A short confirmation for an action whose only other feedback is a state
+  // label far away from the button.
+  let toast = $state("");
+  let toastTimer = 0;
+  // Rows that appeared or changed outcome since the last activity poll. The
+  // class clears after the highlight has been read.
+  let freshIds = $state(new Set());
+  const freshTimers = new Map();
   let icons = $state({});
   // Whether shisad answered the last list request. The sidebar foot says it.
   let daemon = $state(false);
@@ -100,6 +125,9 @@
   let activityNote = $state("");
   // "all" or "denied". The audit list is worth reading mostly for refusals.
   let activityFilter = $state("all");
+  // The 800ms poll, the 10s tick and a page switch can overlap. Only the
+  // newest read may write the list.
+  let activityGeneration = 0;
   // The general page's diagnostics card, read from the daemon. Null when the
   // daemon is too old to answer.
   let diag = $state(null);
@@ -109,17 +137,28 @@
   const versionMismatch = $derived(
     Boolean(diag && appVersion && diag.version !== appVersion),
   );
-  // One line for the whole health state. Naming both services only when they
-  // are healthy would repeat the same sentence in every window, so the
-  // healthy case stays short and the tooltip carries the breakdown.
-  const health = $derived(
-    daemon && agent
-      ? t("health.ok")
-      : !daemon && !agent
-        ? t("health.bothOff")
-        : !daemon
-          ? t("health.daemonOff")
-          : t("health.agentOff"),
+  // One line for the whole health state. It includes setup problems, not only
+  // whether the two services answer: "Running normally" while every
+  // authentication fails for a missing password is not true. Naming both
+  // services only when they are healthy would repeat the same sentence in
+  // every window, so the healthy case stays short and the tooltip carries the
+  // breakdown.
+  const health = $derived.by(() => {
+    if (daemon && agent) {
+      if (diag?.adminReady === false) return t("health.password");
+      if (versionMismatch) return t("health.version");
+      return t("health.ok");
+    }
+    if (!daemon && !agent) return t("health.bothOff");
+    return !daemon ? t("health.daemonOff") : t("health.agentOff");
+  });
+  // A single level, so the dot cannot be told to be both off and warning.
+  const healthLevel = $derived(
+    !daemon && !agent
+      ? "bad"
+      : !daemon || !agent || diag?.adminReady === false || versionMismatch
+        ? "warn"
+        : "ok",
   );
   const healthDetail = $derived.by(() => {
     const lines = [
@@ -127,6 +166,8 @@
       t(agent ? "agent.online" : "agent.offline"),
     ];
     if (!agent) lines.push(t("agent.hint.off"));
+    if (daemon && diag?.adminReady === false) lines.push(t("health.hint.password"));
+    if (versionMismatch) lines.push(t("health.hint.version"));
     return lines.join("\n");
   });
   // Locking only takes state away, so the button is pointless when nothing
@@ -138,7 +179,7 @@
   );
   const lockAllTitle = $derived(
     hasProtected === true
-      ? t("top.lockAll")
+      ? t("top.lockAllHint")
       : hasProtected === false
         ? t("top.lockAllNone")
         : t("daemon.offline"),
@@ -154,6 +195,39 @@
     return counts;
   });
   const visible = $derived(apps.filter((a) => matches(a, query, filter)));
+  // The app page and each app's page are separate view states, not a full
+  // rebuild: the action below animates the existing column so focus and a
+  // half-typed search survive.
+  const viewKey = $derived(page === "app" ? `app:${currentId}` : page);
+  // One tab stop for the whole app list, kept on the selected row when it is
+  // visible and otherwise on the first row.
+  const focusableId = $derived(
+    visible.some((a) => a.id === rovingId)
+      ? rovingId
+      : visible.some((a) => a.id === currentId)
+        ? currentId
+        : (visible[0]?.id ?? null),
+  );
+  // Configured paths that the daemon could not mark. A protected app with any
+  // of these is only partly gated, which the header says plainly.
+  const inactivePaths = $derived(
+    (current?.paths ?? []).filter(
+      (path) => !(current?.effective ?? []).includes(path),
+    ),
+  );
+  // A protected app shows what is actually marked; an unprotected app shows
+  // what turning protection on would cover.
+  const coveredPaths = $derived(
+    !current ? [] : config.protected ? (current.effective ?? []) : resolved,
+  );
+  // A successful resolve with no paths means the daemon would refuse the
+  // protection request. Do not offer an action that is known to fail.
+  const protectBlocked = $derived(
+    config.ready &&
+      !config.protected &&
+      resolveOk === true &&
+      resolved.length === 0,
+  );
   // The audit list, newest first. The refusals-only filter keeps the rows
   // that ended without the user's yes.
   const failure = $derived([...launches].reverse().find((row) => row.app === currentId && outcomeClass(row.kind) === "bad"));
@@ -200,6 +274,87 @@
     error = e instanceof Error ? e.message : String(e);
   }
 
+  /// Show a short confirmation and then clear it. Errors stay until the user
+  /// closes them; a confirmation should not linger over the next task.
+  function say(message) {
+    toast = message;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => (toast = ""), 2600);
+  }
+
+  async function resetScroll() {
+    await tick();
+    if (viewEl) viewEl.scrollTop = 0;
+  }
+
+  const LAST_APP = "shisa.settings.lastApp";
+  function readLastApp() {
+    try {
+      return localStorage.getItem(LAST_APP);
+    } catch {
+      return null;
+    }
+  }
+  function rememberApp(id) {
+    try {
+      localStorage.setItem(LAST_APP, id);
+    } catch {
+      // A private or full store is not worth failing the page over.
+    }
+  }
+  function preferredApp() {
+    const saved = readLastApp();
+    return (
+      apps.find((app) => app.id === saved)?.id ?? apps[0]?.id ?? null
+    );
+  }
+
+  /// Arrow keys move focus through the app list, which has a single tab stop.
+  /// Enter or Space still selects, as on any button.
+  function navKeys(event) {
+    if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+    const list = event.currentTarget.closest("ul.list");
+    const rows = [...(list?.querySelectorAll(".row") ?? [])];
+    const index = rows.indexOf(document.activeElement);
+    if (index < 0) return;
+    event.preventDefault();
+    const next =
+      event.key === "Home"
+        ? 0
+        : event.key === "End"
+          ? rows.length - 1
+          : (index + (event.key === "ArrowDown" ? 1 : -1) + rows.length) %
+            rows.length;
+    const id = rows[next].dataset.app;
+    if (id) rovingId = id;
+    rows[next].focus();
+  }
+
+  function clearFilters() {
+    query = "";
+    filter = "all";
+  }
+
+  function clearSettingsSearch() {
+    settingsQuery = "";
+    filterSettings();
+  }
+
+  /// The password is set by an administrator outside this window. Re-reading
+  /// the daemon's diagnostics is enough to clear the notice. A failed read is
+  /// unknown, so it keeps the notice and says that the check did not happen.
+  async function recheckSetup() {
+    const previous = diag;
+    const failure = await loadDiag();
+    if (failure) {
+      diag = previous;
+      fail(failure);
+      return;
+    }
+    if (diag && diag.adminReady !== false) say(t("password.ready"));
+    else say(t("password.missing"));
+  }
+
   /// Save a new interface language. This is the shell's own preference, so
   /// no authentication is involved. The window re-renders from `lang`, and
   /// the tray follows the same file on its own.
@@ -230,6 +385,19 @@
     document.title = t("app.title");
   });
 
+  // Fast changes resolve without a sheet. Waiting 160ms keeps a confirmation
+  // from flashing over the page for a single frame.
+  $effect(() => {
+    if (busy > 0) {
+      const timer = setTimeout(() => (busyShown = true), 160);
+      return () => {
+        clearTimeout(timer);
+        busyShown = false;
+      };
+    }
+    busyShown = false;
+  });
+
   async function refresh() {
     generation++;
     const [installed, protectedList] = await Promise.all([
@@ -257,6 +425,7 @@
       row.effective = effective;
     }
     apps = rows;
+    appsReady = true;
     loadIcons(rows);
   }
 
@@ -278,35 +447,45 @@
   async function select(id) {
     page = "app";
     currentId = id;
+    rovingId = id;
+    void resetScroll();
     void loadActivity();
     newPath = "";
+    rememberApp(id);
     const row = apps.find((a) => a.id === id);
     config = { grace: 0, autostart: false, relock: 0, protected: row?.protected === true, ready: false };
     resolved = [];
     notes = [];
+    resolveOk = null;
+    // Asking both at once avoids a half-loaded page. A failed resolve is
+    // kept as an unknown, not as "this app cannot be protected".
     try {
-      const cfg = await invoke("app_config", { appId: id });
+      const [cfg, res] = await Promise.all([
+        invoke("app_config", { appId: id }),
+        invoke("resolve_app", { appId: id }).then(
+          (value) => ({ ok: true, value }),
+          (reason) => ({ ok: false, reason }),
+        ),
+      ]);
       // The user may have moved on while the daemon was answering.
       if (currentId !== id || page !== "app") return;
       config = { grace: cfg[0], autostart: cfg[1], relock: cfg[3], protected: cfg[2], ready: true };
       graceApp = !isPreset(cfg[0]);
       relockApp = !isRelockPreset(cfg[3]);
+      // A protected app whose desktop file is gone keeps its switch so it can
+      // still be unprotected; the coverage card carries the failed lookup.
+      if (res.ok) {
+        resolved = res.value[0];
+        notes = res.value[1];
+        resolveOk = true;
+      } else {
+        resolveOk = false;
+        notes = [
+          res.reason instanceof Error ? res.reason.message : String(res.reason),
+        ];
+      }
     } catch (e) {
       if (currentId === id && page === "app") fail(e);
-      return;
-    }
-    // A protected app whose desktop file is gone still shows its switch and
-    // paths, so it can be unprotected. Only the coverage card reports the
-    // failed lookup.
-    try {
-      const res = await invoke("resolve_app", { appId: id });
-      if (currentId !== id || page !== "app") return;
-      resolved = res[0];
-      notes = res[1];
-    } catch (e) {
-      if (currentId === id && page === "app") {
-        notes = [e instanceof Error ? e.message : String(e)];
-      }
     }
   }
 
@@ -315,6 +494,7 @@
     currentId = null;
     globalReady = false;
     settingsQuery = "";
+    void resetScroll();
     await Promise.all([loadGlobal(), loadDiag()]);
     // The diagnostics rows render after the daemon answers. Apply a query
     // typed while they were loading.
@@ -323,30 +503,36 @@
   }
 
   /// The live page: the daemon's recent launch decisions, polled while it is
-  /// open. The animation is driven by ids that were not on the page before.
+  /// open. A row that was not there before, or whose outcome changed, is
+  /// briefly highlighted so the new line is not lost in a list that moves.
   async function selectActivity() {
     page = "activity";
     currentId = null;
+    void resetScroll();
     await loadActivity();
   }
 
   async function loadActivity() {
     if (page !== "activity" && page !== "app") return;
+    const gen = ++activityGeneration;
     let rows, counts;
     try {
       [rows, ...counts] = await invoke("recent_launches");
     } catch {
+      if (gen !== activityGeneration) return;
       activityNote = daemon
         ? t("activity.note.old")
         : t("activity.note.offline");
       return;
     }
-    // A poll that raced the page switch puts nothing back.
+    // A newer read already answered, or a poll raced the page switch.
+    if (gen !== activityGeneration) return;
     if (page !== "activity" && page !== "app") return;
     activityNote = "";
     [activityCounts.requests, activityCounts.allowed, activityCounts.denied] = counts;
     // `done` came with the daemon that records when a box was answered; an
     // older one stops at `until`, and the page still renders without it.
+    const previous = new Map(launches.map((row) => [row.id, row.kind]));
     const next = rows.map(([id, at, app, pid, kind, until, done]) => ({
       id,
       at,
@@ -356,6 +542,37 @@
       until,
       resolved_at: done ?? 0,
     }));
+    // The first fill of the page is not news. Later rows mark only what
+    // appeared or changed outcome, and the tint clears on its own.
+    if (page === "activity" && previous.size > 0) {
+      const fresh = next.filter((row) => previous.get(row.id) !== row.kind);
+      if (fresh.length) {
+        const ids = new Set(freshIds);
+        for (const row of fresh) {
+          ids.add(row.id);
+          clearTimeout(freshTimers.get(row.id));
+          freshTimers.set(
+            row.id,
+            setTimeout(() => {
+              const remaining = new Set(freshIds);
+              remaining.delete(row.id);
+              freshIds = remaining;
+              freshTimers.delete(row.id);
+            }, 1200),
+          );
+        }
+        freshIds = ids;
+      }
+      const live = new Set(next.map((row) => row.id));
+      for (const id of [...freshIds]) {
+        if (live.has(id)) continue;
+        clearTimeout(freshTimers.get(id));
+        freshTimers.delete(id);
+        const remaining = new Set(freshIds);
+        remaining.delete(id);
+        freshIds = remaining;
+      }
+    }
     launches = next;
   }
 
@@ -400,8 +617,10 @@
         adminReady,
         configFailed,
       };
-    } catch {
+      return null;
+    } catch (e) {
       diag = null;
+      return e;
     }
   }
 
@@ -411,23 +630,27 @@
   async function change(action, after, label = null) {
     // Keyboard activation can reach a focused control through the busy
     // overlay, which only blocks the pointer.
-    if (busy > 0) return;
+    if (busy > 0) return false;
     busyLabel = label ?? t("busy.auth");
     busy++;
     generation++;
     error = "";
+    let ok = true;
     try {
       await action();
     } catch (e) {
+      ok = false;
       fail(e);
     }
     try {
       await after();
     } catch (e) {
+      ok = false;
       fail(e);
     } finally {
       busy--;
     }
+    return ok;
   }
 
   function setProtected(on) {
@@ -507,26 +730,37 @@
     );
   }
 
-  function lockAll() {
+  async function lockAll() {
     if (hasProtected !== true) return;
-    change(() => invoke("lock", { appId: "" }), refresh, t("busy.lock"));
+    const ok = await change(() => invoke("lock", { appId: "" }), refresh, t("busy.lock"));
+    // The daemon usually closes this window on a global lock. If the signal
+    // is late or missing, still confirm what happened.
+    if (ok) say(t("restore.lockedAll"));
   }
 
   /// Drop this app's ticket without authentication: locking only ever takes
   /// something away.
-  function lockNow() {
+  async function lockNow() {
     const id = currentId;
-    change(() => invoke("lock", { appId: id }), syncTickets, t("busy.lock"));
+    const name = nameOf(id);
+    const ok = await change(
+      () => invoke("lock", { appId: id }),
+      syncTickets,
+      t("busy.lock"),
+    );
+    if (ok && currentId === id) say(t("toast.locked", { app: name }));
   }
 
   /// Ask for a ticket now, the way `shisa unlock` does. The box answers first,
   /// then the row's unlocked mark changes.
-  function unlockNow() {
+  async function unlockNow() {
     const id = currentId;
-    change(
+    const name = nameOf(id);
+    const ok = await change(
       () => invoke("unlock", { appId: id }),
       syncTickets,
     );
+    if (ok && currentId === id) say(t("toast.authorized", { app: name }));
   }
 
   /// Open an app's own page from its audit row, when the app still exists.
@@ -628,7 +862,10 @@
       // on this tick brings the list back once it is.
       try {
         await refresh();
-        if (!currentId && page === "app" && apps.length) await select(apps[0].id);
+        if (!currentId && page === "app" && apps.length) {
+          const target = preferredApp();
+          if (target) await select(target);
+        }
       } catch {
         // Still down; the next tick tries again.
       }
@@ -646,9 +883,11 @@
       try {
         await refresh();
         await loadDiag();
-        if (apps.length) await select(apps[0].id);
+        const target = preferredApp();
+        if (target) await select(target);
       } catch (e) {
         daemon = false;
+        appsReady = true;
         fail(e);
       }
     })();
@@ -659,10 +898,12 @@
     // keeps deciding. main.js has already painted from that query.
     const media = matchMedia("(prefers-color-scheme: dark)");
     let followed = false;
+    let themed = false;
     const paint = (dark) => {
       followed = typeof dark === "boolean";
-      const darkNow = followed ? dark : media.matches;
-      document.documentElement.dataset.theme = darkNow ? "dark" : "light";
+      // The portal's first answer is still the opening paint, not a switch.
+      paintTheme(followed ? dark : media.matches, !themed);
+      themed = true;
     };
     const onMedia = () => {
       if (!followed) paint(null);
@@ -684,6 +925,9 @@
     return () => {
       clearInterval(tick);
       clearInterval(live);
+      clearTimeout(toastTimer);
+      for (const timer of freshTimers.values()) clearTimeout(timer);
+      freshTimers.clear();
       window.removeEventListener("focus", onFocus);
       media.removeEventListener("change", onMedia);
       unlisten.then((off) => off());
@@ -698,12 +942,18 @@
         <button
           class="opt"
           class:on={!custom && value === secs}
+          aria-pressed={!custom && value === secs}
           onclick={() => {
             setCustom(false);
             apply(secs);
           }}>{label}</button>
       {/each}
-      <button class="opt" class:on={custom} onclick={() => setCustom(true)}>{t("general.custom")}</button>
+      <button
+        class="opt"
+        class:on={custom}
+        aria-pressed={custom}
+        onclick={() => setCustom(true)}
+      >{t("general.custom")}</button>
     </div>
     {#if custom}
       <input
@@ -751,19 +1001,42 @@
         aria-label={t("sidebar.search")}
         placeholder={t("sidebar.search")}
         bind:value={query}
+        onkeydown={(event) => {
+          if (event.key === "Escape" && query) {
+            event.preventDefault();
+            query = "";
+          }
+        }}
       />
 
       <div class="segs filters">
         {#each filters as key}
-          <button class="opt" class:on={filter === key} onclick={() => (filter = key)}>{t(`filters.${key}`)}</button>
+          <button
+            class="opt"
+            class:on={filter === key}
+            aria-pressed={filter === key}
+            onclick={() => (filter = key)}
+          >{t(`filters.${key}`)}</button>
         {/each}
       </div>
 
       <div class="nav-gl">{t("sidebar.group")}</div>
       <ul class="list">
         {#each visible as app (app.id)}
-          <li>
-            <button class="row" class:on={page === "app" && app.id === currentId} onclick={() => select(app.id)}>
+          <li
+            in:fade={{ duration: motionMs(120) }}
+            animate:flip={{ duration: motionMs(140), easing: cubicOut }}
+          >
+            <button
+              class="row"
+              class:on={page === "app" && app.id === currentId}
+              data-app={app.id}
+              tabindex={app.id === focusableId ? 0 : -1}
+              aria-current={page === "app" && app.id === currentId ? "page" : undefined}
+              onfocus={() => (rovingId = app.id)}
+              onkeydown={navKeys}
+              onclick={() => select(app.id)}
+            >
               {#if icons[app.id]}
                 <img src={icons[app.id]} alt="" />
               {:else}
@@ -774,19 +1047,37 @@
                 {#if (nameCounts.get(app.name) ?? 0) > 1}<span class="sub">{app.id}</span>{/if}
               </span>
               {#if app.protected}
-                <span class="dot" class:open={app.unlocked} title={app.unlocked ? t("dot.unlocked") : t("dot.locked")}></span>
+                <span
+                  class="dot"
+                  class:open={app.unlocked}
+                  role="img"
+                  aria-label={app.unlocked ? t("dot.unlocked") : t("dot.locked")}
+                  title={app.unlocked ? t("dot.unlocked") : t("dot.locked")}
+                ></span>
               {/if}
             </button>
           </li>
         {/each}
-        {#if visible.length === 0}
-          <li class="empty-state">{query || filter !== "all" ? t("sidebar.empty.match") : t("sidebar.empty.none")}</li>
+        {#if appsReady && visible.length === 0}
+          <li class="empty-state" transition:fade={{ duration: motionMs(120) }}>
+            {#if query || filter !== "all"}
+              <div>{t("sidebar.empty.match")}</div>
+              <button class="text" onclick={clearFilters}>{t("sidebar.empty.clear")}</button>
+            {:else}
+              <div>{t("sidebar.empty.none")}</div>
+            {/if}
+          </li>
         {/if}
       </ul>
     </div>
 
     <div class="side-foot">
-      <button class="row" class:on={page === "general"} onclick={selectGeneral}>
+      <button
+        class="row"
+        class:on={page === "general"}
+        aria-current={page === "general" ? "page" : undefined}
+        onclick={selectGeneral}
+      >
         <!-- Drawn here rather than looked up as `preferences-system`: the
              theme lookup only scans apps/ and can miss, and the file's own
              colours would not follow the row's. -->
@@ -796,7 +1087,13 @@
         </svg>
         <span class="who"><span class="name">{t("sidebar.general")}</span></span>
       </button>
-      <div class="gw" class:off={!daemon && !agent} class:warn={!daemon || !agent} title={healthDetail}><i></i><span>{health}</span></div>
+      <div
+        class="gw {healthLevel}"
+        role="status"
+        aria-live="polite"
+        aria-label={health}
+        title={healthDetail}
+      ><i></i><span>{health}</span></div>
     </div>
   </aside>
 
@@ -817,6 +1114,13 @@
           placeholder={t("top.search")}
           bind:value={settingsQuery}
           oninput={filterSettings}
+          onkeydown={(event) => {
+            if (event.key === "Escape" && settingsQuery) {
+              event.preventDefault();
+              clearSettingsSearch();
+            }
+          }}
+          transition:fade={{ duration: motionMs(120) }}
         />
       {/if}
       <div class="actions">
@@ -843,8 +1147,9 @@
       </div>
     </div>
 
-    <div class="view">
-      <div class="col">
+    <div class="view" bind:this={viewEl}>
+      <div class="col" use:pageIn={viewKey}>
+      {#if page === "general"}
         {#if diag && diag.adminReady === false}
           <section class="set notice">
             <div class="list">
@@ -856,6 +1161,7 @@
                     <code>sudo passwd {adminUser}</code>{t("password.after")}
                   </div>
                 </div>
+                <button class="text action" onclick={recheckSetup}>{t("password.recheck")}</button>
               </div>
             </div>
           </section>
@@ -874,7 +1180,6 @@
             </div>
           </section>
         {/if}
-      {#if page === "general"}
         <!-- The language is a local preference, so it stays usable while the
              daemon is down and the rest of this page cannot load. -->
         <section class="set" bind:this={languageCard}>
@@ -885,14 +1190,19 @@
               </div>
               <div class="segs two">
                 {#each languages as [tag, name]}
-                  <button class="opt" class:on={lang === tag} onclick={() => chooseLanguage(tag)}>{name}</button>
+                  <button
+                    class="opt"
+                    class:on={lang === tag}
+                    aria-pressed={lang === tag}
+                    onclick={() => chooseLanguage(tag)}
+                  >{name}</button>
                 {/each}
               </div>
             </div>
           </div>
         </section>
         {#if globalReady}
-          <div bind:this={settingsRoot}>
+          <div bind:this={settingsRoot} in:fade={{ duration: motionMs(160) }}>
           <section class="set">
             <div class="list">
               <div class="prefrow">
@@ -935,7 +1245,7 @@
               </div>
               <!-- Mechanics stay folded: the visible line carries the consequence,
                    while the command and the lockout rules are lookup material. -->
-              <details class="advanced">
+              <details class="advanced" use:fold>
                 <summary class="prefrow adv-toggle">
                   <span class="name">{t("common.notes")}</span>
                   <svg class="chev" viewBox="0 0 16 16" aria-hidden="true">
@@ -988,7 +1298,7 @@
               {#if diag}
                 <!-- The routine numbers stay folded so the card does not repeat
                      what the header and the health line already say. -->
-                <details class="advanced">
+                <details class="advanced" use:fold>
                   <summary class="prefrow adv-toggle">
                     <span class="name">{t("diag.details")}</span>
                     <svg class="chev" viewBox="0 0 16 16" aria-hidden="true">
@@ -1038,16 +1348,42 @@
             </div>
           </section>
           </div>
-          <div class="empty set-none" hidden>{t("settings.empty.match")}</div>
+          <div class="empty set-none" hidden>
+            <div>{t("settings.empty.match")}</div>
+            <button class="text" onclick={clearSettingsSearch}>{t("settings.empty.clear")}</button>
+          </div>
         {:else}
-          <div class="empty">{t("settings.loading")}</div>
+          <div
+            class="skeleton-card"
+            aria-busy="true"
+            aria-label={t("settings.loading")}
+          >
+            <div class="prefrow">
+              <div class="who"><span class="sk sk-name"></span><span class="sk sk-sub"></span></div>
+              <span class="sk sk-pill"></span>
+            </div>
+            <div class="prefrow">
+              <div class="who"><span class="sk sk-name"></span><span class="sk sk-sub"></span></div>
+              <span class="sk sk-pill"></span>
+            </div>
+          </div>
         {/if}
       {:else if page === "activity"}
         <div class="act-head">
           <div class="label">{t("activity.title")}</div>
           <div class="segs">
-            <button class="opt" class:on={activityFilter === "all"} onclick={() => (activityFilter = "all")}>{t("activity.all")}</button>
-            <button class="opt" class:on={activityFilter === "denied"} onclick={() => (activityFilter = "denied")}>{t("activity.denied")}</button>
+            <button
+              class="opt"
+              class:on={activityFilter === "all"}
+              aria-pressed={activityFilter === "all"}
+              onclick={() => (activityFilter = "all")}
+            >{t("activity.all")}</button>
+            <button
+              class="opt"
+              class:on={activityFilter === "denied"}
+              aria-pressed={activityFilter === "denied"}
+              onclick={() => (activityFilter = "denied")}
+            >{t("activity.denied")}</button>
           </div>
         </div>
         {#if activityNote}
@@ -1069,6 +1405,8 @@
                 type="button"
                 class="prefrow"
                 class:click={openable}
+                class:fresh={freshIds.has(row.id)}
+                animate:flip={{ duration: motionMs(160), easing: cubicOut }}
                 disabled={!openable}
                 title={openable ? t("activity.open") : undefined}
                 onclick={() => openApp(row.app)}
@@ -1101,17 +1439,25 @@
       {:else if current}
         <section class="set">
           <div class="list">
-            <div class="prefrow">
+            <div class="prefrow app-head">
               {#if icons[current.id]}<img class="app-ic" src={icons[current.id]} alt="" />{/if}
               <div class="who">
                 <div class="name">{current.name}</div>
                 <div class="sub">{current.id}</div>
+                {#if config.ready && current.protected && inactivePaths.length > 0}
+                  <div class="sub warn">
+                    {t("app.inactive.count", { count: inactivePaths.length })}
+                  </div>
+                {/if}
               </div>
               {#if config.ready && current.protected}
                 <div class="val">
-                  <span class="state" class:open={current.unlocked}>{current.unlocked ? t("app.state.unlocked") : t("app.state.locked")}</span>
-                  <button class="text action" onclick={lockNow}>{t("app.lockNow")}</button>
-                  <button class="text action" onclick={unlockNow}>{t("app.unlockNow")}</button>
+                  <span class="state" class:open={current.unlocked} aria-live="polite">{current.unlocked ? t("app.state.unlocked") : t("app.state.locked")}</span>
+                  {#if current.unlocked}
+                    <button class="text action" onclick={lockNow}>{t("app.lockNow")}</button>
+                  {:else}
+                    <button class="text action" onclick={unlockNow}>{t("app.unlockNow")}</button>
+                  {/if}
                 </div>
               {/if}
             </div>
@@ -1119,7 +1465,7 @@
         </section>
 
         {#if failure && !activityNote}
-          <section class="set">
+          <section class="set" in:fade={{ duration: motionMs(140) }}>
             <div class="list">
               <div class="prefrow"><div class="who"><div class="name">{t("app.failure")}</div>
                 <div class="sub">{ago(failure.at, Date.now(), t)} · {reasonText(failure.kind, t)}</div>
@@ -1128,11 +1474,16 @@
           </section>
         {/if}
         {#if config.ready}
-          <section class="set">
+          <section class="set" in:fade={{ duration: motionMs(160) }}>
             <div class="list">
               <div class="prefrow">
                 <div class="who">
                   <div class="name">{t("app.protect.name")}</div>
+                  {#if protectBlocked}
+                    <div class="sub warn">{t("app.protect.nopath")}</div>
+                  {:else}
+                    <div class="sub">{t("app.protect.sub")}</div>
+                  {/if}
                 </div>
                 <button
                   class="lib-switch"
@@ -1140,36 +1491,43 @@
                   role="switch"
                   aria-checked={config.protected}
                   aria-label={t("app.protect.name")}
+                  disabled={protectBlocked}
+                  title={protectBlocked ? t("app.protect.nopath") : undefined}
                   onclick={() => setProtected(!config.protected)}
                 ><i></i></button>
               </div>
               {#if config.protected}
-                <div class="prefrow">
+                <div class="prefrow" transition:slide={{ duration: motionMs(180), easing: cubicOut }}>
                   <div class="who">
                     <div class="name">{t("app.grace.name")}</div>
                   </div>
                   {@render secondsPicker(config.grace, graceApp, (on) => (graceApp = on), setGrace, gracePresets(t), 31536000, 30)}
                 </div>
-                <div class="prefrow">
+                <div class="prefrow" transition:slide={{ duration: motionMs(180), easing: cubicOut }}>
                   <div class="who">
                     <div class="name">{t("app.relock.name")}</div>
                     <div class="sub">{t("app.relock.sub")}</div>
                   </div>
                   <div class="segs">
                     {#each relockPresets(t) as [secs, label]}
-                      <button class="opt" class:on={config.relock === secs} onclick={() => setRelock(secs)}>{label}</button>
+                      <button
+                        class="opt"
+                        class:on={config.relock === secs}
+                        aria-pressed={config.relock === secs}
+                        onclick={() => setRelock(secs)}
+                      >{label}</button>
                     {/each}
                     {#if relockApp}<span class="unit">{config.relock} {t("common.seconds")}</span>{/if}
                   </div>
                 </div>
                 {#if config.relock > 0 && config.grace > 0}
-                  <div class="prefrow">
+                  <div class="prefrow" transition:slide={{ duration: motionMs(180), easing: cubicOut }}>
                     <div class="who">
                       <div class="sub warn">{t("app.relock.warn")}</div>
                     </div>
                   </div>
                 {/if}
-                <details class="advanced">
+                <details class="advanced" use:fold transition:slide={{ duration: motionMs(180), easing: cubicOut }}>
                 <summary class="prefrow adv-toggle">
                   <span class="name">{t("app.advanced")}</span>
                   <svg class="chev" viewBox="0 0 16 16" aria-hidden="true">
@@ -1187,8 +1545,8 @@
                     <div class="sub warn">{t("app.autostart.warn")}</div>
                   </div>
                   <div class="segs two">
-                    <button class="opt" class:on={!config.autostart} onclick={() => setAutostart(false)}>{t("app.autostart.prompt")}</button>
-                    <button class="opt" class:on={config.autostart} onclick={() => setAutostart(true)}>{t("app.autostart.allow")}</button>
+                    <button class="opt" class:on={!config.autostart} aria-pressed={!config.autostart} onclick={() => setAutostart(false)}>{t("app.autostart.prompt")}</button>
+                    <button class="opt" class:on={config.autostart} aria-pressed={config.autostart} onclick={() => setAutostart(true)}>{t("app.autostart.allow")}</button>
                   </div>
                 </div>
                 {#each current.paths ?? [] as path}
@@ -1224,10 +1582,24 @@
             </div>
           </section>
         {:else}
-          <div class="empty">{t("settings.loading")}</div>
+          <div
+            class="skeleton-card"
+            aria-busy="true"
+            aria-label={t("settings.loading")}
+          >
+            <div class="prefrow">
+              <div class="who"><span class="sk sk-name"></span><span class="sk sk-sub"></span></div>
+              <span class="sk sk-pill"></span>
+            </div>
+            <div class="prefrow">
+              <div class="who"><span class="sk sk-name"></span><span class="sk sk-sub"></span></div>
+              <span class="sk sk-pill"></span>
+            </div>
+          </div>
         {/if}
 
-          <section class="set">
+        {#if config.ready}
+          <section class="set" in:fade={{ duration: motionMs(160) }}>
             <div class="list">
               <div class="prefrow">
                 <div class="who">
@@ -1236,25 +1608,37 @@
               </div>
               <div class="prefrow">
                 <div class="who">
-                  <div class="name">{t("app.windows.name")}</div>
-                  <div class="sub">{t("app.windows.sub")}</div>
+                  <div class="name">{t("app.paths.name")}</div>
+                  {#if coveredPaths.length === 0}
+                    <div class="sub" class:bad={config.protected}>
+                      {config.protected ? t("app.paths.noneEffective") : t("app.coverage.empty")}
+                    </div>
+                  {/if}
+                  {#each coveredPaths as path}
+                    <div class="sub mono">{path}</div>
+                  {/each}
+                  {#if !config.protected && coveredPaths.length > 0}
+                    <div class="sub">{t("app.paths.potential")}</div>
+                  {/if}
+                  {#each inactivePaths as path}
+                    <div class="sub bad">{t("app.path.inactivePrefix")}{path}</div>
+                  {/each}
+                  {#each notes as note}
+                    <div class="sub bad">{note}</div>
+                  {/each}
                 </div>
               </div>
-              {#each (current.paths ?? []).filter((path) => !(current.effective ?? []).includes(path)) as path}
-                <div class="prefrow"><div class="sub bad">{t("app.path.inactivePrefix")}{path}</div></div>
-              {/each}
-              {#each resolved as path}
-                <div class="prefrow"><div class="who"><div class="name mono">{path}</div></div></div>
-              {/each}
-              {#if resolved.length === 0}
-                <div class="prefrow"><div class="who"><div class="sub">{t("app.coverage.empty")}</div></div></div>
+              {#if config.protected}
+                <div class="prefrow">
+                  <div class="who">
+                    <div class="name">{t("app.windows.name")}</div>
+                    <div class="sub">{t("app.windows.sub")}</div>
+                  </div>
+                </div>
               {/if}
-              {#each notes as note}
-                <div class="prefrow"><div class="who"><div class="sub bad">{note}</div></div></div>
-              {/each}
               <!-- The trust boundary of the window layer is a setup-time caveat,
                    so it stays out of the day-to-day rows. -->
-              <details class="advanced">
+              <details class="advanced" use:fold>
                 <summary class="prefrow adv-toggle">
                   <span class="name">{t("common.notes")}</span>
                   <svg class="chev" viewBox="0 0 16 16" aria-hidden="true">
@@ -1274,7 +1658,8 @@
               </details>
             </div>
           </section>
-      {:else}
+        {/if}
+      {:else if appsReady}
         <div class="empty">{t("app.none")}</div>
       {/if}
       </div>
@@ -1282,8 +1667,14 @@
   </div>
 </div>
 
-{#if busy > 0}
-  <div class="overlay" role="status" aria-live="polite">
+{#if busyShown}
+  <div
+    class="overlay"
+    class:leaving={busy === 0}
+    role="status"
+    aria-live="polite"
+    transition:fade={{ duration: motionMs(120) }}
+  >
     <div class="busy">
       <div class="spinner"></div>
       <span>{busyLabel}</span>
@@ -1291,9 +1682,17 @@
   </div>
 {/if}
 
-{#if error}
-  <div class="banner" role="alert">
-    <span>{error}</span>
-    <button class="text" onclick={() => (error = "")}>{t("common.close")}</button>
+{#if error || toast}
+  <div
+    class="banner"
+    class:ok={!error}
+    role={error ? "alert" : "status"}
+    aria-live={error ? "assertive" : "polite"}
+    transition:fly={{ y: 8, duration: motionMs(160), easing: cubicOut }}
+  >
+    <span>{error || toast}</span>
+    {#if error}
+      <button class="text" onclick={() => (error = "")}>{t("common.close")}</button>
+    {/if}
   </div>
 {/if}

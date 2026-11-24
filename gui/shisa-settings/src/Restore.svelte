@@ -2,8 +2,12 @@
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { getCurrentWindow } from "@tauri-apps/api/window";
+  import { flip } from "svelte/animate";
+  import { cubicOut } from "svelte/easing";
   import { onMount, tick, untrack } from "svelte";
+  import { fade, fly } from "svelte/transition";
   import { createTranslator, languageFromTag } from "./i18n.js";
+  import { motionMs, paintTheme } from "./motion.js";
 
   let { language: initialLanguage = "en" } = $props();
   // The choice is fixed for the life of this window. It only reads it, so a
@@ -19,7 +23,21 @@
   let rows = $state([]);
   let icons = $state({});
   let loading = $state(true);
+  // A fast read should not flash a skeleton over the result.
+  let loadingShown = $state(false);
+  let closeTimer = 0;
   let opening = $state("");
+
+  $effect(() => {
+    if (loading) {
+      const timer = setTimeout(() => (loadingShown = true), 120);
+      return () => {
+        clearTimeout(timer);
+        loadingShown = false;
+      };
+    }
+    loadingShown = false;
+  });
   let busyLock = $state(false);
   let agentMissing = $state(false);
   // True when the daemon reports at least one protected app. Null means the
@@ -29,6 +47,7 @@
   let notice = $state("");
   let error = $state("");
   let list;
+  let closeButton;
   // A quiet reload is already reading. A second one would only paint the same
   // snapshot twice.
   let refreshing = false;
@@ -51,8 +70,12 @@
     return counts;
   });
 
+  let themed = false;
   function theme(dark) {
-    if (dark !== null) document.documentElement.dataset.theme = dark ? "dark" : "light";
+    if (dark === null) return;
+    // The portal's first answer is still the opening paint, not a switch.
+    paintTheme(dark, !themed);
+    themed = true;
   }
 
   onMount(() => {
@@ -72,6 +95,7 @@
     return () => {
       unlisten.then((stop) => stop()).catch(() => {});
       clearInterval(poll);
+      clearTimeout(closeTimer);
       window.removeEventListener("focus", onFocus);
     };
   });
@@ -156,6 +180,11 @@
           };
         })
         .sort((left, right) => left.name.localeCompare(right.name));
+      // A window hidden during the last-restore beat keeps the panel open.
+      if (rows.length > 0) {
+        clearTimeout(closeTimer);
+        closeTimer = 0;
+      }
       for (const row of rows) {
         if (row.icon && !(row.icon in icons)) {
           invoke("icon", { name: row.icon }).then((icon) => {
@@ -211,10 +240,17 @@
       // second click cannot race the first restore.
       await load(false);
       opening = "";
-      // Keep the panel open for the remaining apps. It closes only when the
-      // list is empty, so restoring three apps is not three round trips.
+      // Keep the panel open for the remaining apps. When the last window is
+      // back, show the empty state for a beat first: vanishing on the click
+      // would leave the user without a visible result.
       if (!agentMissing && !error && rows.length === 0) {
-        await panel.close();
+        notice = t("restore.restored");
+        clearTimeout(closeTimer);
+        closeTimer = setTimeout(() => panel.close(), 560);
+        // Enter was just used to restore. Moving focus to the empty state's
+        // Lock all button would let a key repeat hide every window, so the
+        // safe target is the close button.
+        closeButton?.focus();
       } else {
         await focusFirst();
       }
@@ -303,19 +339,50 @@
 <svelte:window onkeydown={keydown} />
 
 <main>
-  <div class="top" onmousedown={startDrag}>
+  <div class="top" role="presentation" onmousedown={startDrag}>
     <div class="crumb"><b>{t("restore.title")}</b></div>
     <div class="actions">
-      <button class="icon winclose" aria-label={t("top.close")} title={t("top.close")} onclick={() => panel.close()}>
+      <button
+        class="icon"
+        aria-label={t("restore.settings")}
+        title={t("restore.settings")}
+        onclick={openSettings}
+      >
+        <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M7.22 3.06L6.95 1.38A6.7 6.7 0 0 1 9.05 1.38L8.78 3.06A5 5 0 0 1 11.89 4.85L13.21 3.78A6.7 6.7 0 0 1 14.25 5.6L12.67 6.21A5 5 0 0 1 12.67 9.79L14.25 10.4A6.7 6.7 0 0 1 13.21 12.22L11.89 11.15A5 5 0 0 1 8.78 12.94L9.05 14.62A6.7 6.7 0 0 1 6.95 14.62L7.22 12.94A5 5 0 0 1 4.11 11.15L2.79 12.22A6.7 6.7 0 0 1 1.75 10.4L3.33 9.79A5 5 0 0 1 3.33 6.21L1.75 5.6A6.7 6.7 0 0 1 2.79 3.78L4.11 4.85A5 5 0 0 1 7.22 3.06Z" />
+          <circle cx="8" cy="8" r="2.2" />
+        </svg>
+      </button>
+      <button
+        class="icon winclose"
+        aria-label={t("top.close")}
+        title={t("top.close")}
+        bind:this={closeButton}
+        onclick={() => panel.close()}
+      >
         <svg viewBox="0 0 16 16" width="10" height="10"><path d="M4 4l8 8M12 4l-8 8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
       </button>
     </div>
   </div>
   <div class="scroll" bind:this={list} aria-busy={loading || !!opening || busyLock}>
     {#if loading}
-      <div class="empty" role="status">{t("restore.loading")}</div>
+      {#if loadingShown}
+        <section class="set" role="status">
+          <div class="label">{t("restore.loading")}</div>
+          <div class="list">
+            <div class="prefrow">
+              <span class="sk sk-ic"></span>
+              <div class="who"><span class="sk sk-name"></span><span class="sk sk-sub"></span></div>
+            </div>
+            <div class="prefrow">
+              <span class="sk sk-ic"></span>
+              <div class="who"><span class="sk sk-name"></span><span class="sk sk-sub"></span></div>
+            </div>
+          </div>
+        </section>
+      {/if}
     {:else if agentMissing}
-      <div class="blank">
+      <div class="blank" in:fade={{ duration: motionMs(160) }}>
         <div class="blank-name">{t("restore.agentMissing")}</div>
         <div class="blank-sub">{t("restore.agentMissing.sub")}</div>
         <div class="blank-actions">
@@ -324,7 +391,7 @@
         </div>
       </div>
     {:else if !rows.length}
-      <div class="blank">
+      <div class="blank" in:fade={{ duration: motionMs(160) }}>
         {#if !error}<div class="blank-name">{t("restore.empty")}</div>{/if}
         {#if notice}<div class="blank-sub">{notice}</div>{/if}
         <div class="blank-actions">
@@ -338,13 +405,15 @@
         </div>
       </div>
     {:else}
-      <section class="set">
+      <section class="set" in:fade={{ duration: motionMs(160) }}>
         <div class="label">{t("restore.windows", { count: total })}</div>
         <div class="list">
           {#each rows as row (row.id)}
             <button
               type="button"
               class="prefrow click row"
+              in:fade={{ duration: motionMs(140) }}
+              animate:flip={{ duration: motionMs(160), easing: cubicOut }}
               disabled={!!opening || busyLock}
               onclick={() => restore(row.id)}
             >
@@ -358,7 +427,8 @@
                 {#if (nameCounts.get(row.name) ?? 0) > 1 && row.id !== row.name}
                   <span class="sub id">{row.id}</span>
                 {/if}
-                <span class="sub">
+                <span class="sub row-state">
+                  {#if opening === row.id}<span class="row-spinner" aria-hidden="true"></span>{/if}
                   {opening === row.id
                     ? t("restore.waiting")
                     : row.needsAuth === true
@@ -378,7 +448,11 @@
     {/if}
   </div>
   {#if error}
-    <div class="banner" role="alert">
+    <div
+      class="banner"
+      role="alert"
+      transition:fly={{ y: 8, duration: motionMs(160), easing: cubicOut }}
+    >
       <span>{error}</span>
       <button class="text" onclick={() => (error = "")}>{t("common.close")}</button>
     </div>
@@ -400,14 +474,20 @@
     min-height: 0;
     overflow-y: auto;
     padding: 10px 16px 16px;
+    display: flex;
+    flex-direction: column;
   }
 
-  .scroll > .empty {
-    text-align: center;
+  .scroll > .set {
+    flex: none;
   }
 
   .blank {
-    padding: 28px 8px 8px;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    padding: 16px 8px;
     text-align: center;
   }
 
@@ -443,6 +523,28 @@
     min-width: 0;
   }
 
+  .row-state {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .row-spinner {
+    flex: none;
+    width: 11px;
+    height: 11px;
+    border-radius: 50%;
+    border: 1.5px solid var(--line);
+    border-top-color: var(--fg-2);
+    animation: row-spin 0.8s linear infinite;
+  }
+
+  @keyframes row-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
   .row:disabled {
     cursor: wait;
   }
@@ -462,5 +564,10 @@
     stroke-linecap: round;
     stroke-linejoin: round;
     stroke-width: 1.5;
+    transition: transform var(--dur-fast) var(--ease-out);
+  }
+
+  .row:not(:disabled):hover .chev {
+    transform: translateX(2px);
   }
 </style>

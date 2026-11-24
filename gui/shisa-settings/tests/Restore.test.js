@@ -5,15 +5,19 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { mount, unmount } from "svelte";
 
-const { state } = vi.hoisted(() => ({
+const { state, close } = vi.hoisted(() => ({
   state: { installed: [], hidden: {} },
+  close: vi.fn(async () => {}),
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({
-  invoke: vi.fn(async (command) => {
+  invoke: vi.fn(async (command, args) => {
     switch (command) {
       case "hidden_apps":
         return { ...state.hidden };
+      case "restore_hidden":
+        delete state.hidden[args.appId];
+        return null;
       case "list_installed":
         return state.installed;
       case "list_apps":
@@ -36,7 +40,7 @@ vi.mock("@tauri-apps/api/event", () => ({
 
 vi.mock("@tauri-apps/api/window", () => ({
   getCurrentWindow: () => ({
-    close: vi.fn(async () => {}),
+    close,
     startDragging: vi.fn(),
   }),
 }));
@@ -48,6 +52,7 @@ let app;
 beforeEach(() => {
   document.body.innerHTML = "";
   document.documentElement.lang = "";
+  close.mockClear();
 });
 
 afterEach(async () => {
@@ -93,4 +98,30 @@ test("a unique display name needs no id", async () => {
     { name: "Notes", id: undefined },
     { name: "Text Editor", id: undefined },
   ]);
+});
+
+test("restoring the last window confirms before the panel closes", async () => {
+  state.installed = [["org.example.editor", "Text Editor", ""]];
+  state.hidden = { "org.example.editor": 1 };
+  await render();
+  document.querySelector(".row").click();
+  await vi.waitFor(() =>
+    expect(document.body.textContent).toContain(
+      "Restored. The window is coming back.",
+    ),
+  );
+  // Enter was just used to restore. The safe focus target is the close
+  // button, not the empty state's Lock all.
+  await vi.waitFor(() =>
+    expect(document.activeElement?.getAttribute("aria-label")).toBe("Close"),
+  );
+  await vi.waitFor(() => expect(close).toHaveBeenCalled(), { timeout: 2000 });
+});
+
+test("the top bar opens settings and closes the panel", async () => {
+  state.installed = [["org.example.editor", "Text Editor", ""]];
+  state.hidden = { "org.example.editor": 1 };
+  await render();
+  document.querySelector('button[aria-label="Settings"]').click();
+  await vi.waitFor(() => expect(close).toHaveBeenCalled());
 });
