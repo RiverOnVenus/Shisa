@@ -18,6 +18,7 @@ const zh = {
   "common.add": "添加",
   "common.remove": "移除",
   "common.close": "关闭",
+  "common.notes": "说明",
 
   "filters.all": "全部",
   "filters.protected": "受保护",
@@ -65,11 +66,13 @@ const zh = {
   "general.grace.name": "默认宽限期",
   "general.grace.sub": "认证通过后这段时间内再打开不再询问。",
   "general.clear.name": "锁屏时清除已通过的认证",
-  "general.clear.sub":
-    "开启时锁屏会收回已打开的受保护窗口，解锁后恢复要重新认证。关掉后锁屏不改变正在使用的窗口，只影响下一次启动。",
+  "general.clear.sub": "开启后锁屏收回受保护窗口，解锁后重新认证。",
+  "general.clear.note": "关闭时，锁屏不改变正在使用的窗口，只影响下一次启动。",
   "general.timeout.name": "认证框等待上限",
   "general.timeout.sub":
-    "最多等这么久，超时就拒绝启动。取消或超时也会被系统记一次认证失败，连续 3 次后应用锁暂停约 10 分钟，不影响登录。需要立即解除暂停时运行",
+    "超时即拒绝启动。连续 3 次认证失败会暂停应用锁约 10 分钟。",
+  "general.timeout.note":
+    "取消和超时都算一次认证失败，暂停只影响应用锁，不影响登录。需要立即解除时运行",
   "general.timeout.after": "。",
   "general.timeout.unit": "秒 · 5 到 85",
   "general.custom": "自定义",
@@ -110,20 +113,17 @@ const zh = {
   "app.unlockNow": "立即解锁",
   "app.failure": "最近一次启动失败",
   "app.protect.name": "启动前要求认证",
-  "app.protect.sub.on": "取消或超时就拒绝启动。",
   "app.grace.name": "宽限期",
-  "app.grace.sub.zero": "0 表示每次启动都要认证。",
-  "app.grace.sub": "认证通过后这段时间内再打开不再询问。",
   "app.relock.name": "失焦后隐藏",
-  "app.relock.sub":
-    "失焦达到设定时长后收起窗口。宽限期内恢复不再询问，过期后需要认证。",
+  "app.relock.sub": "失焦这么久后隐藏窗口。宽限期内恢复不再询问。",
   "app.relock.warn":
-    "注意：失焦隐藏会保留启动凭证，宽限期内任何人都能从恢复面板免密还原窗口。借出桌面前请使用「全部上锁」。",
+    "失焦隐藏会保留启动凭证，宽限期内可从恢复面板免密还原。借出桌面前请先使用「全部上锁」。",
   "app.advanced": "高级设置",
   "app.customRelock": "自定义失焦时长",
   "app.autostart.name": "自启动",
-  "app.autostart.sub":
-    "登录后 30 秒内从自启动单元启动时直接放行。这个单元名同账号可以伪造，只适合你信任自己登录后第一分钟的情况。",
+  "app.autostart.sub": "登录后 30 秒内的自启动直接放行。",
+  "app.autostart.warn":
+    "单元名同账号可以伪造，只在你信任自己登录后第一分钟时使用。",
   "app.autostart.prompt": "要求认证",
   "app.autostart.allow": "放行",
   "app.path.inactive":
@@ -133,10 +133,11 @@ const zh = {
   "app.path.none": "还没有路径。",
   "app.path.placeholder": "/usr/bin/程序 或 /opt/游戏/启动器",
   "app.coverage.name": "覆盖情况",
-  "app.coverage.sub": "从 desktop 文件解析出的入口。",
+  "app.coverage.note":
+    "覆盖情况列出从 desktop 文件解析出的入口，未生效的路径会单独标出。",
   "app.windows.name": "已打开的窗口",
-  "app.windows.sub":
-    "锁屏后隐藏，再次打开需要认证。窗口层以用户身份运行，同账号的程序可以绕过。",
+  "app.windows.sub": "锁屏后隐藏，重开时重新认证。",
+  "app.windows.note": "窗口层以用户身份运行，同账号的程序可以绕过隐藏和恢复。",
   "app.path.inactivePrefix": "未生效：",
   "app.coverage.empty": "没有从 desktop 文件解析到可保护的入口。",
   "app.none": "选择左侧的应用",
@@ -203,6 +204,7 @@ const en = {
   "common.add": "Add",
   "common.remove": "Remove",
   "common.close": "Close",
+  "common.notes": "Notes",
 
   "filters.all": "All",
   "filters.protected": "Protected",
@@ -253,10 +255,14 @@ const en = {
     "After a successful authentication, launches in this period do not ask again.",
   "general.clear.name": "Clear authentication on screen lock",
   "general.clear.sub":
-    "When on, locking the screen hides protected windows, and restoring them asks again after unlock. When off, the screen lock leaves windows in use alone and only affects the next launch.",
+    "Takes back protected windows when the screen locks. Unlocking asks again.",
+  "general.clear.note":
+    "When off, a screen lock leaves windows in use alone and only affects the next launch.",
   "general.timeout.name": "Authentication prompt timeout",
   "general.timeout.sub":
-    "After this long the launch is refused. Cancelling or timing out also counts as a failed authentication, and three in a row pause the app lock for about 10 minutes without affecting login. To clear it immediately, run",
+    "Timing out refuses the launch. Three failures in a row pause the app lock for about 10 minutes.",
+  "general.timeout.note":
+    "Cancelling and timing out both count as a failure. The pause affects only the app lock, not login. To clear it immediately, run",
   "general.timeout.after": ".",
   "general.timeout.unit": "seconds · 5 to 85",
   "general.custom": "Custom",
@@ -301,21 +307,19 @@ const en = {
   "app.unlockNow": "Unlock now",
   "app.failure": "Last launch failed",
   "app.protect.name": "Require authentication before launch",
-  "app.protect.sub.on": "Cancelling or timing out refuses the launch.",
   "app.grace.name": "Grace period",
-  "app.grace.sub.zero": "0 means every launch asks for authentication.",
-  "app.grace.sub":
-    "After a successful authentication, launches in this period do not ask again.",
   "app.relock.name": "Hide when focus is lost",
   "app.relock.sub":
-    "After this long without focus the window is hidden. Restoring it within the grace period does not ask again, and asks after it expires.",
+    "Hides the window after this long without focus. Restoring in the grace period does not ask again.",
   "app.relock.warn":
-    "Note: a focus-loss hide keeps the launch ticket, so until the grace period ends anyone can restore the window from the restore panel without the app-lock password. Use Lock all before lending the desktop.",
+    "A focus-loss hide keeps the launch ticket, so the restore panel reopens the window without a password until the grace period ends. Use Lock all before lending the desktop.",
   "app.advanced": "Advanced settings",
   "app.customRelock": "Custom focus-loss delay",
   "app.autostart.name": "Autostart",
   "app.autostart.sub":
-    "A launch from the autostart unit within 30 seconds of login is allowed without a prompt. The unit name can be forged by the same account, so use this only if you trust the first minute after your own login.",
+    "A launch from the autostart unit within 30 seconds of login is allowed without a prompt.",
+  "app.autostart.warn":
+    "The unit name can be forged by the same account. Use this only if you trust the first minute after your login.",
   "app.autostart.prompt": "Ask for authentication",
   "app.autostart.allow": "Allow",
   "app.path.inactive":
@@ -325,10 +329,12 @@ const en = {
   "app.path.none": "No paths yet.",
   "app.path.placeholder": "/usr/bin/program or /opt/game/launcher",
   "app.coverage.name": "Coverage",
-  "app.coverage.sub": "Entries resolved from the desktop file.",
+  "app.coverage.note":
+    "Coverage lists the entries resolved from the desktop file, and marks paths that are not in effect.",
   "app.windows.name": "Open windows",
-  "app.windows.sub":
-    "Hidden after a lock, and asks for authentication when reopened. The window layer runs as the user, so programs under the same account can bypass it.",
+  "app.windows.sub": "Hidden after a lock, and asks again when reopened.",
+  "app.windows.note":
+    "The window layer runs as the user, so programs under the same account can bypass hiding and restoring.",
   "app.path.inactivePrefix": "Inactive: ",
   "app.coverage.empty":
     "No protectable entry was resolved from the desktop file.",

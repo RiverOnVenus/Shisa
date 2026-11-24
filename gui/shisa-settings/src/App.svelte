@@ -919,10 +919,7 @@
               <div class="prefrow">
                 <div class="who">
                   <div class="name">{t("general.timeout.name")}</div>
-                  <div class="sub">
-                    {t("general.timeout.sub")}
-                    <code>sudo faillock --user {adminUser} --reset</code>{t("general.timeout.after")}
-                  </div>
+                  <div class="sub">{t("general.timeout.sub")}</div>
                 </div>
                 <div class="val">
                   <input
@@ -936,6 +933,29 @@
                   <span class="unit">{t("general.timeout.unit")}</span>
                 </div>
               </div>
+              <!-- Mechanics stay folded: the visible line carries the consequence,
+                   while the command and the lockout rules are lookup material. -->
+              <details class="advanced">
+                <summary class="prefrow adv-toggle">
+                  <span class="name">{t("common.notes")}</span>
+                  <svg class="chev" viewBox="0 0 16 16" aria-hidden="true">
+                    <path d="m4 6 4 4 4-4" />
+                  </svg>
+                </summary>
+                <div class="prefrow">
+                  <div class="who">
+                    <div class="sub">{t("general.clear.note")}</div>
+                  </div>
+                </div>
+                <div class="prefrow">
+                  <div class="who">
+                    <div class="sub">
+                      {t("general.timeout.note")}
+                      <code>sudo faillock --user {adminUser} --reset</code>{t("general.timeout.after")}
+                    </div>
+                  </div>
+                </div>
+              </details>
             </div>
           </section>
           <section class="set">
@@ -1113,7 +1133,6 @@
               <div class="prefrow">
                 <div class="who">
                   <div class="name">{t("app.protect.name")}</div>
-                  {#if config.protected}<div class="sub">{t("app.protect.sub.on")}</div>{/if}
                 </div>
                 <button
                   class="lib-switch"
@@ -1128,7 +1147,6 @@
                 <div class="prefrow">
                   <div class="who">
                     <div class="name">{t("app.grace.name")}</div>
-                    <div class="sub">{config.grace === 0 ? t("app.grace.sub.zero") : t("app.grace.sub")}</div>
                   </div>
                   {@render secondsPicker(config.grace, graceApp, (on) => (graceApp = on), setGrace, gracePresets(t), 31536000, 30)}
                 </div>
@@ -1166,6 +1184,7 @@
                   <div class="who">
                     <div class="name">{t("app.autostart.name")}</div>
                     <div class="sub">{t("app.autostart.sub")}</div>
+                    <div class="sub warn">{t("app.autostart.warn")}</div>
                   </div>
                   <div class="segs two">
                     <button class="opt" class:on={!config.autostart} onclick={() => setAutostart(false)}>{t("app.autostart.prompt")}</button>
@@ -1213,7 +1232,6 @@
               <div class="prefrow">
                 <div class="who">
                   <div class="name">{t("app.coverage.name")}</div>
-                  <div class="sub">{t("app.coverage.sub")}</div>
                 </div>
               </div>
               <div class="prefrow">
@@ -1234,6 +1252,26 @@
               {#each notes as note}
                 <div class="prefrow"><div class="who"><div class="sub bad">{note}</div></div></div>
               {/each}
+              <!-- The trust boundary of the window layer is a setup-time caveat,
+                   so it stays out of the day-to-day rows. -->
+              <details class="advanced">
+                <summary class="prefrow adv-toggle">
+                  <span class="name">{t("common.notes")}</span>
+                  <svg class="chev" viewBox="0 0 16 16" aria-hidden="true">
+                    <path d="m4 6 4 4 4-4" />
+                  </svg>
+                </summary>
+                <div class="prefrow">
+                  <div class="who">
+                    <div class="sub">{t("app.coverage.note")}</div>
+                  </div>
+                </div>
+                <div class="prefrow">
+                  <div class="who">
+                    <div class="sub">{t("app.windows.note")}</div>
+                  </div>
+                </div>
+              </details>
             </div>
           </section>
       {:else}

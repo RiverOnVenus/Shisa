@@ -850,6 +850,9 @@ button.prefrow {
   border-radius: 0;
   background: var(--pill);
   color: var(--fg-2);
+  /* A wrapped flag reads as two commands. The row is at least 760px wide, so
+     the whole command still fits on one line. */
+  white-space: nowrap;
 }
 
 .prefrow .app-ic {
