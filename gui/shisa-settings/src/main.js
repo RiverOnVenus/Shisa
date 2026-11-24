@@ -25,5 +25,8 @@ invoke("ui_language")
     mount(window.label === "restore" ? Restore : App, {
       target: document.getElementById("app"),
       props: { language },
+      // Entrances are for state changes. The first paint is already in place
+      // when the window appears, so it should not play an intro.
+      intro: false,
     });
   });

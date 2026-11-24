@@ -10,6 +10,8 @@ const { calls, languageWrites, state } = vi.hoisted(() => ({
   languageWrites: [],
   state: {
     agentOnline: true,
+    daemonOnline: true,
+    diagFails: false,
     diagnostics: [
       "0.1.1",
       1,
@@ -27,6 +29,20 @@ const { calls, languageWrites, state } = vi.hoisted(() => ({
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (command, args) => {
     calls.push([command, args]);
+    if (
+      !state.daemonOnline &&
+      [
+        "list_installed",
+        "list_apps",
+        "app_config",
+        "resolve_app",
+        "global_config",
+        "recent_launches",
+        "diagnostics",
+      ].includes(command)
+    ) {
+      throw "app lock is not responding";
+    }
     switch (command) {
       case "list_installed":
         return [
@@ -36,14 +52,19 @@ vi.mock("@tauri-apps/api/core", () => ({
       case "list_apps":
         return [["org.kde.kate", true, ["/usr/bin/kate"], ["/usr/bin/kate"]]];
       case "app_config":
-        return [300, false, true, 0];
+        return args.appId === "org.kde.dolphin"
+          ? [300, false, false, 0]
+          : [300, false, true, 0];
       case "resolve_app":
-        return [["/usr/bin/kate"], []];
+        return args.appId === "org.kde.dolphin"
+          ? [[], []]
+          : [["/usr/bin/kate"], []];
       case "global_config":
         return [300, true, 60];
       case "recent_launches":
         return [[], 0, 0, 0];
       case "diagnostics":
+        if (state.diagFails) throw "daemon unavailable";
         return state.diagnostics;
       case "agent_status":
         return state.agentOnline;
@@ -77,6 +98,8 @@ beforeEach(() => {
   calls.length = 0;
   languageWrites.length = 0;
   state.agentOnline = true;
+  state.daemonOnline = true;
+  state.diagFails = false;
   state.diagnostics = [
     "0.1.1",
     1,
@@ -90,6 +113,7 @@ beforeEach(() => {
   ];
   document.body.innerHTML = "";
   document.documentElement.lang = "";
+  localStorage.clear();
 });
 
 afterEach(async () => {
@@ -260,4 +284,162 @@ test("choosing a language saves it and retitles the window", async () => {
     expect(document.title).toBe("Shisa 设置");
   });
   expect(document.documentElement.lang).toBe("zh-CN");
+});
+
+test("the header offers only the action that applies", async () => {
+  await render();
+  const state = await vi.waitFor(() => {
+    const node = document.querySelector(".state");
+    expect(node).not.toBeNull();
+    return node;
+  });
+  const actions = state.parentElement;
+  expect(state.textContent).toBe("Authorized");
+  expect(actions.textContent).toContain("Revoke");
+  expect(actions.textContent).not.toContain("Authenticate now");
+  actions.querySelector("button").click();
+  await vi.waitFor(() =>
+    expect(document.querySelector(".banner.ok")?.textContent).toContain(
+      "Revoked authorization for Kate",
+    ),
+  );
+});
+
+test("a missing app-lock password is a health warning with a recheck", async () => {
+  state.diagnostics = [
+    "0.1.1",
+    1,
+    0,
+    0,
+    1,
+    1,
+    "/etc/shisa/users/test.toml",
+    false,
+    0,
+  ];
+  await render();
+  await vi.waitFor(() =>
+    expect(document.querySelector(".side-foot .gw").textContent).toContain(
+      "App-lock password is not set",
+    ),
+  );
+  expect(document.querySelector(".side-foot .gw.warn")).not.toBeNull();
+  document.querySelector(".side-foot button.row").click();
+  await vi.waitFor(() =>
+    expect(document.body.textContent).toContain(
+      "The app-lock password is not set",
+    ),
+  );
+  const card = [...document.querySelectorAll(".set.notice")].find((section) =>
+    section.textContent.includes("The app-lock password is not set"),
+  );
+  state.diagnostics = [
+    "0.1.1",
+    1,
+    0,
+    0,
+    1,
+    1,
+    "/etc/shisa/users/test.toml",
+    true,
+    0,
+  ];
+  [...card.querySelectorAll("button")]
+    .find((button) => button.textContent === "Check again")
+    .click();
+  await vi.waitFor(() => {
+    expect(document.querySelector(".banner.ok")?.textContent).toContain(
+      "The app-lock password is set.",
+    );
+    expect(document.body.textContent).not.toContain(
+      "The app-lock password is not set",
+    );
+  });
+});
+
+test("an app with no launch entry cannot be protected", async () => {
+  await render();
+  const dolphin = [...document.querySelectorAll("ul.list .row")].find((row) =>
+    row.textContent.includes("Dolphin"),
+  );
+  dolphin.click();
+  await vi.waitFor(() =>
+    expect(document.body.textContent).toContain("No launch entry can be gated"),
+  );
+  const card = [...document.querySelectorAll(".set")].find((section) =>
+    section.textContent.includes("Require authentication before launch"),
+  );
+  expect(card.querySelector(".lib-switch").disabled).toBe(true);
+  expect(card.textContent).toContain("No launch entry can be gated");
+});
+
+test("arrow keys move through the app list's single tab stop", async () => {
+  await render();
+  const rows = [...document.querySelectorAll("ul.list .row")];
+  rows[0].focus();
+  rows[0].dispatchEvent(
+    new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }),
+  );
+  expect(document.activeElement).toBe(rows[1]);
+  await vi.waitFor(() => {
+    expect(rows[0].tabIndex).toBe(-1);
+    expect(rows[1].tabIndex).toBe(0);
+  });
+});
+
+test("the last app is selected when the window reopens", async () => {
+  localStorage.setItem("shisa.settings.lastApp", "org.kde.dolphin");
+  await render();
+  await vi.waitFor(() =>
+    expect(calls).toContainEqual(["app_config", { appId: "org.kde.dolphin" }]),
+  );
+});
+
+test("both services down is a red health state", async () => {
+  state.agentOnline = false;
+  state.daemonOnline = false;
+  app = mount(App, { target: document.body, props: { language: "en" } });
+  await vi.waitFor(() =>
+    expect(document.querySelector(".side-foot .gw").textContent).toContain(
+      "Both services are down",
+    ),
+  );
+  expect(document.querySelector(".side-foot .gw.bad")).not.toBeNull();
+});
+
+test("a failed password recheck keeps the warning", async () => {
+  state.diagnostics = [
+    "0.1.1",
+    1,
+    0,
+    0,
+    1,
+    1,
+    "/etc/shisa/users/test.toml",
+    false,
+    0,
+  ];
+  await render();
+  document.querySelector(".side-foot button.row").click();
+  await vi.waitFor(() =>
+    expect(document.body.textContent).toContain(
+      "The app-lock password is not set",
+    ),
+  );
+  const card = [...document.querySelectorAll(".set.notice")].find((section) =>
+    section.textContent.includes("The app-lock password is not set"),
+  );
+  state.diagFails = true;
+  [...card.querySelectorAll("button")]
+    .find((button) => button.textContent === "Check again")
+    .click();
+  await vi.waitFor(() =>
+    expect(document.querySelector(".banner")?.textContent).toContain(
+      "daemon unavailable",
+    ),
+  );
+  expect(document.body.textContent).toContain(
+    "The app-lock password is not set",
+  );
+  expect(document.querySelector(".side-foot .gw.warn")).not.toBeNull();
 });
