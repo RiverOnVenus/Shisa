@@ -733,9 +733,10 @@
   <aside class="sidebar">
     <div class="side-top" data-tauri-drag-region>
       <span class="brand" data-tauri-drag-region>
-        <svg class="logo" viewBox="0.75 0.75 14.5 14.5" width="16" height="16" fill="currentColor" fill-rule="evenodd" aria-hidden="true">
-          <path d="M8 6.6a4.2 4.2 0 1 1 0 8.4 4.2 4.2 0 1 1 0-8.4Z M8 8a2.8 2.8 0 1 0 0 5.6 2.8 2.8 0 1 0 0-5.6Z"/>
-          <path d="M5 1h6l4 3v3.25L12.3 9.6h-2.05L9 11H7L5.75 9.6H3.7L1 7.25V4Z M3 5l3.4 1v1.2H4.75L3 5.8Z M13 5l-3.4 1v1.2h1.65L13 5.8Z"/>
+        <svg class="logo" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+          <ellipse cx="8" cy="8" rx="4.65" ry="5.3" fill="none" stroke="currentColor" stroke-width="1.5"/>
+          <circle cx="8" cy="7.15" r="1.65" fill="currentColor"/>
+          <path d="M7.5 8.239L8.5 8.239L8.775 11.55L7.225 11.55Z" fill="currentColor"/>
         </svg>
         <span>Shisa</span>
       </span>

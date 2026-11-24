@@ -113,6 +113,8 @@ On 2026-11-23, a local test package `shisa-0.1.5-1.1` with the four eye-color tr
 
 On 2026-11-24, v0.1.6 built in the packages workflow (run 45212387333) and all five jobs passed. The tag `v0.1.6` points to `128f2c0`. The release attached `shisa-0.1.6-1-x86_64.pkg.tar.zst`, `shisa-0.1.6-1.x86_64.rpm`, `shisa_0.1.6-1_amd64.deb`, `SHA256SUMS` and `shisa-0.1.6.tar.gz`. The three packages matched `SHA256SUMS`, the Arch and Debian metadata reports version 0.1.6-1, and the RPM name and embedded NEVRA are `shisa-0.1.6-1`. The three payloads carry the four tray icons at 16x16, 22x22 and scalable sizes, including `shisa-tray-restorable-symbolic.svg`. The source archive's sha256 `3c51256b27f9f9f7512c69d18faf3b0d484afd61a7b1e4e0f1ce3bab761f5c02` matches the PKGBUILD. The Fedora and Debian live KDE checks are still pending.
 
+On 2026-11-24, a local test package `shisa-0.1.6-1.1` with the keyhole-ring tray icons, the keyhole app tile, and the keyhole sidebar brand was built from the worktree with `prepare-build.sh --worktree`. `makepkg`'s `check()` passed the workspace, settings frontend, Tauri, and KWin script suites. The package installed over `0.1.5-1.1` with `pacman -U`, `pacman -Qkk shisa` reported 0 changed files out of 55, and `shisad.service` and `shisa-agent.service` restarted, both active. The app tile mark was then enlarged from 5.3 to 6.0 and the package rebuilt and reinstalled, again with 0 changed files, and `plasmashell --replace` was run to drop the cached panel pixmaps. The README screenshots were regenerated from the installed build at 1175x775 with the new sidebar brand. Live tray and launcher verification is pending.
+
 ## Dependency advisories
 
 On 2026-11-22, the two open Dependabot alerts were reviewed.
