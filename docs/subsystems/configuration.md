@@ -108,3 +108,5 @@ The CLI and settings share the daemon's policy operations. The tray and CLI shar
 See [Tests and verification](../testing.md) for configuration changes and D-Bus permission coverage.
 
 On 2026-11-21, the interface language was checked with `cargo test --workspace` and `cargo clippy --workspace --all-targets` (both clean), `(cd gui/shisa-settings && npm test)` (9 passed) and `npm run build`, plus the settings shell's `cargo test` (3 passed) and `cargo build --features custom-protocol`. The live selector click and the tray language change were not exercised here and still need a check in a Wayland session.
+
+On 2026-11-24, the settings window's descriptions were shortened and the mechanics moved into per-card `Notes` folds. The dictionaries keep the same key set in both languages (156 keys each), and `npm test` (9 node tests, 12 vitest tests) and `npm run build` pass. The fold is a `<details>` element so the page search still reads the text, and the search still opens a matching fold. The app and General pages were checked in a live Wayland session, and `docs/images/settings.png` and `settings-zh.png` were regenerated from the installed build at 1175x775.
