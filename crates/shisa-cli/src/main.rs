@@ -11,19 +11,51 @@ use shisa_core::i18n::{self, Language};
 use std::time::Duration;
 use std::{env, process};
 
-fn usage(language: Language) -> ! {
-    eprintln!("{}", text(language, "用法：", "usage:"));
-    eprintln!("       shisa unlock <app-id>");
-    eprintln!("       shisa status");
-    eprintln!("       shisa lock [<app-id>]");
-    eprintln!("       shisa resolve <app-id>");
-    eprintln!("       shisa protect <app-id>");
-    eprintln!("       shisa unprotect <app-id>");
-    process::exit(2);
+/// The command list, shared by `--help` and the invalid-usage path. An app id
+/// is the desktop file name without `.desktop`; saying so here saves a trip to
+/// the settings window.
+fn help_lines(language: Language) -> Vec<String> {
+    match language {
+        Language::ZhCn => vec![
+            "用法：".into(),
+            "  shisa status             查看受保护的应用和认证状态".into(),
+            "  shisa lock [<app-id>]    收回全部或一个应用的认证".into(),
+            "  shisa unlock <app-id>    现在认证一个应用，宽限期内启动不再询问".into(),
+            "  shisa protect <app-id>   保护一个应用（需要应用锁密码）".into(),
+            "  shisa unprotect <app-id> 取消保护".into(),
+            "  shisa resolve <app-id>   查看 desktop 文件解析出的启动入口".into(),
+            "".into(),
+            "app-id 是 desktop 文件名去掉 .desktop，例如 org.kde.dolphin。".into(),
+            "用 shisa status 或设置窗口查看受保护的应用。".into(),
+        ],
+        Language::En => vec![
+            "usage:".into(),
+            "  shisa status             show protected apps and authorization".into(),
+            "  shisa lock [<app-id>]    revoke every authorization, or one app's".into(),
+            "  shisa unlock <app-id>    authenticate now and skip the prompt inside the grace period".into(),
+            "  shisa protect <app-id>   protect an app (asks for the app-lock password)".into(),
+            "  shisa unprotect <app-id> stop protecting an app".into(),
+            "  shisa resolve <app-id>   show the launch entries a desktop file resolves to".into(),
+            "".into(),
+            "app-id is the desktop file name without .desktop, for example org.kde.dolphin.".into(),
+            "Use shisa status or Shisa Settings to see protected apps.".into(),
+        ],
+    }
+}
+
+fn print_help(language: Language, to_stdout: bool) {
+    for line in help_lines(language) {
+        if to_stdout {
+            println!("{line}");
+        } else {
+            eprintln!("{line}");
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
 enum Command {
+    Help,
     Unlock(String),
     Status,
     /// An empty app id locks every app of the caller.
@@ -48,6 +80,7 @@ fn one_arg(args: &[std::ffi::OsString]) -> Option<String> {
 fn parse_command(args: &[std::ffi::OsString]) -> Option<Command> {
     let (command, rest) = args.split_first()?;
     Some(match command.to_string_lossy().as_ref() {
+        "help" | "--help" | "-h" => Command::Help,
         "unlock" => Command::Unlock(one_arg(rest)?),
         "status" if rest.is_empty() => Command::Status,
         "lock" => match rest {
@@ -72,12 +105,19 @@ fn main() {
     let args: Vec<std::ffi::OsString> = env::args_os().skip(1).collect();
     let language = i18n::current();
     let code = match parse_command(&args) {
+        Some(Command::Help) => {
+            print_help(language, true);
+            0
+        }
         Some(Command::Unlock(app)) => unlock_command(app, language),
         Some(Command::Status) => status(language),
         Some(Command::Lock(app)) => lock(app, language),
         Some(Command::Resolve(app)) => resolve(app, language),
         Some(Command::Protect { app, on }) => protect(app, on, language),
-        None => usage(language),
+        None => {
+            print_help(language, false);
+            2
+        }
     };
     process::exit(code);
 }
@@ -183,21 +223,28 @@ fn status_lines(apps: &[shisa_core::dbus::AppRow], language: Language) -> Vec<St
                 "no protected apps for this user",
             )
             .into(),
+            text(
+                language,
+                "用 shisa protect <app-id> 或设置窗口添加保护。",
+                "Use shisa protect <app-id> or Shisa Settings to add protection.",
+            )
+            .into(),
         ];
     }
     let mut lines = Vec::new();
     for (id, unlocked, paths, effective) in apps {
         let state = match (unlocked, language) {
-            (true, Language::ZhCn) => "解锁",
-            (false, Language::ZhCn) => "锁定",
-            (true, Language::En) => "open",
-            (false, Language::En) => "lock",
+            (true, Language::ZhCn) => "已认证",
+            (false, Language::ZhCn) => "需认证",
+            (true, Language::En) => "authorized",
+            (false, Language::En) => "locked",
         };
-        // `{:<4}` pads by characters, and the two Chinese words are already
-        // two display columns each, so padding them would misalign the id.
+        // `{:<10}` keeps the two English states in one column. The Chinese
+        // labels are not padded, because padding them by characters would
+        // misalign the id.
         lines.push(match language {
             Language::ZhCn => format!("{state} {id}"),
-            Language::En => format!("{state:<4} {id}"),
+            Language::En => format!("{state:<10} {id}"),
         });
         for path in paths {
             if effective.contains(path) {
@@ -339,7 +386,7 @@ fn lock(app: String, language: Language) -> i32 {
             if app.is_empty() {
                 println!(
                     "{}",
-                    text(language, "已收回全部票据", "all tickets dropped")
+                    text(language, "已收回全部认证", "all authorizations revoked")
                 );
                 if env::var_os("DBUS_SESSION_BUS_ADDRESS").is_some() {
                     let check = (|| -> zbus::Result<()> {
@@ -364,8 +411,8 @@ fn lock(app: String, language: Language) -> i32 {
                 println!(
                     "{}",
                     match language {
-                        Language::ZhCn => format!("{app} 已上锁"),
-                        Language::En => format!("{app} locked"),
+                        Language::ZhCn => format!("{app} 的认证已收回"),
+                        Language::En => format!("authorization for {app} revoked"),
                     }
                 );
             }
@@ -396,8 +443,8 @@ fn unlock_dbus(app: &str, language: Language) -> i32 {
             println!(
                 "{}",
                 match language {
-                    Language::ZhCn => format!("{app} 已解锁。"),
-                    Language::En => format!("{app} unlocked."),
+                    Language::ZhCn => format!("{app} 已认证。"),
+                    Language::En => format!("{app} authorized."),
                 }
             );
             0
@@ -462,6 +509,10 @@ mod tests {
         );
         assert_eq!(parse_command(&args(&["unprotect"])), None);
 
+        assert_eq!(parse_command(&args(&["--help"])), Some(Command::Help));
+        assert_eq!(parse_command(&args(&["-h"])), Some(Command::Help));
+        assert_eq!(parse_command(&args(&["help"])), Some(Command::Help));
+
         assert_eq!(parse_command(&args(&[])), None);
         assert_eq!(parse_command(&args(&["nonsense"])), None);
     }
@@ -485,30 +536,36 @@ mod tests {
         assert_eq!(
             status_lines(&apps, Language::En),
             vec![
-                "lock app",
+                "locked     app",
                 "       /usr/bin/app",
                 "       /opt/missing  (inactive)",
-                "open other",
+                "authorized other",
                 "       /usr/bin/other",
             ]
         );
         assert_eq!(
             status_lines(&apps, Language::ZhCn),
             vec![
-                "锁定 app",
+                "需认证 app",
                 "       /usr/bin/app",
                 "       /opt/missing  (未生效)",
-                "解锁 other",
+                "已认证 other",
                 "       /usr/bin/other",
             ]
         );
         assert_eq!(
             status_lines(&[], Language::En),
-            vec!["no protected apps for this user"]
+            vec![
+                "no protected apps for this user",
+                "Use shisa protect <app-id> or Shisa Settings to add protection.",
+            ]
         );
         assert_eq!(
             status_lines(&[], Language::ZhCn),
-            vec!["这个用户没有受保护的应用"]
+            vec![
+                "这个用户没有受保护的应用",
+                "用 shisa protect <app-id> 或设置窗口添加保护。",
+            ]
         );
     }
 
