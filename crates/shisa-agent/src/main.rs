@@ -277,9 +277,29 @@ impl Tray for TrayState {
                 let _ = actions.send(action.clone());
             })
         };
+        // A disabled row that only says "Lock all" leaves the reason to the
+        // tooltip. The menu is read on its own, so the reason belongs in the
+        // label.
+        let lock_label = if self.offline {
+            text(self.language, "全部上锁（离线）", "Lock all (offline)")
+        } else if self.protected_count == 0 {
+            text(
+                self.language,
+                "全部上锁（没有受保护的应用）",
+                "Lock all (no protected apps)",
+            )
+        } else {
+            text(self.language, "全部上锁", "Lock all")
+        };
         vec![
             StandardItem {
-                label: text(self.language, "全部上锁", "Lock all").into(),
+                label: text(self.language, "恢复窗口…", "Restore windows…").into(),
+                activate: send(Action::OpenRestore),
+                ..Default::default()
+            }
+            .into(),
+            StandardItem {
+                label: lock_label.into(),
                 enabled: !self.offline && self.protected_count > 0,
                 activate: send(Action::LockAll),
                 ..Default::default()
@@ -1209,7 +1229,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tray_menu_shows_three_actions_and_counts_hidden_windows() {
+    fn tray_menu_offers_restore_lock_and_settings() {
         let (actions, requests) = mpsc::channel();
         let mut tray = TrayState {
             hidden_windows: ((1, 1), HashMap::from([("org.kde.kate".into(), 2)])),
@@ -1222,15 +1242,19 @@ mod tests {
         };
         let menu = tray.menu();
         let [
+            MenuItem::Standard(restore),
             MenuItem::Standard(lock_all),
             MenuItem::Separator,
             MenuItem::Standard(settings),
         ] = menu.as_slice()
         else {
-            panic!("expected lock and settings with a separator");
+            panic!("expected restore, lock all and settings with a separator");
         };
 
+        assert_eq!(lock_all.label, "全部上锁");
         assert!(tray.tool_tip().description.contains("已隐藏 2 个窗口"));
+        (restore.activate)(&mut tray);
+        assert!(matches!(requests.try_recv(), Ok(Action::OpenRestore)));
         (lock_all.activate)(&mut tray);
         assert!(matches!(requests.try_recv(), Ok(Action::LockAll)));
         (settings.activate)(&mut tray);
@@ -1250,10 +1274,31 @@ mod tests {
             actions,
         };
         let menu = tray.menu();
-        let MenuItem::Standard(lock_all) = &menu[0] else {
+        let MenuItem::Standard(lock_all) = &menu[1] else {
             panic!("expected lock all");
         };
         assert!(!lock_all.enabled);
+        assert!(lock_all.label.contains("没有受保护的应用"));
+    }
+
+    #[test]
+    fn lock_all_names_an_offline_daemon_in_the_tray_menu() {
+        let (actions, _requests) = mpsc::channel();
+        let tray = TrayState {
+            hidden_windows: Default::default(),
+            hidden_ticketed: None,
+            protected_count: 2,
+            last_lock: None,
+            offline: true,
+            language: Language::En,
+            actions,
+        };
+        let menu = tray.menu();
+        let MenuItem::Standard(lock_all) = &menu[1] else {
+            panic!("expected lock all");
+        };
+        assert!(!lock_all.enabled);
+        assert_eq!(lock_all.label, "Lock all (offline)");
     }
 
     #[test]
