@@ -82,9 +82,9 @@ Diagnostics() -> (sxxxttsbx)
 
 `Diagnostics` returns the version, start time, last reload, last incomplete mark operation, app count, mark count, config path, password readiness, and the last configuration read or parse failure. Times are Unix milliseconds and zero means the event has not occurred. A complete reload resets the mark-failure timestamp, and a load that reads every configuration file resets the configuration-failure timestamp. Counts and the config path are for the caller, even if the config has yet to be created.
 
-The password readiness flag checks only the `shisa-lock` password field in `/etc/shadow`. It reports ready if the file cannot be read. Settings uses the flag to show a setup hint. Both diagnostic methods are read-only and require no polkit prompt.
+The password readiness flag checks only the `shisa-lock` password field in `/etc/shadow`. It reports ready if the file cannot be read. Settings uses the flag to show a setup hint, and the hint's Check again button re-reads diagnostics so setting the password does not require reopening the window. Both diagnostic methods are read-only and require no polkit prompt.
 
-Settings compares the daemon's reported version with its own and shows a notice when they differ, because an upgraded package keeps the old shisad running until its service restarts. The sidebar also checks the session bus for `io.github.RiverOnVenus.Shisa.Window`, the name `shisa-agent` serves. It shows one health line: healthy when both answer, and otherwise names the failing component. The tooltip carries the two-service breakdown. A missing agent is not a daemon error: the daemon can be healthy while the tray and window layer are unavailable. The General page keeps the recent-launch entry and the daemon's routine numbers in one diagnostics card. The marking result and any configuration failure stay in the card's header row, because the health line only says whether both services answer. The version, uptime and config path sit behind a collapsed Details row, so the card does not show routine numbers unless someone is diagnosing a failure.
+Settings compares the daemon's reported version with its own and shows a notice when they differ, because an upgraded package keeps the old shisad running until its service restarts. The sidebar also checks the session bus for `io.github.RiverOnVenus.Shisa.Window`, the name `shisa-agent` serves. It shows one health line that covers the services and the setup problems that make authentication fail: healthy when both answer and authentication can work, a warning for a failing service, a missing app-lock password, or a version mismatch, and a failure when both services are down. The tooltip carries the two-service breakdown, the remedy, and the password or version hint. A missing agent is not a daemon error: the daemon can be healthy while the tray and window layer are unavailable. The General page keeps the recent-launch entry and the daemon's routine numbers in one diagnostics card. The marking result and any configuration failure stay in the card's header row, because the health line does not carry those results. The version, uptime and config path sit behind a collapsed Details row, so the card does not show routine numbers unless someone is diagnosing a failure. The password and version notices appear on the General page only. On every other page the health line carries the warning.
 
 ## Session D-Bus
 
@@ -93,6 +93,7 @@ The agent serves `io.github.RiverOnVenus.Shisa.Window` at `/io/github/RiverOnVen
 ## CLI
 
 ```sh
+shisa --help
 shisa status
 shisa lock [<app-id>]
 shisa unlock <app-id>
@@ -101,7 +102,7 @@ shisa unprotect <app-id>
 shisa resolve <app-id>
 ```
 
-The CLI and settings share the daemon's policy operations. The tray and CLI share the lock contract. The tray can show the measured window result, while the CLI reports daemon success and requests window verification through the session agent when available. For terminal authentication, `shisa unlock` can start `pkttyagent`. The `resolve` command is read-only and reports derived paths and coverage notes. Output follows the interface language above.
+The CLI and settings share the daemon's policy operations. The tray and CLI share the lock contract. The tray can show the measured window result, while the CLI reports daemon success and requests window verification through the session agent when available. For terminal authentication, `shisa unlock` can start `pkttyagent`. The `resolve` command is read-only and reports derived paths and coverage notes. `--help` and `-h` print the command list and the app-id format to stdout and exit 0. An unknown command prints the same list to stderr and exits 2. `status` names each protected app as authorized or locked, marks paths that are not in effect, and points to `shisa protect` or the settings window when the user has no protected apps. Output follows the interface language above. The public text says authorization, while tickets remain the internal term for the same time-limited permission.
 
 ## Verification
 
