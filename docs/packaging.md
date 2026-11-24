@@ -111,6 +111,8 @@ On 2026-11-23, a local test package `shisa-0.1.5-1.1` was built from the worktre
 
 On 2026-11-23, a local test package `shisa-0.1.5-1.1` with the four eye-color tray icons was built from the worktree. `makepkg`'s `check()` passed, it installed over the previous `0.1.5-1.1`, and `pacman -Qkk shisa` reported 0 changed files out of 55. Only `shisa-agent.service` was restarted, so shisad kept the existing tickets and window permissions. Plasma served the old icon pixmaps for the existing icon names until `plasma-plasmashell.service` was restarted. The user confirmed the tray after that restart.
 
+On 2026-11-24, v0.1.6 built in the packages workflow (run 45212387333) and all five jobs passed. The tag `v0.1.6` points to `128f2c0`. The release attached `shisa-0.1.6-1-x86_64.pkg.tar.zst`, `shisa-0.1.6-1.x86_64.rpm`, `shisa_0.1.6-1_amd64.deb`, `SHA256SUMS` and `shisa-0.1.6.tar.gz`. The three packages matched `SHA256SUMS`, the Arch and Debian metadata reports version 0.1.6-1, and the RPM name and embedded NEVRA are `shisa-0.1.6-1`. The three payloads carry the four tray icons at 16x16, 22x22 and scalable sizes, including `shisa-tray-restorable-symbolic.svg`. The source archive's sha256 `3c51256b27f9f9f7512c69d18faf3b0d484afd61a7b1e4e0f1ce3bab761f5c02` matches the PKGBUILD. The Fedora and Debian live KDE checks are still pending.
+
 ## Dependency advisories
 
 On 2026-11-22, the two open Dependabot alerts were reviewed.
