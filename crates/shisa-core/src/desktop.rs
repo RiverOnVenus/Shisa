@@ -1316,19 +1316,30 @@ mod tests {
 
     #[test]
     fn files_read_for_an_account_must_be_its_own() {
-        // Root can read every file, so the ownership check below cannot fail.
-        // The Fedora and Debian package jobs run their tests as root inside
-        // the build containers.
-        if unsafe { libc::geteuid() } == 0 {
-            eprintln!("skip files_read_for_an_account_must_be_its_own: running as root");
-            return;
-        }
         let fx = fixture("owner");
         let home = fx.dir.join("share");
         let file = home.join("applications/mine.desktop");
         fs::write(&file, "[Desktop Entry]\nName=Mine\n").unwrap();
+        // Root can read every file, so the positive case would pass even
+        // without the ownership check. The Fedora and Debian package jobs run
+        // as root inside their build containers, so give the file to a
+        // non-root account there and exercise the same check. A rootless
+        // container may not allow that chown, so skip only when it fails.
+        let me = if unsafe { libc::geteuid() } == 0 {
+            // Avoid 65534: that is the kernel's overflow uid, so a host file
+            // owned by an unmapped uid could masquerade as this account.
+            let account = 424_242;
+            if let Err(error) = std::os::unix::fs::chown(&file, Some(account), Some(account)) {
+                eprintln!(
+                    "skip files_read_for_an_account_must_be_its_own: cannot chown to uid {account}: {error}"
+                );
+                return;
+            }
+            account
+        } else {
+            unsafe { libc::getuid() }
+        };
         let mut env = fx.env.clone();
-        let me = unsafe { libc::getuid() };
         env.owner = Some((me, home.clone()));
         assert!(env.read(&file).unwrap().contains("Mine"));
         // A link to a file of someone else is refused, whatever its mode.
