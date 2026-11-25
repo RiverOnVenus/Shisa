@@ -202,13 +202,9 @@ fn apply_hidden_windows(
     true
 }
 
-/// Apply one background ticket poll. A hide or restore that landed while
-/// the read was in flight already published its own count with the new set,
-/// so a result computed from the old set must not overwrite it.
-fn apply_ticket_poll(tray: &mut TrayState, hidden: &HashMap<String, u32>, poll: TicketPoll) {
-    if tray.hidden_windows.1 != *hidden {
-        return;
-    }
+/// Apply one background ticket poll. Runs under the ticket lock, so the
+/// count was read against the same hidden set that is still current.
+fn apply_ticket_poll(tray: &mut TrayState, poll: TicketPoll) {
     match poll {
         TicketPoll::Skip => {}
         TicketPoll::Confirmed(ticketed) => tray.hidden_ticketed = Some(ticketed),
@@ -221,10 +217,14 @@ fn apply_ticket_poll(tray: &mut TrayState, hidden: &HashMap<String, u32>, poll: 
 /// dot after the grace period ended. Two seconds matches the language
 /// watcher and the restore panel's poll, and the bus call only runs while a
 /// window is hidden and shisad is known to be online.
-fn watch_ticket_state(handle: Handle<TrayState>) {
+fn watch_ticket_state(handle: Handle<TrayState>, ticket_sync: &Mutex<()>) {
     let mut connection: Option<Connection> = None;
     loop {
         thread::sleep(Duration::from_secs(2));
+        // The read and the update happen under the same lock the refresh and
+        // the hidden report use, so a count taken before a lock or unlock
+        // cannot land after a fresher one.
+        let _sync = ticket_sync.lock().unwrap();
         let Some((hidden, offline)) =
             handle.update(|tray| (tray.hidden_windows.1.clone(), tray.offline))
         else {
@@ -243,16 +243,14 @@ fn watch_ticket_state(handle: Handle<TrayState>) {
         match ticket_poll(&hidden, offline, read) {
             TicketPoll::Skip => {}
             TicketPoll::Confirmed(ticketed) => {
-                let _ = handle.update(|tray| {
-                    apply_ticket_poll(tray, &hidden, TicketPoll::Confirmed(ticketed))
-                });
+                let _ =
+                    handle.update(|tray| apply_ticket_poll(tray, TicketPoll::Confirmed(ticketed)));
             }
             TicketPoll::Unconfirmed => {
                 // A failed read is not proof that a ticket is still valid.
                 // Drop to the locked state and reconnect on the next tick.
                 connection = None;
-                let _ =
-                    handle.update(|tray| apply_ticket_poll(tray, &hidden, TicketPoll::Unconfirmed));
+                let _ = handle.update(|tray| apply_ticket_poll(tray, TicketPoll::Unconfirmed));
             }
         }
     }
@@ -432,6 +430,11 @@ fn main() -> std::process::ExitCode {
     // the unix socket service, the refresh and the tray's unlock.
     let gate: Arc<Mutex<Option<window::Gate>>> = Arc::default();
     let tracker: Arc<Mutex<window::Tracker>> = Arc::default();
+    // Serializes every read of the daemon's ticket state with the tray update
+    // that publishes it. Without it, a read taken before a lock or unlock
+    // could land after a fresher read and leave the ring on the wrong color
+    // until the next poll (docs/subsystems/window-management.md).
+    let ticket_sync: Arc<Mutex<()>> = Arc::default();
     let tray = TrayState {
         protected_count: 0,
         hidden_windows: Default::default(),
@@ -461,18 +464,20 @@ fn main() -> std::process::ExitCode {
     }
     {
         let handle = handle.clone();
+        let ticket_sync = ticket_sync.clone();
         thread::Builder::new()
             .name("tickets".into())
-            .spawn(move || watch_ticket_state(handle))
+            .spawn(move || watch_ticket_state(handle, &ticket_sync))
             .expect("ticket thread");
     }
     {
         let gate = gate.clone();
         let handle = handle.clone();
         let dnd_hinted = Arc::new(AtomicBool::new(false));
+        let ticket_sync = ticket_sync.clone();
         thread::Builder::new()
             .name("actions".into())
-            .spawn(move || action_loop(actions_rx, &gate, &handle, &dnd_hinted))
+            .spawn(move || action_loop(actions_rx, &gate, &handle, &dnd_hinted, &ticket_sync))
             .expect("actions thread");
     }
 
@@ -516,12 +521,13 @@ fn main() -> std::process::ExitCode {
         let handle = handle.clone();
         let gate = gate.clone();
         let tracker = tracker.clone();
+        let ticket_sync = ticket_sync.clone();
         thread::Builder::new()
             .name("signals".into())
-            .spawn(move || signal_loop(&conn, &handle, &gate, &tracker))
+            .spawn(move || signal_loop(&conn, &handle, &gate, &tracker, &ticket_sync))
             .expect("signals thread");
     }
-    supervise(&conn, &handle, &gate, &tracker);
+    supervise(&conn, &handle, &gate, &tracker, &ticket_sync);
 }
 
 /// Claim the session name and serve the focus reporter. None when the
@@ -565,6 +571,7 @@ fn supervise(
     handle: &Handle<TrayState>,
     gate: &Arc<Mutex<Option<window::Gate>>>,
     tracker: &Arc<Mutex<window::Tracker>>,
+    ticket_sync: &Mutex<()>,
 ) -> ! {
     let (wake_tx, wake_rx) = mpsc::channel::<()>();
     let subscribed = match owner_changes(conn) {
@@ -603,7 +610,7 @@ fn supervise(
                         let _ = handle.update(|tray| tray.offline = false);
                     }
                     if let Ok(manager) = ManagerProxyBlocking::new(conn) {
-                        refresh(handle, &manager, gate, tracker);
+                        refresh(handle, &manager, gate, tracker, ticket_sync);
                     }
                 }
                 Err(e) => warn!("register: {e}"),
@@ -644,6 +651,7 @@ fn signal_loop(
     handle: &Handle<TrayState>,
     gate: &Arc<Mutex<Option<window::Gate>>>,
     tracker: &Arc<Mutex<window::Tracker>>,
+    ticket_sync: &Arc<Mutex<()>>,
 ) {
     let rule = match MatchRule::builder()
         .msg_type(Type::Signal)
@@ -682,7 +690,7 @@ fn signal_loop(
         if member == "StateChanged"
             && let Ok(manager) = ManagerProxyBlocking::new(conn)
         {
-            refresh(handle, &manager, gate, tracker);
+            refresh(handle, &manager, gate, tracker, ticket_sync);
         }
         if member == "SessionUnlocked" {
             // KWin drops the window changes the script makes while the lock
@@ -694,11 +702,12 @@ fn signal_loop(
             let handle = handle.clone();
             let tracker = tracker.clone();
             let conn = conn.clone();
+            let ticket_sync = ticket_sync.clone();
             thread::spawn(move || {
                 for delay in [Duration::from_millis(300), Duration::from_millis(1200)] {
                     thread::sleep(delay);
                     if let Ok(manager) = ManagerProxyBlocking::new(&conn) {
-                        refresh(&handle, &manager, &gate, &tracker);
+                        refresh(&handle, &manager, &gate, &tracker, &ticket_sync);
                     }
                     if let Some(gate) = gate.lock().unwrap().as_mut() {
                         gate.force();
@@ -715,9 +724,24 @@ fn refresh(
     manager: &ManagerProxyBlocking<'_>,
     gate: &Arc<Mutex<Option<window::Gate>>>,
     tracker: &Arc<Mutex<window::Tracker>>,
+    ticket_sync: &Mutex<()>,
 ) {
-    let Ok(apps) = manager.list_apps() else {
-        return;
+    // Publish the protected and ticket counts under the ticket lock, from one
+    // daemon read, before the window-state sync. A failed WindowStates call
+    // must not leave the tray's lock action disabled with a stale zero. The
+    // lock keeps a read taken before a lock or unlock from landing after a
+    // fresher read.
+    let apps = {
+        let _sync = ticket_sync.lock().unwrap();
+        let Ok(apps) = manager.list_apps() else {
+            return;
+        };
+        let _ = handle.update(|tray| {
+            let ticketed = ticketed_hidden(&apps, &tray.hidden_windows.1);
+            tray.protected_count = apps.len();
+            tray.hidden_ticketed = Some(ticketed);
+        });
+        apps
     };
     // The unfocus delays change with the settings, which a `StateChanged`
     // does not cover. Read them on every refresh. A failed call keeps the
@@ -734,15 +758,6 @@ fn refresh(
     // window state is separate from the tickets, so an expiring ticket does
     // not hide a window that is still in use.
     let protected: Vec<String> = apps.iter().map(|(id, _, _, _)| id.clone()).collect();
-    // Publish the count before the window-state sync. A failed WindowStates
-    // call must not leave the tray's lock action disabled with a stale zero.
-    // The ticket state comes from the same rows and decides between the
-    // the locked state and the password-free state.
-    let _ = handle.update(|tray| {
-        let ticketed = ticketed_hidden(&apps, &tray.hidden_windows.1);
-        tray.protected_count = protected.len();
-        tray.hidden_ticketed = Some(ticketed);
-    });
     // A failed call is not "nothing is allowed". Keep the window layer as it
     // is rather than hiding every protected window on a transient error.
     let mut gate = gate.lock().unwrap();
@@ -769,6 +784,7 @@ fn action_loop(
     gate: &Arc<Mutex<Option<window::Gate>>>,
     handle: &Handle<TrayState>,
     dnd_hinted: &AtomicBool,
+    ticket_sync: &Mutex<()>,
 ) {
     let mut tickets = TicketReader::default();
     for action in rx {
@@ -788,10 +804,11 @@ fn action_loop(
             Action::Unlock(app) => unlock(&app, gate),
             Action::RestoreIfTicketed(app) => restore_if_ticketed(&app, gate),
             Action::HiddenWindows(version, counts) => {
-                // Read the tickets before publishing the set, outside the
-                // tray update: the update closure holds the tray's state
-                // lock, and a bus call there would hold up icon updates and
-                // the menu.
+                // Hold the ticket lock across the read and the update so a
+                // concurrent refresh cannot interleave a count taken from
+                // older daemon state. The read stays outside the tray update
+                // because that closure holds the tray's state lock.
+                let _sync = ticket_sync.lock().unwrap();
                 let fresh = handle
                     .update(|tray| version > tray.hidden_windows.0)
                     .unwrap_or(false);
@@ -1564,20 +1581,6 @@ mod tests {
         ));
         assert_eq!(tray.icon_name(), LOCKED_ICON);
         assert!(!apply_hidden_windows(&mut tray, (1, 1), counts, Some(1)));
-        assert_eq!(tray.icon_name(), LOCKED_ICON);
-    }
-
-    #[test]
-    fn a_ticket_poll_does_not_overwrite_a_newer_hidden_set() {
-        let mut tray = tray_without_hidden();
-        let counts = HashMap::from([("org.kde.motrix".into(), 1)]);
-        apply_hidden_windows(&mut tray, (1, 1), counts.clone(), Some(1));
-        // The poll was computed from the old, empty set while the hide was
-        // in flight, so it must not undo the report's own count.
-        apply_ticket_poll(&mut tray, &HashMap::new(), TicketPoll::Confirmed(0));
-        assert_eq!(tray.icon_name(), RESTORABLE_ICON);
-        // The next tick reads the current set and applies.
-        apply_ticket_poll(&mut tray, &counts, TicketPoll::Confirmed(0));
         assert_eq!(tray.icon_name(), LOCKED_ICON);
     }
 
