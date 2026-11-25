@@ -1,0 +1,12 @@
+# Generated release notes omit pull requests with this label.
+# The release-notes-label workflow adds it to release and post-release
+# housekeeping pull requests, which describe the previous release.
+# The catch-all category keeps every other pull request in the notes.
+changelog:
+  exclude:
+    labels:
+      - skip-changelog
+  categories:
+    - title: Changes
+      labels:
+        - "*"
