@@ -229,15 +229,31 @@ fn hold_ticket_grant(tray: &mut TrayState, app: &str, now: Instant) {
     }
 }
 
+/// Apply one daemon ticket report. A grant that should bring a concealed
+/// window back starts a hold, and a revoked ticket ends any hold for that app:
+/// a lock's confirmed zero count must reach the ring at once.
+fn apply_state_change(tray: &mut TrayState, app: &str, unlocked: bool, now: Instant) {
+    if unlocked {
+        hold_ticket_grant(tray, app, now);
+    } else {
+        tray.ticket_grants.remove(app);
+    }
+}
+
 /// Publish a ticket state read from the daemon. While a grant is expected to
 /// bring a concealed window back, the ring keeps its previous color: the
 /// ticket exists before KWin reports the window shown, so counting it now
-/// would flash amber. A failed read holds the same way, and shisad going away
-/// still turns the ring red on its own.
+/// would flash amber. A confirmed drop still applies, because a revoked or
+/// expired ticket can only move the ring toward the locked state, and a
+/// failed read holds the same way.
 fn publish_ticket_state(tray: &mut TrayState, ticketed: Option<usize>) {
     let now = Instant::now();
     tray.ticket_grants.retain(|_, until| now < *until);
-    if tray.ticket_grants.is_empty() {
+    let dropped = matches!(
+        (ticketed, tray.hidden_ticketed),
+        (Some(next), Some(current)) if next < current
+    );
+    if dropped || tray.ticket_grants.is_empty() {
         tray.hidden_ticketed = ticketed;
     }
 }
@@ -736,8 +752,9 @@ fn signal_loop(
             // previous color until the hidden report arrives, so the grant
             // does not flash amber between the locked blue and the restored
             // green.
-            if let Ok((app, true)) = message.body().deserialize::<(String, bool)>() {
-                let _ = handle.update(|tray| hold_ticket_grant(tray, &app, Instant::now()));
+            if let Ok((app, unlocked)) = message.body().deserialize::<(String, bool)>() {
+                let _ =
+                    handle.update(|tray| apply_state_change(tray, &app, unlocked, Instant::now()));
             }
             refresh(handle, &manager, gate, tracker, ticket_sync);
         }
@@ -1670,6 +1687,36 @@ mod tests {
             "org.kde.motrix".into(),
             Instant::now() - Duration::from_secs(1),
         );
+        apply_ticket_poll(&mut tray, TicketPoll::Confirmed(1));
+        assert_eq!(tray.icon_name(), RESTORABLE_ICON);
+    }
+
+    #[test]
+    fn a_confirmed_drop_bypasses_a_pending_ticket_grant() {
+        let mut tray = tray_without_hidden();
+        let counts = HashMap::from([("org.kde.motrix".into(), 1), ("org.kde.okular".into(), 1)]);
+        apply_hidden_windows(&mut tray, (1, 1), counts, Some(1));
+        assert_eq!(tray.icon_name(), RESTORABLE_ICON);
+        hold_ticket_grant(&mut tray, "org.kde.motrix", Instant::now());
+        // The grant's own read is held back.
+        apply_ticket_poll(&mut tray, TicketPoll::Confirmed(2));
+        assert_eq!(tray.icon_name(), RESTORABLE_ICON);
+        // A lock revokes every ticket before the granted window returns. The
+        // confirmed drop must reach the ring at once, not after the hold.
+        apply_ticket_poll(&mut tray, TicketPoll::Confirmed(0));
+        assert_eq!(tray.icon_name(), LOCKED_ICON);
+    }
+
+    #[test]
+    fn a_revoked_ticket_cancels_its_grant_hold() {
+        let mut tray = tray_without_hidden();
+        let counts = HashMap::from([("org.kde.motrix".into(), 1)]);
+        apply_hidden_windows(&mut tray, (1, 1), counts, Some(0));
+        apply_state_change(&mut tray, "org.kde.motrix", true, Instant::now());
+        assert_eq!(tray.ticket_grants.len(), 1);
+        apply_state_change(&mut tray, "org.kde.motrix", false, Instant::now());
+        assert!(tray.ticket_grants.is_empty());
+        // With the hold gone, the next read applies.
         apply_ticket_poll(&mut tray, TicketPoll::Confirmed(1));
         assert_eq!(tray.icon_name(), RESTORABLE_ICON);
     }
