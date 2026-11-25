@@ -152,15 +152,79 @@ fn ticket_poll(
     }
 }
 
+/// Reads the daemon's ticket state for the apps a report says are hidden.
+/// The action thread uses it to publish a new hidden set together with its
+/// ticket count, so a hide that is still ticketed goes straight to amber
+/// instead of showing the blue unconfirmed fallback until the next poll.
+#[derive(Default)]
+struct TicketReader(Option<Connection>);
+
+impl TicketReader {
+    /// How many hidden apps still have a valid launch ticket. `None` means
+    /// the daemon could not be asked, which keeps the tray on the locked
+    /// fallback, the same decision `ticket_poll` makes.
+    fn read(&mut self, hidden: &HashMap<String, u32>) -> Option<usize> {
+        if hidden.is_empty() {
+            return Some(0);
+        }
+        if self.0.is_none() {
+            self.0 = Connection::system().ok();
+        }
+        let apps = self
+            .0
+            .as_ref()
+            .and_then(|conn| ManagerProxyBlocking::new(conn).ok())
+            .and_then(|manager| manager.list_apps().ok());
+        if apps.is_none() {
+            // Reconnect on the next read: the bus may have restarted.
+            self.0 = None;
+        }
+        apps.map(|apps| ticketed_hidden(&apps, hidden))
+    }
+}
+
+/// Publish a script's hidden-window report together with the ticket count
+/// read after it arrived. Both fields change in one update so the ring goes
+/// from green straight to amber when the hidden app still has a ticket,
+/// instead of showing the blue unconfirmed fallback first. `None` for the
+/// count means the daemon could not be asked and keeps that fallback.
+fn apply_hidden_windows(
+    tray: &mut TrayState,
+    version: (u64, u64),
+    counts: HashMap<String, u32>,
+    ticketed: Option<usize>,
+) -> bool {
+    if version <= tray.hidden_windows.0 {
+        return false;
+    }
+    tray.hidden_windows = (version, counts);
+    tray.hidden_ticketed = ticketed;
+    true
+}
+
+/// Apply one background ticket poll. Runs under the ticket lock, so the
+/// count was read against the same hidden set that is still current.
+fn apply_ticket_poll(tray: &mut TrayState, poll: TicketPoll) {
+    match poll {
+        TicketPoll::Skip => {}
+        TicketPoll::Confirmed(ticketed) => tray.hidden_ticketed = Some(ticketed),
+        TicketPoll::Unconfirmed => tray.hidden_ticketed = None,
+    }
+}
+
 /// Keep the hidden apps' ticket state fresh. A ticket expiring is a lazy
 /// check with no signal, so the tray would keep showing the password-free
 /// dot after the grace period ended. Two seconds matches the language
 /// watcher and the restore panel's poll, and the bus call only runs while a
 /// window is hidden and shisad is known to be online.
-fn watch_ticket_state(handle: Handle<TrayState>) {
+fn watch_ticket_state(handle: Handle<TrayState>, ticket_sync: &Mutex<()>) {
     let mut connection: Option<Connection> = None;
     loop {
         thread::sleep(Duration::from_secs(2));
+        // The read and the update happen under the same lock the refresh and
+        // the hidden report use, so a count taken before a lock or unlock
+        // cannot land after a fresher one.
+        let _sync = ticket_sync.lock().unwrap();
         let Some((hidden, offline)) =
             handle.update(|tray| (tray.hidden_windows.1.clone(), tray.offline))
         else {
@@ -179,13 +243,14 @@ fn watch_ticket_state(handle: Handle<TrayState>) {
         match ticket_poll(&hidden, offline, read) {
             TicketPoll::Skip => {}
             TicketPoll::Confirmed(ticketed) => {
-                let _ = handle.update(|tray| tray.hidden_ticketed = Some(ticketed));
+                let _ =
+                    handle.update(|tray| apply_ticket_poll(tray, TicketPoll::Confirmed(ticketed)));
             }
             TicketPoll::Unconfirmed => {
                 // A failed read is not proof that a ticket is still valid.
                 // Drop to the locked state and reconnect on the next tick.
                 connection = None;
-                let _ = handle.update(|tray| tray.hidden_ticketed = None);
+                let _ = handle.update(|tray| apply_ticket_poll(tray, TicketPoll::Unconfirmed));
             }
         }
     }
@@ -365,6 +430,11 @@ fn main() -> std::process::ExitCode {
     // the unix socket service, the refresh and the tray's unlock.
     let gate: Arc<Mutex<Option<window::Gate>>> = Arc::default();
     let tracker: Arc<Mutex<window::Tracker>> = Arc::default();
+    // Serializes every read of the daemon's ticket state with the tray update
+    // that publishes it. Without it, a read taken before a lock or unlock
+    // could land after a fresher read and leave the ring on the wrong color
+    // until the next poll (docs/subsystems/window-management.md).
+    let ticket_sync: Arc<Mutex<()>> = Arc::default();
     let tray = TrayState {
         protected_count: 0,
         hidden_windows: Default::default(),
@@ -394,18 +464,20 @@ fn main() -> std::process::ExitCode {
     }
     {
         let handle = handle.clone();
+        let ticket_sync = ticket_sync.clone();
         thread::Builder::new()
             .name("tickets".into())
-            .spawn(move || watch_ticket_state(handle))
+            .spawn(move || watch_ticket_state(handle, &ticket_sync))
             .expect("ticket thread");
     }
     {
         let gate = gate.clone();
         let handle = handle.clone();
         let dnd_hinted = Arc::new(AtomicBool::new(false));
+        let ticket_sync = ticket_sync.clone();
         thread::Builder::new()
             .name("actions".into())
-            .spawn(move || action_loop(actions_rx, &gate, &handle, &dnd_hinted))
+            .spawn(move || action_loop(actions_rx, &gate, &handle, &dnd_hinted, &ticket_sync))
             .expect("actions thread");
     }
 
@@ -449,12 +521,13 @@ fn main() -> std::process::ExitCode {
         let handle = handle.clone();
         let gate = gate.clone();
         let tracker = tracker.clone();
+        let ticket_sync = ticket_sync.clone();
         thread::Builder::new()
             .name("signals".into())
-            .spawn(move || signal_loop(&conn, &handle, &gate, &tracker))
+            .spawn(move || signal_loop(&conn, &handle, &gate, &tracker, &ticket_sync))
             .expect("signals thread");
     }
-    supervise(&conn, &handle, &gate, &tracker);
+    supervise(&conn, &handle, &gate, &tracker, &ticket_sync);
 }
 
 /// Claim the session name and serve the focus reporter. None when the
@@ -498,6 +571,7 @@ fn supervise(
     handle: &Handle<TrayState>,
     gate: &Arc<Mutex<Option<window::Gate>>>,
     tracker: &Arc<Mutex<window::Tracker>>,
+    ticket_sync: &Mutex<()>,
 ) -> ! {
     let (wake_tx, wake_rx) = mpsc::channel::<()>();
     let subscribed = match owner_changes(conn) {
@@ -536,7 +610,7 @@ fn supervise(
                         let _ = handle.update(|tray| tray.offline = false);
                     }
                     if let Ok(manager) = ManagerProxyBlocking::new(conn) {
-                        refresh(handle, &manager, gate, tracker);
+                        refresh(handle, &manager, gate, tracker, ticket_sync);
                     }
                 }
                 Err(e) => warn!("register: {e}"),
@@ -577,6 +651,7 @@ fn signal_loop(
     handle: &Handle<TrayState>,
     gate: &Arc<Mutex<Option<window::Gate>>>,
     tracker: &Arc<Mutex<window::Tracker>>,
+    ticket_sync: &Arc<Mutex<()>>,
 ) {
     let rule = match MatchRule::builder()
         .msg_type(Type::Signal)
@@ -615,7 +690,7 @@ fn signal_loop(
         if member == "StateChanged"
             && let Ok(manager) = ManagerProxyBlocking::new(conn)
         {
-            refresh(handle, &manager, gate, tracker);
+            refresh(handle, &manager, gate, tracker, ticket_sync);
         }
         if member == "SessionUnlocked" {
             // KWin drops the window changes the script makes while the lock
@@ -627,11 +702,12 @@ fn signal_loop(
             let handle = handle.clone();
             let tracker = tracker.clone();
             let conn = conn.clone();
+            let ticket_sync = ticket_sync.clone();
             thread::spawn(move || {
                 for delay in [Duration::from_millis(300), Duration::from_millis(1200)] {
                     thread::sleep(delay);
                     if let Ok(manager) = ManagerProxyBlocking::new(&conn) {
-                        refresh(&handle, &manager, &gate, &tracker);
+                        refresh(&handle, &manager, &gate, &tracker, &ticket_sync);
                     }
                     if let Some(gate) = gate.lock().unwrap().as_mut() {
                         gate.force();
@@ -648,9 +724,24 @@ fn refresh(
     manager: &ManagerProxyBlocking<'_>,
     gate: &Arc<Mutex<Option<window::Gate>>>,
     tracker: &Arc<Mutex<window::Tracker>>,
+    ticket_sync: &Mutex<()>,
 ) {
-    let Ok(apps) = manager.list_apps() else {
-        return;
+    // Publish the protected and ticket counts under the ticket lock, from one
+    // daemon read, before the window-state sync. A failed WindowStates call
+    // must not leave the tray's lock action disabled with a stale zero. The
+    // lock keeps a read taken before a lock or unlock from landing after a
+    // fresher read.
+    let apps = {
+        let _sync = ticket_sync.lock().unwrap();
+        let Ok(apps) = manager.list_apps() else {
+            return;
+        };
+        let _ = handle.update(|tray| {
+            let ticketed = ticketed_hidden(&apps, &tray.hidden_windows.1);
+            tray.protected_count = apps.len();
+            tray.hidden_ticketed = Some(ticketed);
+        });
+        apps
     };
     // The unfocus delays change with the settings, which a `StateChanged`
     // does not cover. Read them on every refresh. A failed call keeps the
@@ -667,15 +758,6 @@ fn refresh(
     // window state is separate from the tickets, so an expiring ticket does
     // not hide a window that is still in use.
     let protected: Vec<String> = apps.iter().map(|(id, _, _, _)| id.clone()).collect();
-    // Publish the count before the window-state sync. A failed WindowStates
-    // call must not leave the tray's lock action disabled with a stale zero.
-    // The ticket state comes from the same rows and decides between the
-    // the locked state and the password-free state.
-    let _ = handle.update(|tray| {
-        let ticketed = ticketed_hidden(&apps, &tray.hidden_windows.1);
-        tray.protected_count = protected.len();
-        tray.hidden_ticketed = Some(ticketed);
-    });
     // A failed call is not "nothing is allowed". Keep the window layer as it
     // is rather than hiding every protected window on a transient error.
     let mut gate = gate.lock().unwrap();
@@ -702,7 +784,9 @@ fn action_loop(
     gate: &Arc<Mutex<Option<window::Gate>>>,
     handle: &Handle<TrayState>,
     dnd_hinted: &AtomicBool,
+    ticket_sync: &Mutex<()>,
 ) {
+    let mut tickets = TicketReader::default();
     for action in rx {
         match action {
             Action::LockAll => match lock("") {
@@ -720,15 +804,19 @@ fn action_loop(
             Action::Unlock(app) => unlock(&app, gate),
             Action::RestoreIfTicketed(app) => restore_if_ticketed(&app, gate),
             Action::HiddenWindows(version, counts) => {
-                let _ = handle.update(|tray| {
-                    if version > tray.hidden_windows.0 {
-                        tray.hidden_windows = (version, counts);
-                        // The new set has not been matched against tickets
-                        // yet. Keep the tooltip from reusing the previous
-                        // count until the two-second poll reads it again.
-                        tray.hidden_ticketed = None;
-                    }
-                });
+                // Hold the ticket lock across the read and the update so a
+                // concurrent refresh cannot interleave a count taken from
+                // older daemon state. The read stays outside the tray update
+                // because that closure holds the tray's state lock.
+                let _sync = ticket_sync.lock().unwrap();
+                let fresh = handle
+                    .update(|tray| version > tray.hidden_windows.0)
+                    .unwrap_or(false);
+                if !fresh {
+                    continue;
+                }
+                let ticketed = tickets.read(&counts);
+                let _ = handle.update(|tray| apply_hidden_windows(tray, version, counts, ticketed));
             }
             Action::OpenSettings => open_settings(gate, false),
             Action::OpenRestore => open_settings(gate, true),
@@ -1455,6 +1543,45 @@ mod tests {
             TicketPoll::Unconfirmed
         );
         assert_eq!(ticket_poll(&hidden, false, None), TicketPoll::Unconfirmed);
+    }
+
+    fn tray_without_hidden() -> TrayState {
+        let (actions, _requests) = mpsc::channel();
+        TrayState {
+            hidden_windows: Default::default(),
+            hidden_ticketed: None,
+            protected_count: 1,
+            last_lock: None,
+            offline: false,
+            language: Language::ZhCn,
+            actions,
+        }
+    }
+
+    #[test]
+    fn a_hidden_report_publishes_its_ticket_count_in_the_same_update() {
+        let mut tray = tray_without_hidden();
+        let counts = HashMap::from([("org.kde.motrix".into(), 1)]);
+        // The focus-loss hide kept the ticket, so the ring goes from green
+        // straight to amber instead of showing the unconfirmed blue first.
+        assert!(apply_hidden_windows(
+            &mut tray,
+            (1, 1),
+            counts.clone(),
+            Some(1)
+        ));
+        assert_eq!(tray.icon_name(), RESTORABLE_ICON);
+        // A report that could not be matched to tickets keeps the fallback,
+        // and a stale report changes nothing.
+        assert!(apply_hidden_windows(
+            &mut tray,
+            (1, 2),
+            counts.clone(),
+            None
+        ));
+        assert_eq!(tray.icon_name(), LOCKED_ICON);
+        assert!(!apply_hidden_windows(&mut tray, (1, 1), counts, Some(1)));
+        assert_eq!(tray.icon_name(), LOCKED_ICON);
     }
 
     fn report(matched: u32, hidden: u32, missed: &[(&str, u32)]) -> WindowReport {
