@@ -48,7 +48,7 @@ systemctl --user enable --now shisa-agent.service
 
 |                                   图标                                    | 颜色   | 状态                           |
 | :-----------------------------------------------------------------------: | ------ | ------------------------------ |
-|   <img src="docs/images/tray-ready.svg" width="24" height="24" alt="">    | 绿色   | 没有隐藏窗口                   |
+|   <img src="docs/images/tray-ready.svg" width="24" height="24" alt="">    | 绿色   | 没有已上报的隐藏窗口           |
 |   <img src="docs/images/tray-locked.svg" width="24" height="24" alt="">   | 蓝色   | 有隐藏窗口，恢复需要应用锁密码 |
 | <img src="docs/images/tray-restorable.svg" width="24" height="24" alt=""> | 琥珀色 | 有隐藏应用，宽限期内可免密还原 |
 |  <img src="docs/images/tray-offline.svg" width="24" height="24" alt="">   | 红色   | shisad 离线                    |
