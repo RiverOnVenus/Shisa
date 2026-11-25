@@ -131,13 +131,13 @@ const zh = {
   "app.relock.name": "失焦后隐藏",
   "app.relock.sub": "失焦这么久后隐藏窗口。宽限期内恢复不再询问。",
   "app.relock.warn":
-    "失焦隐藏保留启动凭证，宽限期内可免密还原。借出桌面前请先「锁定受保护应用」。",
+    "失焦隐藏保留启动凭证，宽限期内从恢复面板或应用自己的托盘图标都能免密还原。借出桌面前请先「锁定受保护应用」。",
   "app.advanced": "高级设置",
   "app.customRelock": "自定义失焦时长",
   "app.autostart.name": "自启动",
   "app.autostart.sub": "登录后 30 秒内的自启动直接放行。",
   "app.autostart.warn":
-    "单元名同账号可以伪造，只在你信任自己登录后第一分钟时使用。",
+    "单元名同账号可以伪造，只在你信任自己登录后的前 30 秒时使用。",
   "app.autostart.prompt": "要求认证",
   "app.autostart.allow": "放行",
   "app.path.inactive":
@@ -355,14 +355,14 @@ const en = {
   "app.relock.sub":
     "Hides the window after this long without focus. Restoring in the grace period does not ask again.",
   "app.relock.warn":
-    "A focus-loss hide keeps the launch ticket, so restores stay password-free until the grace period ends. Use Lock protected apps before lending the desktop.",
+    "A focus-loss hide keeps the launch ticket, so the restore panel and the app's own tray icon can restore the window without a password until the grace period ends. Use Lock protected apps before lending the desktop.",
   "app.advanced": "Advanced settings",
   "app.customRelock": "Custom focus-loss delay",
   "app.autostart.name": "Autostart",
   "app.autostart.sub":
     "A launch from the autostart unit within 30 seconds of login is allowed without a prompt.",
   "app.autostart.warn":
-    "The unit name can be forged by the same account. Use this only if you trust the first minute after your login.",
+    "The unit name can be forged by the same account. Use this only if you trust the first 30 seconds after your login.",
   "app.autostart.prompt": "Ask for authentication",
   "app.autostart.allow": "Allow",
   "app.path.inactive":
