@@ -39,10 +39,10 @@ The app-lock password is separate from your login password. After upgrading, res
 ## Usage
 
 1. Open **Shisa Settings** and enable **Require authentication before launch** for the apps you want to protect.
-2. Before lending your desktop, right-click the Shisa tray icon and choose **Lock all**. Check the notification to confirm the protected windows were hidden. It also reminds you to enable Do Not Disturb when that is off.
+2. Before lending your desktop, right-click the Shisa tray icon and choose **Lock protected apps**. Check the notification to confirm the protected windows were hidden. It also reminds you to enable Do Not Disturb when that is off.
 3. When you get your desktop back, left-click the tray icon, or choose **Restore windows** from its right-click menu. Select an app and authenticate. The original window and unsaved content are preserved.
 
-Bind `shisa lock` to a KDE keyboard shortcut for the same manual lock from the keyboard. **Hide when focus is lost** is a separate convenience: it hides a window after it loses focus but keeps the app's launch ticket, so restoring it within the grace period does not ask for the app-lock password. It does not replace **Lock all** before lending the desktop.
+Bind `shisa lock` to a KDE keyboard shortcut for the same manual lock from the keyboard. **Hide when focus is lost** is a separate convenience: it hides a window after it loses focus but keeps the app's launch ticket, so restoring it within the grace period does not ask for the app-lock password. It does not replace **Lock protected apps** before lending the desktop.
 
 The Shisa tray icon is a keyhole inside a ring, and the ring carries the state:
 

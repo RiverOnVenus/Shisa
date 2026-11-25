@@ -248,8 +248,8 @@
         clearTimeout(closeTimer);
         closeTimer = setTimeout(() => panel.close(), 560);
         // Enter was just used to restore. Moving focus to the empty state's
-        // Lock all button would let a key repeat hide every window, so the
-        // safe target is the close button.
+        // lock button would let a key repeat hide every protected window, so
+        // the safe target is the close button.
         closeButton?.focus();
       } else {
         await focusFirst();
@@ -392,16 +392,23 @@
       </div>
     {:else if !rows.length}
       <div class="blank" in:fade={{ duration: motionMs(160) }}>
-        {#if !error}<div class="blank-name">{t("restore.empty")}</div>{/if}
+        {#if !error}
+          <div class="blank-name">{t("restore.empty")}</div>
+          <div class="blank-sub">
+            {hasProtected === false ? t("restore.empty.none") : t("restore.empty.sub")}
+          </div>
+        {/if}
         {#if notice}<div class="blank-sub">{notice}</div>{/if}
         <div class="blank-actions">
-          <button
-            class="text action"
-            disabled={busyLock || hasProtected !== true}
-            title={hasProtected === true ? undefined : hasProtected === false ? t("top.lockAllNone") : t("daemon.offline")}
-            onclick={lockAll}
-          >{t("restore.lockAll")}</button>
           <button class="text action" onclick={openSettings}>{t("restore.openSettings")}</button>
+          {#if hasProtected !== false}
+            <button
+              class="text action"
+              disabled={busyLock || hasProtected !== true}
+              title={hasProtected === true ? t("restore.lockAllHint") : t("daemon.offline")}
+              onclick={lockAll}
+            >{t("restore.lockAll")}</button>
+          {/if}
         </div>
       </div>
     {:else}
