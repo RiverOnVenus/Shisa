@@ -24,10 +24,12 @@ The source archive and its checksum depend on the tag, so keep this order.
 
 1. Bump the workspace, settings, and Tauri versions, open a pull request titled `release: X.Y.Z`, and merge it.
 2. Tag the merged commit `vX.Y.Z` and push the tag.
-3. Run `packaging/arch/release.sh` from `packaging/arch/`. It builds `shisa-X.Y.Z.tar.gz` from the tag, writes its sha256 into `PKGBUILD`, writes `.SRCINFO`, and prints the upload URL. Upload that exact tarball to the URL before `makepkg` can download it.
-4. Commit the checksum. Once the packages workflow finishes, record the result in [Verification state](#verification-state). Title the pull requests `packaging: X.Y.Z checksum and release record` or `docs: record the X.Y.Z release`.
-5. Publish the GitHub release for the tag with generated notes. The [release notes workflow](../.github/workflows/release-notes-label.yml) adds `skip-changelog` to release and post-release housekeeping pull requests, and [.github/release.yml](../.github/release.yml) keeps that label out of the generated notes. Check that only feature pull requests appear.
-6. Copy `PKGBUILD`, `shisa.install`, and `.SRCINFO` to the AUR checkout and build once in a clean chroot with `extra-x86_64-build` or `paru -S --chroot aur/shisa`.
+3. Create the GitHub release for the tag as a draft. A draft has the upload URL but does not trigger the packages workflow.
+4. Run `packaging/arch/release.sh` from `packaging/arch/`. It builds `shisa-X.Y.Z.tar.gz` from the tag, writes its sha256 into `PKGBUILD`, writes `.SRCINFO`, and prints the upload URL. Upload that exact tarball to the draft release before `makepkg` can download it.
+5. Commit the checksum.
+6. Publish the release with generated notes. Publication triggers the packages workflow. The [release notes workflow](../.github/workflows/release-notes-label.yml) adds `skip-changelog` to release and post-release housekeeping pull requests and removes it when a pull request is retitled away from housekeeping, and [.github/release.yml](../.github/release.yml) keeps that label out of the generated notes. Check that only feature pull requests appear.
+7. Once the packages workflow finishes, record the result in [Verification state](#verification-state). Title the follow-up pull requests `packaging: X.Y.Z checksum and release record` or `docs: record the X.Y.Z release`.
+8. Copy `PKGBUILD`, `shisa.install`, and `.SRCINFO` to the AUR checkout and build once in a clean chroot with `extra-x86_64-build` or `paru -S --chroot aur/shisa`.
 
 `make-source.sh` refuses a tag whose workspace `Cargo.toml`, settings `Cargo.toml`, `package.json`, and `tauri.conf.json` do not all name the PKGBUILD version. The settings window compares its own version with `shisad`'s, so a manifest that lags behind would leave a permanent mismatch notice on a correct install.
 
