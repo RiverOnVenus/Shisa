@@ -53,9 +53,9 @@ const zh = {
   "crumb.general": "通用",
   "crumb.activity": "最近启动",
   "top.search": "查找设置",
-  "top.lockAll": "全部上锁",
+  "top.lockAll": "锁定受保护应用",
   "top.lockAllNone": "没有受保护的应用",
-  "top.lockAllHint": "全部上锁。设置窗口会关闭，以结束本次授权。",
+  "top.lockAllHint": "锁定所有受保护的应用。设置窗口会关闭，以结束本次授权。",
   "top.minimize": "最小化",
   "top.close": "关闭",
 
@@ -131,7 +131,7 @@ const zh = {
   "app.relock.name": "失焦后隐藏",
   "app.relock.sub": "失焦这么久后隐藏窗口。宽限期内恢复不再询问。",
   "app.relock.warn":
-    "失焦隐藏保留启动凭证，宽限期内可免密还原。借出桌面前请先「全部上锁」。",
+    "失焦隐藏保留启动凭证，宽限期内可免密还原。借出桌面前请先「锁定受保护应用」。",
   "app.advanced": "高级设置",
   "app.customRelock": "自定义失焦时长",
   "app.autostart.name": "自启动",
@@ -149,7 +149,7 @@ const zh = {
   "app.coverage.name": "保护范围",
   "app.coverage.note": "保护范围列出启动会拦截的路径，以及窗口隐藏的实际边界。",
   "app.paths.name": "启动入口",
-  "app.paths.potential": "开启保护后会拦截这些路径。",
+  "app.paths.potential": "开启保护后会拦截这些路径，并在锁屏或失焦时收起窗口。",
   "app.paths.noneEffective": "当前没有路径在生效。",
   "app.windows.name": "已打开的窗口",
   "app.windows.sub": "锁屏后隐藏，重开时重新认证。",
@@ -167,14 +167,17 @@ const zh = {
   "restore.auth": "点击恢复，需要应用锁密码 · {count} 个窗口",
   "restore.loading": "正在查找窗口…",
   "restore.empty": "没有隐藏的窗口",
+  "restore.empty.sub": "这里只列出受保护的应用。窗口在锁屏或失焦隐藏后出现。",
+  "restore.empty.none": "还没有受保护的应用。",
   "restore.agentMissing": "会话代理没有运行",
   "restore.agentMissing.sub":
     "托盘和窗口隐藏都不可用。在终端运行 systemctl --user start shisa-agent.service，然后重试。",
   "restore.retry": "重试",
   "restore.openSettings": "打开设置",
   "restore.settings": "设置",
-  "restore.lockAll": "全部上锁",
-  "restore.lockedAll": "已全部上锁。",
+  "restore.lockAll": "锁定受保护应用",
+  "restore.lockAllHint": "只锁定受保护的应用，未受保护的应用不受影响。",
+  "restore.lockedAll": "已锁定受保护的应用。",
   "restore.restored": "已恢复，窗口马上回来。",
   "restore.waiting": "正在恢复…",
   "restore.error.read": "无法读取隐藏窗口。",
@@ -262,10 +265,10 @@ const en = {
   "crumb.general": "General",
   "crumb.activity": "Recent launches",
   "top.search": "Search settings",
-  "top.lockAll": "Lock all",
+  "top.lockAll": "Lock protected apps",
   "top.lockAllNone": "No protected apps",
   "top.lockAllHint":
-    "Locks all apps. This window closes to end the current authorization.",
+    "Locks every protected app. This window closes to end the current authorization.",
   "top.minimize": "Minimize",
   "top.close": "Close",
 
@@ -352,7 +355,7 @@ const en = {
   "app.relock.sub":
     "Hides the window after this long without focus. Restoring in the grace period does not ask again.",
   "app.relock.warn":
-    "A focus-loss hide keeps the launch ticket, so restores stay password-free until the grace period ends. Use Lock all before lending the desktop.",
+    "A focus-loss hide keeps the launch ticket, so restores stay password-free until the grace period ends. Use Lock protected apps before lending the desktop.",
   "app.advanced": "Advanced settings",
   "app.customRelock": "Custom focus-loss delay",
   "app.autostart.name": "Autostart",
@@ -372,7 +375,8 @@ const en = {
   "app.coverage.note":
     "Protection coverage lists the paths that gate launches and the limits of window hiding.",
   "app.paths.name": "Launch paths",
-  "app.paths.potential": "Turning on protection gates these paths.",
+  "app.paths.potential":
+    "Turning on protection gates these paths and hides their windows on lock or focus loss.",
   "app.paths.noneEffective": "No path is in effect right now.",
   "app.windows.name": "Open windows",
   "app.windows.sub": "Hidden after a lock, and asks again when reopened.",
@@ -395,14 +399,19 @@ const en = {
     "Click to restore, asks for the app-lock password · {count} window|Click to restore, asks for the app-lock password · {count} windows",
   "restore.loading": "Looking for windows…",
   "restore.empty": "No hidden windows",
+  "restore.empty.sub":
+    "Only protected apps appear here. Their windows show up after a lock or a focus-loss hide.",
+  "restore.empty.none": "No apps are protected yet.",
   "restore.agentMissing": "The session agent is not running",
   "restore.agentMissing.sub":
     "The tray and window hiding are unavailable. Run systemctl --user start shisa-agent.service in a terminal, then retry.",
   "restore.retry": "Retry",
   "restore.openSettings": "Open settings",
   "restore.settings": "Settings",
-  "restore.lockAll": "Lock all",
-  "restore.lockedAll": "Locked all apps.",
+  "restore.lockAll": "Lock protected apps",
+  "restore.lockAllHint":
+    "Only protected apps are locked. Unprotected apps are unaffected.",
+  "restore.lockedAll": "Protected apps locked.",
   "restore.restored": "Restored. The window is coming back.",
   "restore.waiting": "Restoring…",
   "restore.error.read": "Could not read hidden windows.",

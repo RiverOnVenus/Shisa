@@ -111,11 +111,51 @@ test("restoring the last window confirms before the panel closes", async () => {
     ),
   );
   // Enter was just used to restore. The safe focus target is the close
-  // button, not the empty state's Lock all.
+  // button, not the empty state's lock action.
   await vi.waitFor(() =>
     expect(document.activeElement?.getAttribute("aria-label")).toBe("Close"),
   );
   await vi.waitFor(() => expect(close).toHaveBeenCalled(), { timeout: 2000 });
+});
+
+test("the empty panel explains that only protected apps appear", async () => {
+  state.installed = [["org.example.editor", "Text Editor", ""]];
+  state.hidden = {};
+  await render();
+  await vi.waitFor(() =>
+    expect(document.body.textContent).toContain(
+      "Only protected apps appear here.",
+    ),
+  );
+  const buttons = [...document.querySelectorAll(".blank-actions button")];
+  expect(buttons.map((button) => button.textContent.trim())).toEqual([
+    "Open settings",
+    "Lock protected apps",
+  ]);
+  expect(buttons[1].getAttribute("title")).toBe(
+    "Only protected apps are locked. Unprotected apps are unaffected.",
+  );
+  // A stray Enter after the panel opens must not lock the desktop.
+  await vi.waitFor(() =>
+    expect(document.activeElement?.textContent.trim()).toBe("Open settings"),
+  );
+});
+
+test("the empty panel hides the lock action when nothing is protected", async () => {
+  state.installed = [];
+  state.hidden = {};
+  await render();
+  await vi.waitFor(() =>
+    expect(document.body.textContent).toContain("No apps are protected yet."),
+  );
+  expect(
+    [...document.querySelectorAll(".blank-actions button")].map((button) =>
+      button.textContent.trim(),
+    ),
+  ).toEqual(["Open settings"]);
+  await vi.waitFor(() =>
+    expect(document.activeElement?.textContent.trim()).toBe("Open settings"),
+  );
 });
 
 test("the top bar opens settings and closes the panel", async () => {

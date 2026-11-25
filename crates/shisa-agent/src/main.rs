@@ -277,19 +277,19 @@ impl Tray for TrayState {
                 let _ = actions.send(action.clone());
             })
         };
-        // A disabled row that only says "Lock all" leaves the reason to the
-        // tooltip. The menu is read on its own, so the reason belongs in the
-        // label.
+        // A disabled row that only says "Lock protected apps" leaves the
+        // reason to the tooltip. The menu is read on its own, so the reason
+        // belongs in the label.
         let lock_label = if self.offline {
-            text(self.language, "全部上锁（离线）", "Lock all (offline)")
-        } else if self.protected_count == 0 {
             text(
                 self.language,
-                "全部上锁（没有受保护的应用）",
-                "Lock all (no protected apps)",
+                "锁定受保护应用（离线）",
+                "Lock protected apps (offline)",
             )
+        } else if self.protected_count == 0 {
+            text(self.language, "没有受保护的应用", "No protected apps")
         } else {
-            text(self.language, "全部上锁", "Lock all")
+            text(self.language, "锁定受保护应用", "Lock protected apps")
         };
         vec![
             StandardItem {
@@ -634,7 +634,7 @@ fn refresh(
     // not hide a window that is still in use.
     let protected: Vec<String> = apps.iter().map(|(id, _, _, _)| id.clone()).collect();
     // Publish the count before the window-state sync. A failed WindowStates
-    // call must not leave the tray's Lock all disabled with a stale zero.
+    // call must not leave the tray's lock action disabled with a stale zero.
     // The ticket state comes from the same rows and decides between the
     // the locked state and the password-free state.
     let _ = handle.update(|tray| {
@@ -676,8 +676,8 @@ fn action_loop(
                 Err(e) => {
                     let language = i18n::current();
                     let message = match language {
-                        Language::ZhCn => format!("全部上锁失败：{e}"),
-                        Language::En => format!("Lock all failed: {e}"),
+                        Language::ZhCn => format!("锁定受保护应用失败：{e}"),
+                        Language::En => format!("Locking protected apps failed: {e}"),
                     };
                     notify_lock(handle, &message, None, false, NOTIFY_PROBLEM_TIMEOUT_MS);
                 }
@@ -1251,7 +1251,7 @@ mod tests {
             panic!("expected restore, lock all and settings with a separator");
         };
 
-        assert_eq!(lock_all.label, "全部上锁");
+        assert_eq!(lock_all.label, "锁定受保护应用");
         assert!(tray.tool_tip().description.contains("已隐藏 2 个窗口"));
         (restore.activate)(&mut tray);
         assert!(matches!(requests.try_recv(), Ok(Action::OpenRestore)));
@@ -1298,7 +1298,7 @@ mod tests {
             panic!("expected lock all");
         };
         assert!(!lock_all.enabled);
-        assert_eq!(lock_all.label, "Lock all (offline)");
+        assert_eq!(lock_all.label, "Lock protected apps (offline)");
     }
 
     #[test]
