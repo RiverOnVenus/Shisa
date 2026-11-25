@@ -785,6 +785,7 @@ dependencies = [
 name = "shisa-agent"
 version = "0.1.7"
 dependencies = [
+ "futures-channel",
  "ksni",
  "shisa-core",
  "tracing",

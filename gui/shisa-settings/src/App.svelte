@@ -14,6 +14,7 @@
     isPreset,
     isRelockPreset,
     kindText,
+    lockNotice,
     matches,
     outcomeClass,
     reasonText,
@@ -732,10 +733,17 @@
 
   async function lockAll() {
     if (hasProtected !== true) return;
-    const ok = await change(() => invoke("lock", { appId: "" }), refresh, t("busy.lock"));
+    let report = null;
+    const ok = await change(
+      async () => {
+        report = await invoke("lock", { appId: "" });
+      },
+      refresh,
+      t("busy.lock"),
+    );
     // The daemon usually closes this window on a global lock. If the signal
     // is late or missing, still confirm what happened.
-    if (ok) say(t("restore.lockedAll"));
+    if (ok) say(lockNotice(report, t, nameOf));
   }
 
   /// Drop this app's ticket without authentication: locking only ever takes

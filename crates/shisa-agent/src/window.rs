@@ -9,7 +9,8 @@
 //! a same-user process can unload the script or change the window properties
 //! back. It stops a casual click, not a determined account owner.
 
-use shisa_core::dbus::{WINDOW_BUS_NAME, WINDOW_INTERFACE, WINDOW_PATH};
+use futures_channel::oneshot;
+use shisa_core::dbus::{LockReport, WINDOW_BUS_NAME, WINDOW_INTERFACE, WINDOW_PATH};
 use std::collections::HashMap;
 use std::env;
 use std::fs;
@@ -384,6 +385,18 @@ impl WindowService {
             .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
     }
 
+    /// The result of this call's fresh window check, for the panel and the
+    /// CLI. A missing report is not an error here: the status says whether
+    /// KWin was silent or has no scripting interface on this desktop.
+    async fn verify_lock_report(&self) -> zbus::fdo::Result<LockReport> {
+        let (reply, wait) = oneshot::channel();
+        self.actions
+            .send(super::Action::VerifyLockReport(reply))
+            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
+        wait.await
+            .map_err(|_| zbus::fdo::Error::Failed("window check dropped".into()))
+    }
+
     /// The app lost or regained focus. The agent starts and cancels its
     /// relock clock when that app has the feature enabled.
     async fn window_event(
@@ -546,6 +559,12 @@ impl Gate {
                 Err(NoReport::Unconfirmed)
             }
         }
+    }
+
+    /// The script generation the last check used. A report for another
+    /// generation does not belong to this lock operation.
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
 
     /// Bring one app's window to the front after the tray unlocked it. The

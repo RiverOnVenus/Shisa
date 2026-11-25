@@ -6,7 +6,10 @@
 //! `unprotect` authenticate the same way. `status` and `lock` go through the
 //! system bus without authentication (docs/subsystems/configuration.md).
 
-use shisa_core::dbus::{AppRow, ManagerProxyBlocking};
+use shisa_core::dbus::{
+    AppRow, LOCK_CONFIRMED, LOCK_NO_LAYER, LOCK_PARTIAL, LOCK_UNCONFIRMED, LockReport,
+    ManagerProxyBlocking,
+};
 use shisa_core::i18n::{self, Language};
 use std::time::Duration;
 use std::{env, process};
@@ -498,22 +501,21 @@ fn lock(app: String, language: Language) -> i32 {
                     text(language, "已收回全部认证", "all authorizations revoked")
                 );
                 if env::var_os("DBUS_SESSION_BUS_ADDRESS").is_some() {
-                    let check = (|| -> zbus::Result<()> {
-                        use shisa_core::dbus::{WINDOW_BUS_NAME, WINDOW_INTERFACE, WINDOW_PATH};
-                        let conn = zbus::blocking::Connection::session()?;
-                        let proxy = zbus::blocking::Proxy::new(
-                            &conn,
-                            WINDOW_BUS_NAME,
-                            WINDOW_PATH,
-                            WINDOW_INTERFACE,
-                        )?;
-                        proxy.call("VerifyLock", &())
-                    })();
-                    if let Err(e) = check {
-                        eprintln!(
-                            "{}: {e}",
-                            text(language, "窗口状态未确认", "window state not confirmed")
-                        );
+                    match verify_lock_report() {
+                        Ok(report) => println!("{}", lock_report_text(&report, language)),
+                        Err(e) => {
+                            // Only an older or missing agent gets the legacy
+                            // call. A timeout means the agent is busy or
+                            // stuck, and a second check would add another
+                            // notification and delay.
+                            if unavailable(&e) {
+                                let _ = verify_lock_legacy();
+                            }
+                            eprintln!(
+                                "{}: {e}",
+                                text(language, "窗口状态未确认", "window state not confirmed")
+                            );
+                        }
                     }
                 }
             } else {
@@ -531,6 +533,73 @@ fn lock(app: String, language: Language) -> i32 {
             eprintln!("shisa: {}", shown(e, language));
             1
         }
+    }
+}
+
+fn verify_lock_report() -> zbus::Result<LockReport> {
+    use shisa_core::dbus::{WINDOW_BUS_NAME, WINDOW_INTERFACE, WINDOW_PATH};
+    let conn = zbus::blocking::connection::Builder::session()?
+        .method_timeout(Duration::from_secs(5))
+        .build()?;
+    let proxy = zbus::blocking::Proxy::new(&conn, WINDOW_BUS_NAME, WINDOW_PATH, WINDOW_INTERFACE)?;
+    proxy.call("VerifyLockReport", &())
+}
+
+fn verify_lock_legacy() -> zbus::Result<()> {
+    use shisa_core::dbus::{WINDOW_BUS_NAME, WINDOW_INTERFACE, WINDOW_PATH};
+    let conn = zbus::blocking::connection::Builder::session()?
+        .method_timeout(Duration::from_secs(5))
+        .build()?;
+    let proxy = zbus::blocking::Proxy::new(&conn, WINDOW_BUS_NAME, WINDOW_PATH, WINDOW_INTERFACE)?;
+    proxy.call("VerifyLock", &())
+}
+
+/// The window result of a lock, in the terminal's language. A partial report
+/// names the apps whose windows stayed visible, and an unknown status is
+/// never shown as a confirmation.
+fn lock_report_text(report: &LockReport, language: Language) -> String {
+    let (status, _generation, matched, hidden, missed) = report;
+    let env = shisa_core::desktop::Env::current();
+    let names = missed
+        .iter()
+        .map(|(app, _)| shisa_core::desktop::display_name(app, &env))
+        .collect::<Vec<_>>()
+        .join(text(language, "、", ", "));
+    match (*status, language) {
+        (LOCK_NO_LAYER, Language::ZhCn) => "启动已上锁，本桌面没有窗口层，未能收起窗口".into(),
+        (LOCK_NO_LAYER, Language::En) => {
+            "Lock applied. This desktop has no window layer, so windows were not hidden".into()
+        }
+        (LOCK_UNCONFIRMED, Language::ZhCn) => "启动已上锁，窗口状态未确认".into(),
+        (LOCK_UNCONFIRMED, Language::En) => {
+            "Lock applied, but the window state was not confirmed".into()
+        }
+        (LOCK_CONFIRMED, Language::ZhCn) if *matched == 0 => {
+            "启动已上锁，当前桌面没有匹配的受保护窗口".into()
+        }
+        (LOCK_CONFIRMED, Language::En) if *matched == 0 => {
+            "Lock applied. No protected window matched on this desktop".into()
+        }
+        (LOCK_CONFIRMED, Language::ZhCn) => {
+            format!("启动已上锁，已收起 {hidden}/{matched} 个受保护窗口")
+        }
+        (LOCK_CONFIRMED, Language::En) if *matched == 1 => {
+            format!("Lock applied. Hid {hidden} of 1 protected window")
+        }
+        (LOCK_CONFIRMED, Language::En) => {
+            format!("Lock applied. Hid {hidden} of {matched} protected windows")
+        }
+        (LOCK_PARTIAL, Language::ZhCn) if !missed.is_empty() => {
+            format!("启动已上锁，已收起 {hidden}/{matched} 个受保护窗口，未确认：{names}")
+        }
+        (LOCK_PARTIAL, Language::En) if !missed.is_empty() => {
+            let noun = if *matched == 1 { "window" } else { "windows" };
+            format!(
+                "Lock applied. Hid {hidden} of {matched} protected {noun}. Not confirmed: {names}"
+            )
+        }
+        (_, Language::ZhCn) => "启动已上锁，窗口状态未确认".into(),
+        (_, Language::En) => "Lock applied, but the window state was not confirmed".into(),
     }
 }
 
@@ -705,6 +774,53 @@ mod tests {
             Effect::Unmarked(vec!["/opt/missing".into()])
         );
         assert_eq!(effect_from_rows(&rows, "missing"), Effect::Missing);
+    }
+
+    #[test]
+    fn a_lock_report_names_the_window_result() {
+        let report =
+            |status: u8, matched: u64, hidden: u64, missed: Vec<(&str, u32)>| -> LockReport {
+                (
+                    status,
+                    1,
+                    matched,
+                    hidden,
+                    missed
+                        .into_iter()
+                        .map(|(app, count)| (app.to_string(), count))
+                        .collect(),
+                )
+            };
+        assert_eq!(
+            lock_report_text(&report(LOCK_CONFIRMED, 2, 2, vec![]), Language::ZhCn),
+            "启动已上锁，已收起 2/2 个受保护窗口"
+        );
+        assert_eq!(
+            lock_report_text(&report(LOCK_CONFIRMED, 1, 1, vec![]), Language::En),
+            "Lock applied. Hid 1 of 1 protected window"
+        );
+        assert_eq!(
+            lock_report_text(&report(LOCK_CONFIRMED, 0, 0, vec![]), Language::En),
+            "Lock applied. No protected window matched on this desktop"
+        );
+        let partial = report(LOCK_PARTIAL, 3, 2, vec![("shisa.test.missing", 1)]);
+        assert!(lock_report_text(&partial, Language::ZhCn).contains("未确认：shisa.test.missing"));
+        assert_eq!(
+            lock_report_text(&report(LOCK_UNCONFIRMED, 0, 0, vec![]), Language::En),
+            "Lock applied, but the window state was not confirmed"
+        );
+        assert_eq!(
+            lock_report_text(&report(LOCK_NO_LAYER, 0, 0, vec![]), Language::ZhCn),
+            "启动已上锁，本桌面没有窗口层，未能收起窗口"
+        );
+        assert_eq!(
+            lock_report_text(&report(99, 0, 0, vec![]), Language::ZhCn),
+            "启动已上锁，窗口状态未确认"
+        );
+        assert_eq!(
+            lock_report_text(&report(LOCK_PARTIAL, 2, 1, vec![]), Language::ZhCn),
+            "启动已上锁，窗口状态未确认"
+        );
     }
 
     #[test]
