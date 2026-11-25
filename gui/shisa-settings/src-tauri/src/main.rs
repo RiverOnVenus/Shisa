@@ -11,12 +11,15 @@
 
 use base64::Engine;
 use futures_util::StreamExt;
-use shisa_core::dbus::{AppRow, DiagRow, LaunchRow, ManagerProxy};
+use shisa_core::dbus::{AppRow, BUS_NAME, DiagRow, LaunchRow, ManagerProxy};
 use shisa_core::i18n::{self, Language};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 use tauri::{Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
+use zbus::MatchRule;
+use zbus::fdo::NameOwnerChanged;
+use zbus::message::Type;
 
 type R<T> = Result<T, String>;
 
@@ -391,13 +394,90 @@ fn spawn_lock_watch(app: tauri::AppHandle, bus: Bus) {
     });
 }
 
-/// One registration and subscription. True means the lock signal arrived and
-/// the app was told to exit.
+/// True when this `NameOwnerChanged` signal says the daemon instance this
+/// window registered with is gone. An empty new owner means the name lost
+/// every owner.
+fn owner_replaced(name: &str, current: &str, signal_name: &str, new_owner: &str) -> bool {
+    signal_name == name && new_owner != current
+}
+
+/// The bus signal that announces a new owner for Shisa's name.
+fn owner_changes_rule() -> zbus::Result<MatchRule<'static>> {
+    Ok(MatchRule::builder()
+        .msg_type(Type::Signal)
+        .sender("org.freedesktop.DBus")?
+        .interface("org.freedesktop.DBus")?
+        .member("NameOwnerChanged")?
+        .arg(0, BUS_NAME)?
+        .build())
+}
+
+/// The current owner of a bus name, or `None` when it has none.
+async fn name_owner(conn: &zbus::Connection, name: &str) -> Option<String> {
+    let reply = conn
+        .call_method(
+            Some("org.freedesktop.DBus"),
+            "/org/freedesktop/DBus",
+            Some("org.freedesktop.DBus"),
+            "GetNameOwner",
+            &(name,),
+        )
+        .await
+        .ok()?;
+    reply.body().deserialize::<String>().ok()
+}
+
+/// One registration and subscription. True means the app was told to exit:
+/// either a lock arrived, or the daemon instance changed under it.
 async fn watch_lock(app: &tauri::AppHandle, bus: &Bus) -> Result<bool, String> {
     let conn = bus.connection().await?;
     let manager = ManagerProxy::new(&conn).await.map_err(err)?;
+    // Subscribe before the owner is read, so a change in between is still
+    // delivered to the watcher below.
+    let mut owners =
+        zbus::MessageStream::for_match_rule(owner_changes_rule().map_err(err)?, &conn, None)
+            .await
+            .map_err(err)?;
+    let Some(current) = name_owner(&conn, BUS_NAME).await else {
+        return Ok(false);
+    };
     manager.register_settings().await.map_err(err)?;
+    // Subscribe to the settings signal before the owner is checked again, so
+    // a restarted daemon that does send a lock still reaches this window.
     let mut locked = manager.receive_settings_locked().await.map_err(err)?;
+    // Close the race between the owner lookup and the registration. A
+    // registration that reached the previous instance is not useful. A
+    // failed lookup is treated the same way: the window cannot prove which
+    // instance holds its registration, and exiting is safer than staying
+    // open unverified.
+    if name_owner(&conn, BUS_NAME).await.as_deref() != Some(current.as_str()) {
+        app.exit(0);
+        return Ok(true);
+    }
+    // A restarted daemon starts with an empty settings registry, and the bus
+    // keeps this connection's signal subscription alive across the owner
+    // change. The retained polkit decision belongs to this process, so exit
+    // rather than leave a window that a later lock cannot revoke.
+    let owner_app = app.clone();
+    let registered_owner = current.clone();
+    tauri::async_runtime::spawn(async move {
+        while let Some(message) = owners.next().await {
+            let Ok(message) = message else { continue };
+            let Some(signal) = NameOwnerChanged::from_message(message) else {
+                continue;
+            };
+            let Ok(args) = signal.args() else { continue };
+            let new_owner = args.new_owner();
+            let new_owner = match &**new_owner {
+                Some(name) => name.as_str(),
+                None => "",
+            };
+            if owner_replaced(BUS_NAME, &registered_owner, args.name().as_str(), new_owner) {
+                owner_app.exit(0);
+                return;
+            }
+        }
+    });
     if locked.next().await.is_some() {
         app.exit(0);
         return Ok(true);
@@ -867,6 +947,15 @@ mod tests {
 
     fn owned(value: Value<'_>) -> OwnedValue {
         value.try_into().unwrap()
+    }
+
+    #[test]
+    fn a_new_daemon_owner_invalidates_the_registration() {
+        assert!(owner_replaced("shisa", "old", "shisa", "new"));
+        // The daemon stopped and the name has no owner yet.
+        assert!(owner_replaced("shisa", "old", "shisa", ""));
+        assert!(!owner_replaced("shisa", "old", "shisa", "old"));
+        assert!(!owner_replaced("shisa", "old", "other", "new"));
     }
 
     #[test]

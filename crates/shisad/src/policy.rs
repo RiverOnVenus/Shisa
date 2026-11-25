@@ -124,6 +124,10 @@ pub struct Decision {
     /// launches, so a decision about another user's app carries neither.
     pub uid: Option<u32>,
     pub app: Option<String>,
+    /// Set for [`Why::NeedAuth`]: the lock generations at the moment the
+    /// request was decided, so a lock that starts before the answer cannot
+    /// be mistaken for one that started after the request.
+    pub revocation: Option<(u64, u64)>,
     /// Tickets that disappeared while answering this request: a one-shot
     /// ticket consumed by the launch, or an expired ticket found in the
     /// table. The session agent has to be told those apps are locked again.
@@ -137,6 +141,7 @@ impl Decision {
             auth: None,
             uid: None,
             app: None,
+            revocation: None,
             lost_tickets: Vec::new(),
         }
     }
@@ -147,6 +152,7 @@ impl Decision {
             auth: None,
             uid: Some(uid),
             app: Some(app.to_string()),
+            revocation: None,
             lost_tickets: Vec::new(),
         }
     }
@@ -194,6 +200,15 @@ pub struct State {
     window_allowed: HashMap<u32, HashSet<String>>,
     /// When the user's graphical session began, for the autostart window.
     session_start: HashMap<u32, Instant>,
+    /// Bumped whenever a lock takes this user's tickets and window
+    /// permission. A request that was already waiting records the value it
+    /// started under and must not commit after a change, or an answer to a
+    /// prompt that began before the lock would reopen what the lock closed
+    /// (docs/subsystems/authentication.md).
+    revocations: HashMap<u32, u64>,
+    /// The same for one app, so locking one app does not refuse an
+    /// authentication that is waiting for another.
+    app_revocations: HashMap<Key, u64>,
 }
 
 impl State {
@@ -215,6 +230,19 @@ impl State {
             apps.retain(|app| policy.app(*uid, app).is_some());
             !apps.is_empty()
         });
+    }
+
+    /// The lock generations a request started under: the user's lock, and
+    /// the lock of this app. A request compares these with the current
+    /// values before it commits.
+    pub fn revocation(&self, uid: u32, app: &str) -> (u64, u64) {
+        (
+            self.revocations.get(&uid).copied().unwrap_or(0),
+            self.app_revocations
+                .get(&(uid, app.to_string()))
+                .copied()
+                .unwrap_or(0),
+        )
     }
 
     /// Name and wait limit of a user that has a policy.
@@ -346,6 +374,16 @@ impl State {
     /// Drop one app's ticket and window permission. Returns the app id when
     /// either was there.
     pub fn lock_app(&mut self, uid: u32, app: &str) -> Option<String> {
+        // Bump even when nothing is committed: a held launch or a settings
+        // change for this app may be waiting with an older generation. Only
+        // an app in the policy gets an entry, so a caller cannot grow the
+        // map with ids that protect nothing.
+        if self.is_protected(uid, app) {
+            *self
+                .app_revocations
+                .entry((uid, app.to_string()))
+                .or_insert(0) += 1;
+        }
         let ticket = self.tickets.remove(&(uid, app.to_string())).is_some();
         let window = self
             .window_allowed
@@ -407,6 +445,9 @@ impl State {
     /// Drop every ticket and window permission of a user. Returns the apps
     /// that had either.
     pub fn clear_tickets(&mut self, uid: u32) -> Vec<String> {
+        // A lock is a revocation even when there is nothing committed yet.
+        // A prompt that started before it must not reopen the app later.
+        *self.revocations.entry(uid).or_insert(0) += 1;
         let mut cleared = Vec::new();
         self.tickets.retain(|(u, app), _| {
             if *u == uid {
@@ -500,6 +541,7 @@ impl State {
                 auth: Some((uid, apps[0].0.clone())),
                 uid: Some(uid),
                 app: Some(apps[0].0.clone()),
+                revocation: Some(self.revocation(uid, &apps[0].0)),
                 lost_tickets: Vec::new(),
             }
         };
@@ -830,6 +872,17 @@ mod tests {
     }
 
     #[test]
+    fn a_pending_exec_records_the_lock_generation() {
+        let mut s = state();
+        let d = s.decide(&procs(), APP_BIN, 200, Instant::now());
+        assert_eq!(d.revocation, Some(s.revocation(UID, "app")));
+        // A lock after the decision changes the generation, so the answer
+        // that was already on its way is refused.
+        s.clear_tickets(UID);
+        assert_ne!(d.revocation, Some(s.revocation(UID, "app")));
+    }
+
+    #[test]
     fn vanished_caller_is_denied() {
         let mut s = state();
         let d = s.decide(&procs(), APP_BIN, 555, Instant::now());
@@ -1108,6 +1161,59 @@ mod tests {
         s.grant(UID, "app", t0);
         assert_eq!(s.lock_app(UID, "app"), Some("app".into()));
         assert_eq!(s.lock_app(UID, "app"), None);
+    }
+
+    #[test]
+    fn a_lock_starts_a_new_revocation_generation() {
+        let mut s = state();
+        let before = s.revocation(UID, "app");
+        s.grant(UID, "app", Instant::now());
+        s.clear_tickets(UID);
+        let after = s.revocation(UID, "app");
+        assert_ne!(before.0, after.0);
+        assert_eq!(before.1, after.1);
+
+        // A lock with nothing committed still invalidates a request that was
+        // already waiting for an answer.
+        s.clear_tickets(UID);
+        assert_ne!(after.0, s.revocation(UID, "app").0);
+
+        // One app's lock leaves another app's generation alone.
+        let other = s.revocation(UID, "twin-a");
+        s.lock_app(UID, "app");
+        assert_eq!(s.revocation(UID, "twin-a"), other);
+        assert_ne!(after.1, s.revocation(UID, "app").1);
+    }
+
+    #[test]
+    fn an_app_generation_survives_unprotecting_and_reprotecting() {
+        let mut s = state();
+        s.lock_app(UID, "app");
+        let locked = s.revocation(UID, "app").1;
+        // Remove the app, then put it back. A request that captured the old
+        // generation must not match again just because the app returned.
+        let mut policy = s.policy().clone();
+        let user = policy.users.get_mut(&UID).unwrap();
+        let app = user.apps.iter().find(|a| a.id == "app").unwrap().clone();
+        user.apps.retain(|a| a.id != "app");
+        s.set_policy(policy);
+        let mut policy = s.policy().clone();
+        policy.users.get_mut(&UID).unwrap().apps.push(app);
+        s.set_policy(policy);
+        assert_eq!(s.revocation(UID, "app").1, locked);
+    }
+
+    #[test]
+    fn a_screen_lock_only_starts_a_new_generation_when_it_clears() {
+        let mut s = state();
+        let before = s.revocation(UID, "app");
+        s.policy.users.get_mut(&UID).unwrap().clear_on_lock = false;
+        assert!(s.screen_locked(UID).is_empty());
+        assert_eq!(s.revocation(UID, "app"), before);
+
+        s.policy.users.get_mut(&UID).unwrap().clear_on_lock = true;
+        s.screen_locked(UID);
+        assert_ne!(s.revocation(UID, "app").0, before.0);
     }
 
     #[test]

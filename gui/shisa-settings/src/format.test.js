@@ -64,8 +64,11 @@ test("launch outcomes name the decision and its reason", () => {
   assert.equal(kindText("granted", zh), "放行");
   assert.equal(reasonText("granted", zh), "认证通过");
   assert.equal(kindText("asked", zh), "等待");
+  assert.equal(kindText("revoked", zh), "拒绝");
+  assert.equal(reasonText("revoked", zh), "锁定在先");
   assert.equal(outcomeClass("granted"), "ok");
   assert.equal(outcomeClass("denied"), "bad");
+  assert.equal(outcomeClass("revoked"), "bad");
   assert.equal(outcomeClass("asked"), "wait");
   // An outcome a newer daemon sends is shown as it came, not swallowed.
   assert.equal(kindText("future-kind", zh), "future-kind");

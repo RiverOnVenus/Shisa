@@ -1,0 +1,46 @@
+name: Release notes housekeeping
+
+on:
+  pull_request:
+    types: [opened, edited, reopened]
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: release-notes-label-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  label:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Add skip-changelog to release housekeeping pull requests
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const title = context.payload.pull_request.title
+            const housekeeping = /^(release: |packaging: .*(checksum|release record|record the release)|docs: record .* release)/i
+            if (!housekeeping.test(title)) return
+
+            const label = 'skip-changelog'
+            try {
+              await github.rest.issues.createLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name: label,
+                color: 'ededed',
+                description: 'Omit this pull request from generated release notes',
+              })
+            } catch (error) {
+              if (error.status !== 422) throw error
+            }
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              labels: [label],
+            })

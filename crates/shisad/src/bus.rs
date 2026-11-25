@@ -154,6 +154,7 @@ pub fn spawn(
     events: Arc<Events>,
     activity: Arc<activity::Log>,
     diag: Arc<Diag>,
+    commit: Arc<Mutex<()>>,
 ) -> Result<mpsc::Sender<Msg>, String> {
     let (tx, rx) = mpsc::channel::<Msg>();
     let agents: Arc<Mutex<HashMap<u32, String>>> = Arc::default();
@@ -169,6 +170,7 @@ pub fn spawn(
         events: events.clone(),
         waiting: waiting.clone(),
         limits: Arc::default(),
+        commit,
     };
     let conn = (|| {
         zbus::blocking::connection::Builder::system()?
@@ -276,6 +278,9 @@ struct ManagerIface {
     events: Arc<Events>,
     waiting: Waiting,
     limits: Arc<Mutex<Limits>>,
+    /// Serializes a lock with the commit of an authenticated settings
+    /// change. Both sides take this before the state lock.
+    commit: Arc<Mutex<()>>,
 }
 
 #[zbus::interface(name = "io.github.RiverOnVenus.Shisa.Manager")]
@@ -349,13 +354,35 @@ impl ManagerIface {
     ) -> zbus::fdo::Result<()> {
         let uid = caller_uid(conn, &hdr).await?;
         let global = app_id.is_empty();
-        let cleared: Vec<String> = {
-            let mut state = self.state.lock().unwrap();
-            if global {
-                state.clear_tickets(uid)
+        // The app id becomes a key in the revocation map. Refuse garbage the
+        // same way Hide and Unhide do instead of storing an arbitrary string.
+        if !global && !valid_app_id(app_id) {
+            return Err(zbus::fdo::Error::InvalidArgs(format!(
+                "invalid app id {app_id:?}"
+            )));
+        }
+        let (cleared, destinations) = {
+            // The same mutex a settings change holds while it checks the
+            // locked set and before it writes. The state clear and the
+            // settings invalidation are one step for that check.
+            let _commit = self.commit.lock().unwrap();
+            let cleared = {
+                let mut state = self.state.lock().unwrap();
+                if global {
+                    state.clear_tickets(uid)
+                } else {
+                    state.lock_app(uid, app_id).into_iter().collect()
+                }
+            };
+            let destinations = if global {
+                // A settings window's polkit decision belongs to its
+                // process. Ask it to exit so the decision cannot be used
+                // after this hand-over (docs/subsystems/authentication.md).
+                self.settings.lock().unwrap().invalidate(uid)
             } else {
-                state.lock_app(uid, app_id).into_iter().collect()
-            }
+                Vec::new()
+            };
+            (cleared, destinations)
         };
         let agent = self.agents.lock().unwrap().get(&uid).cloned();
         if let Some(agent) = agent {
@@ -363,24 +390,18 @@ impl ManagerIface {
                 state_changed(conn, &agent, app, false).await;
             }
         }
-        if global {
-            // A settings window's polkit decision belongs to its process.
-            // Ask it to exit so the decision cannot be used after this
-            // hand-over (docs/subsystems/authentication.md).
-            let destinations = self.settings.lock().unwrap().invalidate(uid);
-            for dest in destinations {
-                if let Err(e) = conn
-                    .emit_signal(
-                        Some(dest.as_str()),
-                        OBJECT_PATH,
-                        INTERFACE,
-                        "SettingsLocked",
-                        &(),
-                    )
-                    .await
-                {
-                    debug!("SettingsLocked: {e}");
-                }
+        for dest in destinations {
+            if let Err(e) = conn
+                .emit_signal(
+                    Some(dest.as_str()),
+                    OBJECT_PATH,
+                    INTERFACE,
+                    "SettingsLocked",
+                    &(),
+                )
+                .await
+            {
+                debug!("SettingsLocked: {e}");
             }
         }
         Ok(())
@@ -460,6 +481,13 @@ impl ManagerIface {
             .sender()
             .ok_or_else(|| zbus::fdo::Error::Failed("no sender".into()))?
             .to_string();
+        // Capture the lock generation before the request can wait. A lock
+        // that starts after this point bumps it, and the answer is refused
+        // instead of leaving a ticket the user already revoked.
+        let revocation = {
+            let _commit = self.commit.lock().unwrap();
+            self.state.lock().unwrap().revocation(uid, app_id)
+        };
         let id = self.events.next_id();
         let (tx, rx) = oneshot::channel();
         self.waiting.lock().unwrap().insert(id, tx);
@@ -468,6 +496,7 @@ impl ManagerIface {
             uid,
             app: app_id.to_string(),
             sender,
+            revocation,
         });
         match rx.await {
             Ok(Ok(())) => Ok(()),
@@ -720,11 +749,18 @@ impl ManagerIface {
         // A lock invalidated this window's retained decision. Refuse the
         // change even if polkit would still answer from it, so a window that
         // missed the signal cannot change protection after the hand-over.
-        if self.settings.lock().unwrap().is_locked(uid, &sender) {
-            return Err(zbus::fdo::Error::Failed(
-                "settings locked, reopen Shisa Settings".into(),
-            ));
-        }
+        // The lock generation is read under the same mutex a lock takes, so
+        // a lock that starts after this point makes the answer fail at
+        // commit time instead of applying a change the user revoked.
+        let revocation = {
+            let _commit = self.commit.lock().unwrap();
+            if self.settings.lock().unwrap().is_locked(uid, &sender) {
+                return Err(zbus::fdo::Error::Failed(
+                    "settings locked, reopen Shisa Settings".into(),
+                ));
+            }
+            self.state.lock().unwrap().revocation(uid, app)
+        };
         let id = self.events.next_id();
         let (tx, rx) = oneshot::channel();
         self.waiting.lock().unwrap().insert(id, tx);
@@ -734,6 +770,7 @@ impl ManagerIface {
             app: app.to_string(),
             change,
             sender,
+            revocation,
         };
         self.events.push(request);
         match rx.await {

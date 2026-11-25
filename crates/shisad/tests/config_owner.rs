@@ -37,6 +37,24 @@ impl Marker for FakeMarker {
     }
 }
 
+/// Returns the inode that is really on disk, so `marks_are_current` can be
+/// checked after a load.
+struct RealMarker;
+
+impl Marker for RealMarker {
+    fn mark(&self, path: &Path) -> std::io::Result<FileId> {
+        let meta = fs::metadata(path)?;
+        Ok(FileId {
+            dev: meta.dev(),
+            ino: meta.ino(),
+        })
+    }
+
+    fn unmark(&self, _path: &Path, _id: FileId) -> std::io::Result<bool> {
+        Ok(true)
+    }
+}
+
 /// True when the calling process should run the test body. Otherwise the
 /// parent has started a child inside a root-mapped user namespace and this
 /// function either saw the child finish or reported a skip.
@@ -173,6 +191,39 @@ fn a_group_writable_directory_keeps_the_previous_policy() {
         .get(&uid)
         .expect("the previous policy must stay");
     assert_eq!(kept.apps[0].id, "previous");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_repaired_config_is_loaded_again_without_a_signal() {
+    if !enter_namespace("a_repaired_config_is_loaded_again_without_a_signal") {
+        return;
+    }
+    let (dir, user) = config_dir("retry");
+    let path = dir.join(format!("{user}.toml"));
+    fs::write(&path, "not toml").unwrap();
+
+    let (policy, failed) = load::load(&RealMarker, &dir, &Policy::default(), &mut Marks::new());
+    assert!(failed);
+    assert!(policy.users.is_empty());
+    // The failed user never reached the policy, so no mark check can see the
+    // gap. The failure flag has to keep the periodic reload going.
+    assert!(load::marks_are_current(&policy));
+    assert!(load::needs_reload(&policy, failed));
+
+    let bin = dir.join("bin");
+    fs::write(&bin, "x").unwrap();
+    fs::write(
+        &path,
+        format!("[[apps]]\nid = \"app\"\npaths = [\"{}\"]\n", bin.display()),
+    )
+    .unwrap();
+    let (policy, failed) = load::load(&RealMarker, &dir, &policy, &mut Marks::new());
+    assert!(!failed);
+    let uid = shisa_core::users::uid(&user).unwrap();
+    assert_eq!(policy.users[&uid].apps[0].id, "app");
+    assert!(load::marks_are_current(&policy));
+    assert!(!load::needs_reload(&policy, failed));
     let _ = fs::remove_dir_all(&dir);
 }
 

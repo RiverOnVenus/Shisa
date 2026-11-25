@@ -733,9 +733,15 @@ fn signal_loop(
         let message = match message {
             Ok(message) => message,
             Err(e) => {
-                // A lagging receiver or a closed stream must not end the
-                // loop: the tray would keep claiming to be online while no
-                // state change ever arrives.
+                // A lagging receiver must not end the loop: the tray would
+                // keep claiming to be online while no state change ever
+                // arrives. A closed connection is different. The rest of
+                // the agent keeps using it, so exit and let the user unit
+                // start a process with a fresh connection and subscriptions.
+                if conn.is_closed() {
+                    error!("system bus connection closed, restarting the agent");
+                    std::process::exit(1);
+                }
                 warn!("signal stream: {e}");
                 thread::sleep(Duration::from_millis(100));
                 continue;
@@ -782,7 +788,12 @@ fn signal_loop(
             });
         }
     }
-    error!("signal stream ended");
+    // The stream ends only when the system bus connection closes. The
+    // supervisor and the focus reporter still hold that connection, so this
+    // process cannot recover on its own. Exit with a failure so the user
+    // unit restarts it with new connections and match rules.
+    error!("signal stream ended, restarting the agent");
+    std::process::exit(1);
 }
 
 fn refresh(

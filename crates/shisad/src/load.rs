@@ -492,6 +492,15 @@ pub fn marks_are_current(policy: &Policy) -> bool {
     true
 }
 
+/// Whether the periodic revalidation has to reload. A mark that failed or a
+/// path that changed shows up in `marks_are_current`. A configuration that
+/// could not be read or parsed keeps its user out of the policy, so the mark
+/// check cannot see it, and the failure flag has to keep asking for a load
+/// until the file is repaired.
+pub fn needs_reload(policy: &Policy, config_failed: bool) -> bool {
+    config_failed || !marks_are_current(policy)
+}
+
 /// Remove marks from inodes that no policy refers to any more.
 pub fn drop_stale_marks(marker: &dyn Marker, marks: &mut Marks, keep: &HashSet<FileId>) {
     marks.retain(|id, path| {
@@ -670,6 +679,16 @@ mod tests {
             Vec::new()
         )));
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_configuration_failure_keeps_asking_for_a_reload() {
+        // A user whose file failed to load is missing from the policy, so
+        // the mark check has nothing to examine. The failure flag has to
+        // keep the periodic reload going until the file parses.
+        let policy = Policy::default();
+        assert!(!needs_reload(&policy, false));
+        assert!(needs_reload(&policy, true));
     }
 
     #[test]

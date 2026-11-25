@@ -7,6 +7,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{self, Read};
+use std::os::fd::AsRawFd;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
@@ -115,7 +116,11 @@ impl Env {
 
     /// The interface language for the account this environment belongs to.
     pub fn language(&self) -> Language {
-        crate::i18n::for_account(&self.config_home, self.locale.as_deref())
+        crate::i18n::for_account_as(
+            &self.config_home,
+            self.locale.as_deref(),
+            self.owner.as_ref().map(|(uid, _)| *uid),
+        )
     }
 
     /// Read a desktop file or Flatpak metadata file as text.
@@ -138,14 +143,19 @@ impl Env {
                 "not a small regular file",
             ));
         }
-        if let Some((uid, _home)) = &self.owner
-            && !system_path(path)
-            && meta.uid() != *uid
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "not owned by the account",
-            ));
+        if let Some((uid, _home)) = &self.owner {
+            // The raw path says little: a link in a system directory can
+            // point anywhere, and a link anywhere can point into one. The
+            // descriptor is what root will read, so judge the path of the
+            // opened object. If that path cannot be read, fall back to the
+            // owner check instead of trusting the raw path.
+            let resolved = fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd())).ok();
+            if !may_read_as_owner(*uid, meta.uid(), resolved.as_deref()) {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "not owned by the account",
+                ));
+            }
         }
         let mut text = String::new();
         file.take(MAX_FILE_SIZE).read_to_string(&mut text)?;
@@ -215,6 +225,14 @@ impl Env {
 fn system_path(path: &Path) -> bool {
     const ROOTS: &[&str] = &["/usr", "/opt", "/var/lib/flatpak"];
     ROOTS.iter().any(|root| path.starts_with(*root))
+}
+
+/// Whether root may read this opened object for `owner_uid`. `resolved` is
+/// the path behind the descriptor. A system directory is root's, so a file
+/// reached there may be read for any account. Anything else must belong to
+/// the account, or root would read another account's file on its behalf.
+fn may_read_as_owner(owner_uid: u32, meta_uid: u32, resolved: Option<&Path>) -> bool {
+    resolved.is_some_and(system_path) || meta_uid == owner_uid
 }
 
 /// The environment of the user's systemd manager, which carries the session's
@@ -1363,6 +1381,32 @@ mod tests {
         let c = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
         assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o644) }, 0);
         assert!(env.read(&fifo).is_err());
+    }
+
+    #[test]
+    fn an_opened_file_is_trusted_by_its_own_path() {
+        // A system file stays readable for any account.
+        assert!(may_read_as_owner(
+            1000,
+            0,
+            Some(Path::new("/usr/share/applications/x.desktop"))
+        ));
+        // Outside the system roots the opened object has to belong to the
+        // account. A system directory holding a link elsewhere is judged by
+        // where the descriptor actually leads.
+        assert!(!may_read_as_owner(
+            1000,
+            1001,
+            Some(Path::new("/home/other/x.desktop"))
+        ));
+        assert!(may_read_as_owner(
+            1000,
+            1000,
+            Some(Path::new("/home/u/x.desktop"))
+        ));
+        // Without a resolved path, only the account's own file is safe.
+        assert!(!may_read_as_owner(1000, 1001, None));
+        assert!(may_read_as_owner(1000, 1000, None));
     }
 
     #[test]
