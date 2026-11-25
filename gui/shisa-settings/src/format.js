@@ -38,6 +38,8 @@ const kinds = {
   failed: ["bad", "outcome.refuse", "outcome.failed"],
   // polkit's clean "not authorized": the user cancelled or gave up.
   denied: ["bad", "outcome.refuse", "outcome.denied"],
+  // A lock took the app back before the answer could commit.
+  revoked: ["bad", "outcome.refuse", "outcome.revoked"],
 };
 
 export const kindText = (kind, t) => {

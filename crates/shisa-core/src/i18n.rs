@@ -8,7 +8,8 @@
 
 use serde::Deserialize;
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
 /// The interface languages Shisa ships with.
@@ -68,17 +69,68 @@ pub fn config_path(config_home: &Path) -> PathBuf {
     config_home.join("shisa/ui.toml")
 }
 
+/// The preference file is tiny. Root reads it for an account on paths that
+/// run without a bounded worker, so a special file or an oversized one must
+/// not stall or grow the daemon.
+const MAX_UI_CONFIG: u64 = 64 * 1024;
+
 /// The saved choice, or `None` when there is none or the file cannot be read
 /// or parsed. The caller then falls back to the locale rather than failing.
 pub fn saved(config_home: &Path) -> Option<Language> {
-    let text = fs::read_to_string(config_path(config_home)).ok()?;
+    saved_as(config_home, None)
+}
+
+/// The saved choice when root reads it for an account. `owner` is the
+/// account's uid: the opened file must then belong to it, so a link to a
+/// root-only file is not read on the account's behalf.
+pub fn saved_as(config_home: &Path, owner: Option<u32>) -> Option<Language> {
+    let text = read_preference(&config_path(config_home), owner).ok()?;
     let config: UiConfig = toml::from_str(&text).ok()?;
     Language::from_tag(config.language.as_deref()?)
 }
 
+/// Read the preference as a small regular file without blocking on a FIFO.
+/// shisad calls this while it represents the account, so the same limits as
+/// the desktop-file reader apply.
+fn read_preference(path: &Path, owner: Option<u32>) -> io::Result<String> {
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK | libc::O_NOCTTY)
+        .open(path)?;
+    let meta = file.metadata()?;
+    if !meta.is_file() || meta.len() > MAX_UI_CONFIG {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "not a small regular file",
+        ));
+    }
+    if let Some(uid) = owner
+        && meta.uid() != uid
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "not owned by the account",
+        ));
+    }
+    let mut text = String::new();
+    file.take(MAX_UI_CONFIG).read_to_string(&mut text)?;
+    if text.contains('\0') {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "contains a NUL byte",
+        ));
+    }
+    Ok(text)
+}
+
 /// The language for an account: its saved choice, else its session locale.
 pub fn for_account(config_home: &Path, locale: Option<&str>) -> Language {
-    saved(config_home).unwrap_or_else(|| Language::from_locale(locale))
+    for_account_as(config_home, locale, None)
+}
+
+/// The language for an account when root reads the preference on its behalf.
+pub fn for_account_as(config_home: &Path, locale: Option<&str>, owner: Option<u32>) -> Language {
+    saved_as(config_home, owner).unwrap_or_else(|| Language::from_locale(locale))
 }
 
 /// The config directory for this process, when HOME is known.
@@ -170,6 +222,14 @@ const ERROR_TEXT: &[(&str, &str)] = &[
     ),
     ("authentication timed out", "认证超时，改动没有生效。"),
     ("authentication cancelled", "认证取消了，改动没有生效。"),
+    (
+        "locked before the change was applied",
+        "锁定发生在这个改动完成之前，改动没有生效。",
+    ),
+    (
+        "locked before the authorization completed",
+        "锁定发生在这个认证完成之前，应用仍然处于锁定状态。",
+    ),
     (
         "settings locked",
         "设置已上锁，关闭并重新打开 Shisa 设置后再试。",
@@ -277,6 +337,43 @@ mod tests {
         assert_eq!(for_account(&dir, Some("zh_CN.UTF-8")), Language::ZhCn);
 
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_special_or_oversized_preference_falls_back_to_the_locale() {
+        use std::os::unix::ffi::OsStrExt;
+
+        let dir = std::env::temp_dir().join(format!("shisa-i18n-limits-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let path = config_path(&dir);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+
+        // A plain read of a FIFO with no writer would never return.
+        let c = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+        // SAFETY: mkfifo only reads the NUL-terminated path and creates a
+        // node at it.
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        assert_eq!(saved(&dir), None);
+        fs::remove_file(&path).unwrap();
+
+        // A file above the cap is refused instead of being read whole.
+        let mut big = String::from("language = \"en\"\n");
+        big.push_str(&"#".repeat(MAX_UI_CONFIG as usize));
+        fs::write(&path, big).unwrap();
+        assert_eq!(saved(&dir), None);
+        fs::remove_file(&path).unwrap();
+
+        fs::create_dir(&path).unwrap();
+        assert_eq!(saved(&dir), None);
+        fs::remove_dir(&path).unwrap();
+
+        // Root only reads a file that belongs to the account it represents.
+        fs::write(&path, "language = \"en\"\n").unwrap();
+        let me = unsafe { libc::getuid() };
+        assert_eq!(saved_as(&dir, Some(me)), Some(Language::En));
+        assert_eq!(saved_as(&dir, Some(me + 1)), None);
+
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -32,8 +32,13 @@ impl Request {
     }
 
     pub fn answer(mut self, allow: bool) -> io::Result<()> {
+        // Mark it answered only after the kernel accepted the response. A
+        // failed write leaves the request unanswered, so Drop retries a
+        // deny instead of closing the descriptor with an approval that was
+        // never delivered.
+        respond(self.fan, self.fd, allow)?;
         self.answered = true;
-        respond(self.fan, self.fd, allow)
+        Ok(())
     }
 }
 

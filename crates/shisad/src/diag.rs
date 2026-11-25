@@ -108,7 +108,8 @@ impl Diag {
 /// locked, and until root runs `passwd` every polkit check for the app-lock
 /// password fails, so the settings window warns about it from the start.
 ///
-/// Only the one field is read. The hash never leaves this function.
+/// The file is read into the daemon's memory, but only whether the account's
+/// field is set leaves this function, as a boolean.
 pub fn admin_ready() -> bool {
     match std::fs::read_to_string("/etc/shadow") {
         Ok(text) => password_set(&text, ADMIN_USER),

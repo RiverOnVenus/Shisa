@@ -35,6 +35,8 @@ pub enum Event {
         change: Change,
         /// Unique bus name of the caller, the polkit subject for the check.
         sender: String,
+        /// The lock generations this request started under.
+        revocation: (u64, u64),
     },
     /// A D-Bus client asked to authenticate for an app and leave a ticket.
     UnlockRequest {
@@ -42,6 +44,8 @@ pub enum Event {
         uid: u32,
         app: String,
         sender: String,
+        /// The lock generations this request started under.
+        revocation: (u64, u64),
     },
 }
 

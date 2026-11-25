@@ -23,6 +23,8 @@ pub const TIMEOUT: &str = "timeout";
 pub const CANCELLED: &str = "cancelled";
 /// The check itself could not run or broke off.
 pub const FAILED: &str = "failed";
+/// A lock revoked the waiting request before its answer could commit.
+pub const REVOKED: &str = "revoked";
 pub const TICKET: &str = "ticket";
 pub const INSTANCE: &str = "instance";
 pub const AUTOSTART: &str = "autostart";

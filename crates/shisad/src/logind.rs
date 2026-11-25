@@ -12,6 +12,7 @@ use crate::bus::{Msg, Shared};
 use std::collections::{HashMap, HashSet};
 use std::io;
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tracing::{debug, warn};
@@ -39,14 +40,14 @@ struct SessionLock {
 /// only when every session in here is locked.
 type Sessions = HashMap<String, SessionLock>;
 
-pub fn spawn(state: Shared, notify: Sender<Msg>) -> io::Result<()> {
+pub fn spawn(state: Shared, notify: Sender<Msg>, commit: Arc<Mutex<()>>) -> io::Result<()> {
     thread::Builder::new()
         .name("logind".into())
-        .spawn(move || poll(state, notify))?;
+        .spawn(move || poll(state, notify, commit))?;
     Ok(())
 }
 
-fn poll(state: Shared, notify: Sender<Msg>) {
+fn poll(state: Shared, notify: Sender<Msg>, commit: Arc<Mutex<()>>) {
     let conn = match Connection::system() {
         Ok(conn) => conn,
         Err(e) => {
@@ -74,7 +75,7 @@ fn poll(state: Shared, notify: Sender<Msg>) {
     let mut interval = if subscribed { FALLBACK } else { POLL };
     let mut seen = Sessions::new();
     loop {
-        if let Err(e) = sweep(&conn, &state, &notify, &mut seen) {
+        if let Err(e) = sweep(&conn, &state, &notify, &mut seen, &commit) {
             debug!("logind: {e}");
         }
         match wake_rx.recv_timeout(interval) {
@@ -107,6 +108,7 @@ fn sweep(
     state: &Shared,
     notify: &Sender<Msg>,
     seen: &mut Sessions,
+    commit: &Mutex<()>,
 ) -> zbus::Result<()> {
     let manager = Proxy::new(
         conn,
@@ -132,7 +134,7 @@ fn sweep(
             Err(e) => debug!(uid, "logind: session {path}: {e}"),
         }
     }
-    apply_lock_changes(state, notify, seen, &current);
+    apply_lock_changes(state, notify, seen, &current, commit);
     *seen = current;
     Ok(())
 }
@@ -210,13 +212,22 @@ fn apply_lock_changes(
     notify: &Sender<Msg>,
     previous: &Sessions,
     current: &Sessions,
+    commit: &Mutex<()>,
 ) {
     let mut uids: HashSet<u32> = previous.values().map(|session| session.uid).collect();
     uids.extend(current.values().map(|session| session.uid));
     for uid in uids {
         match lock_change(previous, current, uid) {
             LockChange::Locked => {
-                let cleared = state.lock().unwrap().screen_locked(uid);
+                // The same mutex a settings change holds while it checks
+                // the locked set and commits. A change that started before
+                // the screen lock is refused at commit, and one that
+                // starts after it is either refused as locked or ordered
+                // after the clear.
+                let cleared = {
+                    let _commit = commit.lock().unwrap();
+                    state.lock().unwrap().screen_locked(uid)
+                };
                 for app in cleared {
                     debug!(uid, %app, "tickets cleared, every graphical session is locked");
                     let _ = notify.send(Msg::StateChanged {

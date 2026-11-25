@@ -32,6 +32,8 @@ polkit converts the `system-bus-name` subject to the caller's `unix-process` (PI
 
 The settings window calls `RegisterSettings` on its shared system-bus connection and watches for `SettingsLocked`. A global `Lock`, including Lock protected apps from the tray or the CLI, and a screen lock send that signal to the registered window, which exits. Exiting ends the process-keyed decision, so a desktop handed over after Lock protected apps cannot change protection without the app-lock password. A registered window whose change arrives after the lock is refused with `settings locked, reopen Shisa Settings`. If the window misses the signal, the period still bounds the decision.
 
+The settings window also watches the owner of the daemon's bus name. A daemon restart creates an empty settings registry, and the bus keeps this window's signal subscription alive across the owner change, so the window exits when the owner changes. That ends the process-keyed decision instead of leaving a window whose later changes a lock cannot refuse.
+
 The installed rule `49-shisa-admin.rules` selects `unix-user:shisa-lock` for those actions only. The administrator sets or changes its separate password with `sudo passwd shisa-lock`. The account starts locked and has no login shell or home directory.
 
 Use `unix-process` with the pending exec caller's PID and start time for launches. Use `system-bus-name` with the caller's unique bus name for settings changes and `Unlock`. Avoid `unix-session` due to [polkit issue #699](https://github.com/polkit-org/polkit/issues/699). For processes in `user@.service`, polkit can find the user's graphical session by UID.
@@ -43,6 +45,7 @@ Each check is bound to a request ID. Launch authorization resumes the waiting ex
 ## Completion and cancellation
 
 - Authorization resumes the pending operation. A prompt dismissal or a polkit refusal rejects it and records `denied`.
+- A lock refuses an answer that was already on its way. Each held launch, settings change, and explicit unlock records the user's and the app's lock generation when it starts. A global lock advances the user's generation, a single-app lock advances that app's, and a screen lock advances the user's only when it clears state. An answer that crosses the lock is refused, and a revoked held launch is denied. A settings change checks the generation and writes the file under the same mutex a lock takes, so the change either lands before the lock or not at all. The activity record reports `revoked` for a launch the lock denied.
 - The default wait is 60 seconds, configurable with `prompt_timeout_seconds`. On expiry the daemon rejects the operation and calls `CancelCheckAuthorization` on the same persistent bus connection that started it. Late approval cannot authorize the request. The activity record reports `timeout` or `cancelled`.
 - A check error, including a bus error, rejects the request immediately and records `failed`.
 

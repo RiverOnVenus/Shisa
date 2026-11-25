@@ -133,6 +133,7 @@ fn interface_and_settings_changes() {
         events.clone(),
         Arc::new(activity::Log::default()),
         diag,
+        Arc::new(Mutex::new(())),
     )
     .unwrap();
     // Wait until shisad owns the name.
@@ -279,6 +280,7 @@ fn start_daemon(state: Arc<Mutex<State>>) -> (Arc<Events>, mpsc::Sender<Msg>) {
         events.clone(),
         Arc::new(activity::Log::default()),
         diag,
+        Arc::new(Mutex::new(())),
     )
     .unwrap();
     wait_for(|| {
@@ -315,6 +317,37 @@ fn window_states_and_relock_seconds_follow_the_policy() {
         manager.relock_seconds().unwrap(),
         vec![("app".to_string(), 300)]
     );
+}
+
+#[test]
+fn a_lock_starts_a_new_generation_and_a_single_app_lock_stays_scoped() {
+    let _serial = ONE_BUS.lock().unwrap_or_else(|e| e.into_inner());
+    let _bus = PrivateBus::start("revocation");
+    let state = state();
+    let (_events, _tx) = start_daemon(state.clone());
+    let conn = Connection::system().unwrap();
+    let manager = ManagerProxyBlocking::new(&conn).unwrap();
+
+    let before = state.lock().unwrap().revocation(uid(), "app");
+    // An invalid id is refused instead of becoming a revocation key.
+    assert!(manager.lock("bad/id").is_err());
+    // A valid id that protects nothing is a no-op and starts no generation,
+    // so repeated locks cannot grow the map with unprotected apps.
+    let untouched = state.lock().unwrap().revocation(uid(), "not-protected");
+    manager.lock("not-protected").unwrap();
+    assert_eq!(
+        state.lock().unwrap().revocation(uid(), "not-protected"),
+        untouched
+    );
+    manager.lock("app").unwrap();
+    let after = state.lock().unwrap().revocation(uid(), "app");
+    assert_ne!(before.1, after.1, "a single-app lock must bump the app");
+    assert_eq!(before.0, after.0, "it must leave other apps' locks alone");
+
+    manager.lock("").unwrap();
+    let global = state.lock().unwrap().revocation(uid(), "app");
+    assert_ne!(after.0, global.0, "a global lock must bump the user");
+    assert_eq!(after.1, global.1, "it must not bump the app generation");
 }
 
 #[test]

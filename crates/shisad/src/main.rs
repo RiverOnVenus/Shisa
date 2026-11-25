@@ -37,6 +37,10 @@ const WATCHDOG: Duration = Duration::from_secs(5);
 /// to the inode that carries the mark. A package manager's hook covers
 /// pacman, this covers everything else that replaces a file.
 const REVALIDATE: Duration = Duration::from_secs(30);
+/// A configuration that cannot be read or parsed is retried on the
+/// revalidation tick. Repeated failures back off to this limit so a stale
+/// file does not force a full mark pass every half minute.
+const CONFIG_RETRY_MAX: Duration = Duration::from_secs(30 * 60);
 /// Wait limit when the user's policy has none.
 const DEFAULT_WAIT: Duration = policy::DEFAULT_PROMPT_TIMEOUT;
 /// A local user can ask for settings changes and unlocks as often as the bus
@@ -129,6 +133,8 @@ enum Job {
         uid: u32,
         app: String,
         change: Change,
+        /// The lock generations the request started under.
+        revocation: (u64, u64),
     },
 }
 
@@ -139,6 +145,8 @@ struct PendingChange {
     app: String,
     change: Change,
     deadline: Instant,
+    /// The lock generations this request started under.
+    revocation: (u64, u64),
 }
 
 /// An unlock request held until the user authenticates.
@@ -146,6 +154,8 @@ struct PendingUnlock {
     id: u64,
     uid: u32,
     deadline: Instant,
+    /// The lock generations this request started under.
+    revocation: (u64, u64),
 }
 
 /// Read, modify and write one user's config, then reload the policy. Runs on
@@ -158,11 +168,13 @@ fn apply_change(
     gate: &Gate,
     dir: &Path,
     state: &Mutex<State>,
+    commit: &Mutex<()>,
     marks: &mut Marks,
     diag: &diag::Diag,
     uid: u32,
     app: &str,
     change: &Change,
+    revocation: (u64, u64),
 ) -> Result<(), String> {
     let name = shisa_core::users::name(uid).ok_or("unknown user")?;
     let mut config = load::read_user(dir, &name)?;
@@ -182,7 +194,17 @@ fn apply_change(
         }
         Ok(found.paths)
     })?;
-    load::write_user(dir, &name, &config).map_err(|e| e.to_string())?;
+    // The write is the commit. A lock takes the same mutex before it clears
+    // state, so a change that started before the lock either lands first or
+    // is refused as a whole. The read and resolve above stay outside the
+    // mutex because they can be slow and do not change what is protected.
+    {
+        let _commit = commit.lock().unwrap();
+        if state.lock().unwrap().revocation(uid, app) != revocation {
+            return Err("locked before the change was applied".to_string());
+        }
+        load::write_user(dir, &name, &config).map_err(|e| e.to_string())?;
+    }
     reload(gate, dir, state, marks, diag);
     Ok(())
 }
@@ -231,6 +253,8 @@ struct Pending {
     app: String,
     req: Request,
     deadline: Instant,
+    /// The lock generations this request started under.
+    revocation: (u64, u64),
 }
 
 impl Pending {
@@ -305,6 +329,18 @@ fn on_request(
         }
         return;
     };
+    // The decision captured this while it held the policy lock, so a lock
+    // that started before the prompt cannot be mistaken for one that
+    // started after the exec request. A decision without it is a code bug:
+    // denying keeps a lock that starts after the decision from being missed.
+    let Some(revocation) = decision.revocation else {
+        error!(
+            pid,
+            uid, %app, "authentication decision has no lock generation"
+        );
+        let _ = req.answer(false);
+        return;
+    };
     // A flood of launches must not grow the held set or the daemon's
     // descriptor table without bound. The caller is refused like any other
     // unauthenticated launch.
@@ -315,15 +351,18 @@ fn on_request(
         return;
     }
     // A second exec of an app that is already being asked about joins the
-    // first one: one box, one answer for both.
+    // first one: one box, one answer for both. It also shares the first
+    // request's lock generation, because the answer is committed once for
+    // both.
     if let Some(first) = pending.iter().find(|p| p.uid == uid && p.app == app) {
-        let (id, deadline) = (first.id, first.deadline);
+        let (id, deadline, revocation) = (first.id, first.deadline, first.revocation);
         pending.push(Pending {
             id,
             uid,
             app,
             req,
             deadline,
+            revocation,
         });
         return;
     }
@@ -370,6 +409,7 @@ fn on_request(
         // polkit cancels at the deadline. This backup only matters if its
         // thread is stuck.
         deadline: deadline + Duration::from_secs(2),
+        revocation,
     });
 }
 
@@ -553,14 +593,19 @@ fn main() {
     // second instance fails here and leaves the running one alone.
     // The settings window's activity page reads this, never the loop.
     let activity = Arc::new(activity::Log::default());
+    // The commit lock serializes a lock with the write of an authenticated
+    // settings change. Both sides take it before touching the state or the
+    // config file, so a change either lands before the lock or not at all.
+    let commit = Arc::new(Mutex::new(()));
     let bus_tx = bus::spawn(
         state.clone(),
         events.clone(),
         activity.clone(),
         diag.clone(),
+        commit.clone(),
     )
     .unwrap_or_else(|e| die("system bus", e));
-    if let Err(e) = logind::spawn(state.clone(), bus_tx.clone()) {
+    if let Err(e) = logind::spawn(state.clone(), bus_tx.clone(), commit.clone()) {
         warn!("logind thread: {e}");
     }
 
@@ -575,6 +620,9 @@ fn main() {
         let (gate, state, dir) = (gate.clone(), state.clone(), opts.config_dir.clone());
         let bus = bus_tx.clone();
         let diag = diag.clone();
+        let commit = commit.clone();
+        let mut config_retry_at = Instant::now();
+        let mut config_retry_delay = REVALIDATE;
         let worker = move || {
             loop {
                 match jobs_rx.recv_timeout(REVALIDATE) {
@@ -587,10 +635,12 @@ fn main() {
                         uid,
                         app,
                         change,
+                        revocation,
                     }) => {
                         info!(uid, %app, "applying a settings change");
                         let result = apply_change(
-                            &gate, &dir, &state, &mut marks, &diag, uid, &app, &change,
+                            &gate, &dir, &state, &commit, &mut marks, &diag, uid, &app, &change,
+                            revocation,
                         );
                         let applied = result.is_ok();
                         let _ = bus.send(Msg::ChangeDone { id, result });
@@ -609,19 +659,46 @@ fn main() {
                         }
                     }
                     Err(mpsc::RecvTimeoutError::Timeout) => {
-                        // Compare the files on disk with the inodes that
-                        // actually carry marks, not with an earlier snapshot.
-                        // A replacement during a reload and a mark that
-                        // failed both show up here and are retried.
+                        // A failed configuration read or parse keeps its user
+                        // out of the policy, so no mark can show the gap.
+                        // Keep asking for a load until one succeeds instead
+                        // of waiting for a signal after the file is repaired.
+                        // Repeated failures back off so a stale file does not
+                        // re-mark every protected path every half minute.
+                        let config_failed = diag.config_failed() != 0;
+                        if !config_failed {
+                            config_retry_delay = REVALIDATE;
+                            config_retry_at = Instant::now();
+                        }
+                        let retry_config = config_failed && Instant::now() >= config_retry_at;
                         let stale = {
                             let policy = state.lock().unwrap().policy().clone();
-                            !load::marks_are_current(&policy)
+                            load::needs_reload(&policy, retry_config)
                         };
                         if !stale {
                             continue;
                         }
-                        info!("a protected file changed or is not marked, placing the marks again");
+                        if retry_config {
+                            info!("retrying a configuration that failed to load");
+                        } else {
+                            // Compare the files on disk with the inodes that
+                            // actually carry marks, not with an earlier
+                            // snapshot. A replacement during a reload and a
+                            // mark that failed both show up here and are
+                            // retried.
+                            info!(
+                                "a protected file changed or is not marked, placing the marks again"
+                            );
+                        }
                         reload(&gate, &dir, &state, &mut marks, &diag);
+                        if diag.config_failed() != 0 {
+                            config_retry_delay =
+                                config_retry_delay.saturating_mul(2).min(CONFIG_RETRY_MAX);
+                            config_retry_at = Instant::now() + config_retry_delay;
+                        } else {
+                            config_retry_delay = REVALIDATE;
+                            config_retry_at = Instant::now();
+                        }
                     }
                     Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 }
@@ -741,6 +818,7 @@ fn main() {
                     app,
                     change,
                     sender,
+                    revocation,
                 } => {
                     // Every change is authenticated on its own. A ticket
                     // lets an app start, it does not let settings change.
@@ -769,6 +847,7 @@ fn main() {
                         app,
                         change,
                         deadline: deadline + Duration::from_secs(2),
+                        revocation,
                     });
                 }
                 Event::UnlockRequest {
@@ -776,6 +855,7 @@ fn main() {
                     uid,
                     app,
                     sender,
+                    revocation,
                 } => {
                     if auth_crowded(&changes, &unlocks, uid) {
                         fail(id, "too many pending authentication requests");
@@ -800,6 +880,7 @@ fn main() {
                         id,
                         uid,
                         deadline: deadline + Duration::from_secs(2),
+                        revocation,
                     });
                 }
                 Event::Granted { uid, app, request } => {
@@ -815,6 +896,7 @@ fn main() {
                                     uid,
                                     app: done.app,
                                     change: done.change,
+                                    revocation: done.revocation,
                                 };
                                 let _ = jobs.send(job);
                             }
@@ -823,7 +905,30 @@ fn main() {
                         // An unlock request leaves a ticket and nothing else.
                         let wanted = take(&mut unlocks, |u| u.id == id && u.uid == uid);
                         if !wanted.is_empty() {
-                            let granted = state.lock().unwrap().grant(uid, &app, Instant::now());
+                            // The ticket commits only when no lock started
+                            // after the request. The state lock also holds
+                            // the lock's own revocation, so the check and
+                            // the grant cannot interleave with it.
+                            let (revoked, granted) = {
+                                let mut st = state.lock().unwrap();
+                                if wanted
+                                    .iter()
+                                    .any(|u| u.revocation != st.revocation(uid, &app))
+                                {
+                                    (true, None)
+                                } else {
+                                    (false, st.grant(uid, &app, Instant::now()))
+                                }
+                            };
+                            if revoked {
+                                let _ = bus_tx.send(Msg::ChangeDone {
+                                    id,
+                                    result: Err(
+                                        "locked before the authorization completed".to_string()
+                                    ),
+                                });
+                                continue;
+                            }
                             let result = match granted {
                                 Some(_) => Ok(()),
                                 None => Err("app is no longer protected".to_string()),
@@ -845,11 +950,32 @@ fn main() {
                         }
                         // The launch that waited is allowed by the event loop.
                         // For a zero grace period no ticket is stored, so a
-                        // second launch asks again.
-                        state
-                            .lock()
-                            .unwrap()
-                            .grant_for_held_exec(uid, &app, Instant::now());
+                        // second launch asks again. A lock that started after
+                        // the execs asked refuses the whole group instead of
+                        // letting the answer reopen the app. The state lock
+                        // holds the lock's own revocation, so the check and
+                        // the grant cannot interleave with it.
+                        let revoked = {
+                            let mut st = state.lock().unwrap();
+                            if held
+                                .iter()
+                                .any(|p| p.revocation != st.revocation(uid, &app))
+                            {
+                                true
+                            } else {
+                                st.grant_for_held_exec(uid, &app, Instant::now());
+                                false
+                            }
+                        };
+                        if revoked {
+                            for p in &held {
+                                activity.resolve(p.id, activity::REVOKED);
+                            }
+                            for p in held {
+                                p.deny();
+                            }
+                            continue;
+                        }
                         allow_held(&state, &activity, uid, &app, held);
                         let unlocked = state.lock().unwrap().has_ticket(uid, &app, Instant::now());
                         let _ = bus_tx.send(Msg::StateChanged { uid, app, unlocked });
@@ -998,6 +1124,7 @@ mod tests {
                 app: "app".into(),
                 change: Change::Grace(1),
                 deadline: Instant::now(),
+                revocation: (0, 0),
             })
             .collect()
     }
@@ -1008,6 +1135,7 @@ mod tests {
                 id: i as u64,
                 uid,
                 deadline: Instant::now(),
+                revocation: (0, 0),
             })
             .collect()
     }

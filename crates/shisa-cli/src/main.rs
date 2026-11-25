@@ -6,7 +6,7 @@
 //! `unprotect` authenticate the same way. `status` and `lock` go through the
 //! system bus without authentication (docs/subsystems/configuration.md).
 
-use shisa_core::dbus::ManagerProxyBlocking;
+use shisa_core::dbus::{AppRow, ManagerProxyBlocking};
 use shisa_core::i18n::{self, Language};
 use std::time::Duration;
 use std::{env, process};
@@ -260,6 +260,46 @@ fn status_lines(apps: &[shisa_core::dbus::AppRow], language: Language) -> Vec<St
     lines
 }
 
+/// How much of a just-saved protection is actually in effect. A path that
+/// could not be marked stays in the config and is listed as inactive, so the
+/// command must report that instead of a success the user cannot rely on.
+#[derive(Debug, PartialEq, Eq)]
+enum Effect {
+    /// Every configured path is marked.
+    Full,
+    /// At least one path is marked, these are not.
+    Partial(Vec<String>),
+    /// No configured path is marked.
+    Unmarked(Vec<String>),
+    /// The daemon answered the change but does not list the app.
+    Missing,
+}
+
+fn effect_from_rows(apps: &[AppRow], app: &str) -> Effect {
+    let Some((_, _, paths, effective)) = apps.iter().find(|row| row.0 == app) else {
+        return Effect::Missing;
+    };
+    let missing: Vec<String> = paths
+        .iter()
+        .filter(|path| !effective.contains(path))
+        .cloned()
+        .collect();
+    if effective.is_empty() {
+        Effect::Unmarked(missing)
+    } else if missing.is_empty() {
+        Effect::Full
+    } else {
+        Effect::Partial(missing)
+    }
+}
+
+fn app_effect(manager: &ManagerProxyBlocking<'_>, app: &str) -> Result<Effect, String> {
+    Ok(effect_from_rows(
+        &manager.list_apps().map_err(|e| e.to_string())?,
+        app,
+    ))
+}
+
 /// Protect or unprotect an app. shisad authenticates the change through
 /// polkit before it writes it (docs/subsystems/configuration.md).
 fn protect(app: String, on: bool, language: Language) -> i32 {
@@ -271,18 +311,87 @@ fn protect(app: String, on: bool, language: Language) -> i32 {
             return 1;
         }
     };
+    let success = match (on, language) {
+        (true, Language::ZhCn) => format!("{app} 已设为受保护"),
+        (false, Language::ZhCn) => format!("{app} 已取消保护"),
+        (true, Language::En) => format!("{app} is now protected"),
+        (false, Language::En) => format!("{app} is no longer protected"),
+    };
     match manager.set_protected(&app, on) {
         Ok(()) => {
-            println!(
-                "{}",
-                match (on, language) {
-                    (true, Language::ZhCn) => format!("{app} 已设为受保护"),
-                    (false, Language::ZhCn) => format!("{app} 已取消保护"),
-                    (true, Language::En) => format!("{app} is now protected"),
-                    (false, Language::En) => format!("{app} is no longer protected"),
+            if !on {
+                println!("{success}");
+                return 0;
+            }
+            // The config is written before the daemon reports success. The
+            // caller has to know whether the paths it names are marked.
+            match app_effect(&manager, &app) {
+                Ok(Effect::Full) => {
+                    println!("{success}");
+                    0
                 }
-            );
-            0
+                Ok(Effect::Partial(missing)) => {
+                    println!("{success}");
+                    eprintln!(
+                        "{}",
+                        text(
+                            language,
+                            "以下路径没有生效，其余路径已受保护：",
+                            "These paths are not in effect, the rest are protected:"
+                        )
+                    );
+                    for path in missing {
+                        eprintln!("  {path}");
+                    }
+                    0
+                }
+                Ok(Effect::Unmarked(missing)) => {
+                    eprintln!(
+                        "{}",
+                        match language {
+                            Language::ZhCn => format!("{app} 已保存为受保护，但没有任何路径生效。"),
+                            Language::En =>
+                                format!("{app} was saved as protected, but no path is in effect."),
+                        }
+                    );
+                    for path in missing {
+                        eprintln!("  {path}");
+                    }
+                    eprintln!(
+                        "{}",
+                        text(
+                            language,
+                            "检查路径是否存在并且是普通文件，或用 shisa resolve 查看可用的启动路径。",
+                            "Check that the paths exist and are regular files, or use shisa resolve to see the launch entries."
+                        )
+                    );
+                    1
+                }
+                Ok(Effect::Missing) => {
+                    eprintln!(
+                        "{}",
+                        text(
+                            language,
+                            "改动已保存，但 shisad 没有列出这个应用。",
+                            "The change was saved, but shisad does not list the app."
+                        )
+                    );
+                    1
+                }
+                Err(e) => {
+                    println!("{success}");
+                    eprintln!(
+                        "{}",
+                        text(
+                            language,
+                            "改动已保存，但无法确认保护路径是否生效：",
+                            "The change was saved, but the protected paths could not be checked:"
+                        )
+                    );
+                    eprintln!("shisa: {e}");
+                    1
+                }
+            }
         }
         Err(e) => {
             eprintln!("shisa: {}", shown(e, language));
@@ -567,6 +676,35 @@ mod tests {
                 "用 shisa protect <app-id> 或设置窗口添加保护。",
             ]
         );
+    }
+
+    #[test]
+    fn a_saved_protection_reports_paths_that_did_not_take_effect() {
+        let rows: Vec<AppRow> = vec![
+            (
+                "full".into(),
+                false,
+                vec!["/usr/bin/app".into()],
+                vec!["/usr/bin/app".into()],
+            ),
+            (
+                "partial".into(),
+                false,
+                vec!["/usr/bin/app".into(), "/opt/missing".into()],
+                vec!["/usr/bin/app".into()],
+            ),
+            ("none".into(), false, vec!["/opt/missing".into()], vec![]),
+        ];
+        assert_eq!(effect_from_rows(&rows, "full"), Effect::Full);
+        assert_eq!(
+            effect_from_rows(&rows, "partial"),
+            Effect::Partial(vec!["/opt/missing".into()])
+        );
+        assert_eq!(
+            effect_from_rows(&rows, "none"),
+            Effect::Unmarked(vec!["/opt/missing".into()])
+        );
+        assert_eq!(effect_from_rows(&rows, "missing"), Effect::Missing);
     }
 
     #[test]
