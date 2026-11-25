@@ -122,6 +122,36 @@ fn ticketed_hidden(apps: &[AppRow], hidden: &HashMap<String, u32>) -> usize {
         .count()
 }
 
+/// What one ticket poll should show. `Skip` keeps the last value because
+/// shisad is offline, `Confirmed` replaces it with the number of hidden apps
+/// that can still restore without a password, and `Unconfirmed` is a read
+/// that did not come back.
+#[derive(Debug, PartialEq, Eq)]
+enum TicketPoll {
+    Skip,
+    Confirmed(usize),
+    Unconfirmed,
+}
+
+/// Decide the tray's ticket state for one poll. Kept apart from the loop so
+/// the decisions can be tested without a live agent.
+fn ticket_poll(
+    hidden: &HashMap<String, u32>,
+    offline: bool,
+    read: Option<zbus::Result<Vec<AppRow>>>,
+) -> TicketPoll {
+    if offline {
+        return TicketPoll::Skip;
+    }
+    if hidden.is_empty() {
+        return TicketPoll::Confirmed(0);
+    }
+    match read {
+        Some(Ok(apps)) => TicketPoll::Confirmed(ticketed_hidden(&apps, hidden)),
+        Some(Err(_)) | None => TicketPoll::Unconfirmed,
+    }
+}
+
 /// Keep the hidden apps' ticket state fresh. A ticket expiring is a lazy
 /// check with no signal, so the tray would keep showing the password-free
 /// dot after the grace period ended. Two seconds matches the language
@@ -136,30 +166,22 @@ fn watch_ticket_state(handle: Handle<TrayState>) {
         else {
             return;
         };
-        if offline {
-            continue;
-        }
-        if hidden.is_empty() {
-            let _ = handle.update(|tray| tray.hidden_ticketed = Some(0));
-            continue;
-        }
-        if connection.is_none() {
-            connection = Connection::system().ok();
-        }
-        let ticketed = {
-            let Some(conn) = connection.as_ref() else {
-                let _ = handle.update(|tray| tray.hidden_ticketed = None);
-                continue;
-            };
-            ManagerProxyBlocking::new(conn)
-                .and_then(|manager| manager.list_apps())
-                .map(|apps| ticketed_hidden(&apps, &hidden))
+        let read = if offline || hidden.is_empty() {
+            None
+        } else {
+            if connection.is_none() {
+                connection = Connection::system().ok();
+            }
+            connection
+                .as_ref()
+                .map(|conn| ManagerProxyBlocking::new(conn).and_then(|manager| manager.list_apps()))
         };
-        match ticketed {
-            Ok(ticketed) => {
+        match ticket_poll(&hidden, offline, read) {
+            TicketPoll::Skip => {}
+            TicketPoll::Confirmed(ticketed) => {
                 let _ = handle.update(|tray| tray.hidden_ticketed = Some(ticketed));
             }
-            Err(_) => {
+            TicketPoll::Unconfirmed => {
                 // A failed read is not proof that a ticket is still valid.
                 // Drop to the locked state and reconnect on the next tick.
                 connection = None;
@@ -237,24 +259,36 @@ impl Tray for TrayState {
                 (1, Language::En) => "\nShisa hid 1 window".to_string(),
                 (hidden, Language::En) => format!("\nShisa hid {hidden} windows"),
             });
-            let ticketed = self.hidden_ticketed.unwrap_or(0);
-            if ticketed > 0 {
-                description.push_str(&match (ticketed, self.language) {
-                    (1, Language::ZhCn) => "\n其中 1 个应用可免密还原".to_string(),
-                    (ticketed, Language::ZhCn) => format!("\n其中 {ticketed} 个应用可免密还原"),
-                    (1, Language::En) => {
-                        "\n1 app can restore without the app-lock password".to_string()
-                    }
-                    (ticketed, Language::En) => {
-                        format!("\n{ticketed} apps can restore without the app-lock password")
-                    }
-                });
-            } else {
-                description.push_str(text(
-                    self.language,
-                    "\n恢复需要应用锁密码",
-                    "\nRestoring asks for the app-lock password",
-                ));
+            match self.hidden_ticketed {
+                Some(ticketed) if ticketed > 0 => {
+                    description.push_str(&match (ticketed, self.language) {
+                        (1, Language::ZhCn) => "\n其中 1 个应用可免密还原".to_string(),
+                        (ticketed, Language::ZhCn) => format!("\n其中 {ticketed} 个应用可免密还原"),
+                        (1, Language::En) => {
+                            "\n1 app can restore without the app-lock password".to_string()
+                        }
+                        (ticketed, Language::En) => {
+                            format!("\n{ticketed} apps can restore without the app-lock password")
+                        }
+                    });
+                }
+                Some(_) => {
+                    description.push_str(text(
+                        self.language,
+                        "\n恢复需要应用锁密码",
+                        "\nRestoring asks for the app-lock password",
+                    ));
+                }
+                // `None` means no daemon read has confirmed the ticket state.
+                // Saying the password is required would turn an unknown state
+                // into a claim the tray cannot support.
+                None => {
+                    description.push_str(text(
+                        self.language,
+                        "\n还原凭证状态未确认",
+                        "\nThe restore ticket state is unconfirmed",
+                    ));
+                }
             }
         }
         ksni::ToolTip {
@@ -689,6 +723,10 @@ fn action_loop(
                 let _ = handle.update(|tray| {
                     if version > tray.hidden_windows.0 {
                         tray.hidden_windows = (version, counts);
+                        // The new set has not been matched against tickets
+                        // yet. Keep the tooltip from reusing the previous
+                        // count until the two-second poll reads it again.
+                        tray.hidden_ticketed = None;
                     }
                 });
             }
@@ -1355,6 +1393,28 @@ mod tests {
     }
 
     #[test]
+    fn the_tray_tooltip_does_not_claim_a_password_while_the_ticket_state_is_unknown() {
+        let (actions, _requests) = mpsc::channel();
+        let mut tray = TrayState {
+            hidden_windows: ((1, 1), HashMap::from([("org.kde.kate".into(), 2)])),
+            hidden_ticketed: None,
+            protected_count: 1,
+            last_lock: None,
+            offline: false,
+            language: Language::ZhCn,
+            actions,
+        };
+        let description = tray.tool_tip().description;
+        assert!(description.contains("已隐藏 2 个窗口"));
+        assert!(description.contains("还原凭证状态未确认"));
+        assert!(!description.contains("恢复需要应用锁密码"));
+        tray.language = Language::En;
+        let description = tray.tool_tip().description;
+        assert!(description.contains("The restore ticket state is unconfirmed"));
+        assert!(!description.contains("Restoring asks for the app-lock password"));
+    }
+
+    #[test]
     fn only_ticketed_hidden_apps_count_as_password_free() {
         let apps: Vec<AppRow> = vec![
             ("org.kde.kate".into(), true, Vec::new(), Vec::new()),
@@ -1364,6 +1424,37 @@ mod tests {
         let hidden = HashMap::from([("org.kde.kate".into(), 2), ("org.kde.ark".into(), 1)]);
         assert_eq!(ticketed_hidden(&apps, &hidden), 1);
         assert_eq!(ticketed_hidden(&apps, &HashMap::new()), 0);
+    }
+
+    #[test]
+    fn a_ticket_poll_keeps_the_safe_state_when_the_daemon_is_unknown() {
+        let hidden = HashMap::from([("org.kde.kate".into(), 2)]);
+        let apps: Vec<AppRow> = vec![
+            ("org.kde.kate".into(), true, Vec::new(), Vec::new()),
+            ("org.kde.ark".into(), false, Vec::new(), Vec::new()),
+        ];
+        // shisad offline: leave the last value alone.
+        assert_eq!(ticket_poll(&hidden, true, None), TicketPoll::Skip);
+        // No hidden window needs no bus call.
+        assert_eq!(
+            ticket_poll(&HashMap::new(), false, None),
+            TicketPoll::Confirmed(0)
+        );
+        // A successful read counts only ticketed hidden apps.
+        assert_eq!(
+            ticket_poll(&hidden, false, Some(Ok(apps))),
+            TicketPoll::Confirmed(1)
+        );
+        // A failed or missing read must not claim the password is needed.
+        assert_eq!(
+            ticket_poll(
+                &hidden,
+                false,
+                Some(Err(zbus::Error::Failure("offline".into())))
+            ),
+            TicketPoll::Unconfirmed
+        );
+        assert_eq!(ticket_poll(&hidden, false, None), TicketPoll::Unconfirmed);
     }
 
     fn report(matched: u32, hidden: u32, missed: &[(&str, u32)]) -> WindowReport {
