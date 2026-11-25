@@ -152,6 +152,70 @@ fn ticket_poll(
     }
 }
 
+/// Reads the daemon's ticket state for the apps a report says are hidden.
+/// The action thread uses it to publish a new hidden set together with its
+/// ticket count, so a hide that is still ticketed goes straight to amber
+/// instead of showing the blue unconfirmed fallback until the next poll.
+#[derive(Default)]
+struct TicketReader(Option<Connection>);
+
+impl TicketReader {
+    /// How many hidden apps still have a valid launch ticket. `None` means
+    /// the daemon could not be asked, which keeps the tray on the locked
+    /// fallback, the same decision `ticket_poll` makes.
+    fn read(&mut self, hidden: &HashMap<String, u32>) -> Option<usize> {
+        if hidden.is_empty() {
+            return Some(0);
+        }
+        if self.0.is_none() {
+            self.0 = Connection::system().ok();
+        }
+        let apps = self
+            .0
+            .as_ref()
+            .and_then(|conn| ManagerProxyBlocking::new(conn).ok())
+            .and_then(|manager| manager.list_apps().ok());
+        if apps.is_none() {
+            // Reconnect on the next read: the bus may have restarted.
+            self.0 = None;
+        }
+        apps.map(|apps| ticketed_hidden(&apps, hidden))
+    }
+}
+
+/// Publish a script's hidden-window report together with the ticket count
+/// read after it arrived. Both fields change in one update so the ring goes
+/// from green straight to amber when the hidden app still has a ticket,
+/// instead of showing the blue unconfirmed fallback first. `None` for the
+/// count means the daemon could not be asked and keeps that fallback.
+fn apply_hidden_windows(
+    tray: &mut TrayState,
+    version: (u64, u64),
+    counts: HashMap<String, u32>,
+    ticketed: Option<usize>,
+) -> bool {
+    if version <= tray.hidden_windows.0 {
+        return false;
+    }
+    tray.hidden_windows = (version, counts);
+    tray.hidden_ticketed = ticketed;
+    true
+}
+
+/// Apply one background ticket poll. A hide or restore that landed while
+/// the read was in flight already published its own count with the new set,
+/// so a result computed from the old set must not overwrite it.
+fn apply_ticket_poll(tray: &mut TrayState, hidden: &HashMap<String, u32>, poll: TicketPoll) {
+    if tray.hidden_windows.1 != *hidden {
+        return;
+    }
+    match poll {
+        TicketPoll::Skip => {}
+        TicketPoll::Confirmed(ticketed) => tray.hidden_ticketed = Some(ticketed),
+        TicketPoll::Unconfirmed => tray.hidden_ticketed = None,
+    }
+}
+
 /// Keep the hidden apps' ticket state fresh. A ticket expiring is a lazy
 /// check with no signal, so the tray would keep showing the password-free
 /// dot after the grace period ended. Two seconds matches the language
@@ -179,13 +243,16 @@ fn watch_ticket_state(handle: Handle<TrayState>) {
         match ticket_poll(&hidden, offline, read) {
             TicketPoll::Skip => {}
             TicketPoll::Confirmed(ticketed) => {
-                let _ = handle.update(|tray| tray.hidden_ticketed = Some(ticketed));
+                let _ = handle.update(|tray| {
+                    apply_ticket_poll(tray, &hidden, TicketPoll::Confirmed(ticketed))
+                });
             }
             TicketPoll::Unconfirmed => {
                 // A failed read is not proof that a ticket is still valid.
                 // Drop to the locked state and reconnect on the next tick.
                 connection = None;
-                let _ = handle.update(|tray| tray.hidden_ticketed = None);
+                let _ =
+                    handle.update(|tray| apply_ticket_poll(tray, &hidden, TicketPoll::Unconfirmed));
             }
         }
     }
@@ -703,6 +770,7 @@ fn action_loop(
     handle: &Handle<TrayState>,
     dnd_hinted: &AtomicBool,
 ) {
+    let mut tickets = TicketReader::default();
     for action in rx {
         match action {
             Action::LockAll => match lock("") {
@@ -720,15 +788,18 @@ fn action_loop(
             Action::Unlock(app) => unlock(&app, gate),
             Action::RestoreIfTicketed(app) => restore_if_ticketed(&app, gate),
             Action::HiddenWindows(version, counts) => {
-                let _ = handle.update(|tray| {
-                    if version > tray.hidden_windows.0 {
-                        tray.hidden_windows = (version, counts);
-                        // The new set has not been matched against tickets
-                        // yet. Keep the tooltip from reusing the previous
-                        // count until the two-second poll reads it again.
-                        tray.hidden_ticketed = None;
-                    }
-                });
+                // Read the tickets before publishing the set, outside the
+                // tray update: the update closure holds the tray's state
+                // lock, and a bus call there would hold up icon updates and
+                // the menu.
+                let fresh = handle
+                    .update(|tray| version > tray.hidden_windows.0)
+                    .unwrap_or(false);
+                if !fresh {
+                    continue;
+                }
+                let ticketed = tickets.read(&counts);
+                let _ = handle.update(|tray| apply_hidden_windows(tray, version, counts, ticketed));
             }
             Action::OpenSettings => open_settings(gate, false),
             Action::OpenRestore => open_settings(gate, true),
@@ -1455,6 +1526,59 @@ mod tests {
             TicketPoll::Unconfirmed
         );
         assert_eq!(ticket_poll(&hidden, false, None), TicketPoll::Unconfirmed);
+    }
+
+    fn tray_without_hidden() -> TrayState {
+        let (actions, _requests) = mpsc::channel();
+        TrayState {
+            hidden_windows: Default::default(),
+            hidden_ticketed: None,
+            protected_count: 1,
+            last_lock: None,
+            offline: false,
+            language: Language::ZhCn,
+            actions,
+        }
+    }
+
+    #[test]
+    fn a_hidden_report_publishes_its_ticket_count_in_the_same_update() {
+        let mut tray = tray_without_hidden();
+        let counts = HashMap::from([("org.kde.motrix".into(), 1)]);
+        // The focus-loss hide kept the ticket, so the ring goes from green
+        // straight to amber instead of showing the unconfirmed blue first.
+        assert!(apply_hidden_windows(
+            &mut tray,
+            (1, 1),
+            counts.clone(),
+            Some(1)
+        ));
+        assert_eq!(tray.icon_name(), RESTORABLE_ICON);
+        // A report that could not be matched to tickets keeps the fallback,
+        // and a stale report changes nothing.
+        assert!(apply_hidden_windows(
+            &mut tray,
+            (1, 2),
+            counts.clone(),
+            None
+        ));
+        assert_eq!(tray.icon_name(), LOCKED_ICON);
+        assert!(!apply_hidden_windows(&mut tray, (1, 1), counts, Some(1)));
+        assert_eq!(tray.icon_name(), LOCKED_ICON);
+    }
+
+    #[test]
+    fn a_ticket_poll_does_not_overwrite_a_newer_hidden_set() {
+        let mut tray = tray_without_hidden();
+        let counts = HashMap::from([("org.kde.motrix".into(), 1)]);
+        apply_hidden_windows(&mut tray, (1, 1), counts.clone(), Some(1));
+        // The poll was computed from the old, empty set while the hide was
+        // in flight, so it must not undo the report's own count.
+        apply_ticket_poll(&mut tray, &HashMap::new(), TicketPoll::Confirmed(0));
+        assert_eq!(tray.icon_name(), RESTORABLE_ICON);
+        // The next tick reads the current set and applies.
+        apply_ticket_poll(&mut tray, &counts, TicketPoll::Confirmed(0));
+        assert_eq!(tray.icon_name(), LOCKED_ICON);
     }
 
     fn report(matched: u32, hidden: u32, missed: &[(&str, u32)]) -> WindowReport {
