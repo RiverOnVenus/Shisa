@@ -76,6 +76,12 @@ struct TrayState {
     hidden_ticketed: Option<usize>,
     last_lock: Option<String>,
     offline: bool,
+    /// Ticket grants expected to bring a concealed window back, with the
+    /// deadline for its hidden report. The daemon allows the window at the
+    /// same time as the ticket, but KWin reports it hidden until it applies
+    /// the change, so ticket reads keep the previous ring color while one is
+    /// pending instead of flashing amber before the restored green.
+    ticket_grants: HashMap<String, Instant>,
     /// The interface language, re-read while the tray runs.
     language: Language,
     actions: Sender<Action>,
@@ -197,9 +203,43 @@ fn apply_hidden_windows(
     if version <= tray.hidden_windows.0 {
         return false;
     }
+    // A report that no longer lists the granted app means its window came
+    // back (or closed), so the grant's hold has served its purpose.
+    let now = Instant::now();
+    tray.ticket_grants
+        .retain(|app, until| now < *until && counts.contains_key(app));
     tray.hidden_windows = (version, counts);
-    tray.hidden_ticketed = ticketed;
+    publish_ticket_state(tray, ticketed);
     true
+}
+
+/// How long a ticket grant may take to show its window. One revision load can
+/// wait up to 1.2 seconds for the script acknowledgement, and the script polls
+/// every 250 milliseconds. The hold only suppresses the ticket color, and a
+/// hidden report that brings the window back ends it sooner.
+const TICKET_GRANT_HOLD: Duration = Duration::from_secs(3);
+
+/// Remember a ticket grant that should bring its window back. Only an app the
+/// script still reports hidden needs the hold: a grant for a window that is
+/// already visible changes no concealed state.
+fn hold_ticket_grant(tray: &mut TrayState, app: &str, now: Instant) {
+    if tray.hidden_windows.1.contains_key(app) {
+        tray.ticket_grants
+            .insert(app.to_string(), now + TICKET_GRANT_HOLD);
+    }
+}
+
+/// Publish a ticket state read from the daemon. While a grant is expected to
+/// bring a concealed window back, the ring keeps its previous color: the
+/// ticket exists before KWin reports the window shown, so counting it now
+/// would flash amber. A failed read holds the same way, and shisad going away
+/// still turns the ring red on its own.
+fn publish_ticket_state(tray: &mut TrayState, ticketed: Option<usize>) {
+    let now = Instant::now();
+    tray.ticket_grants.retain(|_, until| now < *until);
+    if tray.ticket_grants.is_empty() {
+        tray.hidden_ticketed = ticketed;
+    }
 }
 
 /// Apply one background ticket poll. Runs under the ticket lock, so the
@@ -207,8 +247,8 @@ fn apply_hidden_windows(
 fn apply_ticket_poll(tray: &mut TrayState, poll: TicketPoll) {
     match poll {
         TicketPoll::Skip => {}
-        TicketPoll::Confirmed(ticketed) => tray.hidden_ticketed = Some(ticketed),
-        TicketPoll::Unconfirmed => tray.hidden_ticketed = None,
+        TicketPoll::Confirmed(ticketed) => publish_ticket_state(tray, Some(ticketed)),
+        TicketPoll::Unconfirmed => publish_ticket_state(tray, None),
     }
 }
 
@@ -441,6 +481,7 @@ fn main() -> std::process::ExitCode {
         hidden_ticketed: None,
         last_lock: None,
         offline: true,
+        ticket_grants: Default::default(),
         language: i18n::current(),
         actions: actions_tx.clone(),
     };
@@ -690,6 +731,14 @@ fn signal_loop(
         if member == "StateChanged"
             && let Ok(manager) = ManagerProxyBlocking::new(conn)
         {
+            // A grant that brings a concealed window back shows it within a
+            // script poll and at most one revision load. Hold the ring's
+            // previous color until the hidden report arrives, so the grant
+            // does not flash amber between the locked blue and the restored
+            // green.
+            if let Ok((app, true)) = message.body().deserialize::<(String, bool)>() {
+                let _ = handle.update(|tray| hold_ticket_grant(tray, &app, Instant::now()));
+            }
             refresh(handle, &manager, gate, tracker, ticket_sync);
         }
         if member == "SessionUnlocked" {
@@ -739,7 +788,7 @@ fn refresh(
         let _ = handle.update(|tray| {
             let ticketed = ticketed_hidden(&apps, &tray.hidden_windows.1);
             tray.protected_count = apps.len();
-            tray.hidden_ticketed = Some(ticketed);
+            publish_ticket_state(tray, Some(ticketed));
         });
         apps
     };
@@ -1363,6 +1412,7 @@ mod tests {
             protected_count: 2,
             last_lock: Some("已收起 2 个窗口".into()),
             offline: false,
+            ticket_grants: Default::default(),
             language: Language::ZhCn,
             actions,
         };
@@ -1396,6 +1446,7 @@ mod tests {
             protected_count: 0,
             last_lock: None,
             offline: false,
+            ticket_grants: Default::default(),
             language: Language::ZhCn,
             actions,
         };
@@ -1416,6 +1467,7 @@ mod tests {
             protected_count: 2,
             last_lock: None,
             offline: true,
+            ticket_grants: Default::default(),
             language: Language::En,
             actions,
         };
@@ -1436,6 +1488,7 @@ mod tests {
             protected_count: 1,
             last_lock: None,
             offline: false,
+            ticket_grants: Default::default(),
             language: Language::ZhCn,
             actions,
         };
@@ -1463,6 +1516,7 @@ mod tests {
             protected_count: 2,
             last_lock: None,
             offline: false,
+            ticket_grants: Default::default(),
             language: Language::ZhCn,
             actions,
         };
@@ -1489,6 +1543,7 @@ mod tests {
             protected_count: 1,
             last_lock: None,
             offline: false,
+            ticket_grants: Default::default(),
             language: Language::ZhCn,
             actions,
         };
@@ -1553,6 +1608,7 @@ mod tests {
             protected_count: 1,
             last_lock: None,
             offline: false,
+            ticket_grants: Default::default(),
             language: Language::ZhCn,
             actions,
         }
@@ -1582,6 +1638,40 @@ mod tests {
         assert_eq!(tray.icon_name(), LOCKED_ICON);
         assert!(!apply_hidden_windows(&mut tray, (1, 1), counts, Some(1)));
         assert_eq!(tray.icon_name(), LOCKED_ICON);
+    }
+
+    #[test]
+    fn a_ticket_grant_holds_the_previous_color_until_its_window_returns() {
+        let mut tray = tray_without_hidden();
+        let counts = HashMap::from([("org.kde.motrix".into(), 1)]);
+        // The locked blue before the user authenticates the restore.
+        apply_hidden_windows(&mut tray, (1, 1), counts.clone(), Some(0));
+        assert_eq!(tray.icon_name(), LOCKED_ICON);
+        hold_ticket_grant(&mut tray, "org.kde.motrix", Instant::now());
+        // The grant's read would count the app as amber, but KWin still
+        // reports its window hidden.
+        apply_ticket_poll(&mut tray, TicketPoll::Confirmed(1));
+        assert_eq!(tray.icon_name(), LOCKED_ICON);
+        // The report that brings the window back ends the hold and publishes
+        // the new count.
+        apply_hidden_windows(&mut tray, (1, 2), HashMap::new(), Some(0));
+        assert!(tray.ticket_grants.is_empty());
+        assert_eq!(tray.icon_name(), "shisa-tray-symbolic");
+    }
+
+    #[test]
+    fn an_expired_ticket_grant_stops_holding_the_color() {
+        let mut tray = tray_without_hidden();
+        let counts = HashMap::from([("org.kde.motrix".into(), 1)]);
+        apply_hidden_windows(&mut tray, (1, 1), counts, Some(0));
+        // The window never came back. The hold expires instead of freezing
+        // the color forever.
+        tray.ticket_grants.insert(
+            "org.kde.motrix".into(),
+            Instant::now() - Duration::from_secs(1),
+        );
+        apply_ticket_poll(&mut tray, TicketPoll::Confirmed(1));
+        assert_eq!(tray.icon_name(), RESTORABLE_ICON);
     }
 
     fn report(matched: u32, hidden: u32, missed: &[(&str, u32)]) -> WindowReport {
