@@ -29,7 +29,17 @@ fi
 # service is stopped, so a first install does not start it.
 if command -v systemctl >/dev/null 2>&1; then
     systemctl daemon-reload >/dev/null 2>&1 || true
-    systemctl reload dbus.service >/dev/null 2>&1 || true
+    # Reloading the bus applies the new policy without a reboot. A first
+    # install or a build container has no active bus, so only warn when the
+    # bus is running and the reload itself fails.
+    if systemctl is-active --quiet dbus.service 2>/dev/null; then
+        if ! reload_output=$(systemctl reload dbus.service 2>&1); then
+            printf '%s\n' \
+                "Warning: the D-Bus policy could not be reloaded." \
+                "${reload_output:-No error output.}" \
+                "Restart the computer before relying on the new Shisa permissions."
+        fi
+    fi
     systemctl try-reload-or-restart shisad.service >/dev/null 2>&1 || true
 fi
 
