@@ -1025,9 +1025,9 @@
     <div class="side-top" data-tauri-drag-region>
       <span class="brand" data-tauri-drag-region>
         <svg class="logo" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
-          <ellipse cx="8" cy="8" rx="4.65" ry="5.3" fill="none" stroke="currentColor" stroke-width="1.5"/>
-          <circle cx="8" cy="7.15" r="1.65" fill="currentColor"/>
-          <path d="M7.5 8.239L8.5 8.239L8.775 11.55L7.225 11.55Z" fill="currentColor"/>
+          <ellipse cx="8" cy="8" rx="6" ry="6.5" fill="none" stroke="currentColor" stroke-width="1.5"/>
+          <circle cx="8" cy="6.93" r="2.08" fill="currentColor"/>
+          <path d="M7.37 8.3L8.63 8.3L8.98 12.47L7.02 12.47Z" fill="currentColor"/>
         </svg>
         <span>Shisa</span>
       </span>
