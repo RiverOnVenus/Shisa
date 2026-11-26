@@ -93,7 +93,7 @@ start_shisad
 
 say "== T1 status before authentication =="
 expect 0 "shisa status" "$CLI" status
-grep -q 'lock *auth-app' "$OUT" && say "  ok    auth-app reported locked" \
+grep -q 'locked *auth-app' "$OUT" && say "  ok    auth-app reported locked" \
   || { say "  FAIL  auth-app not reported as locked"; FAILED=$((FAILED + 1)); }
 
 say "== T2 polkit refuses: the launch is denied =="
@@ -159,11 +159,11 @@ say "== T6 unlock leaves a ticket, lock drops it =="
 control allow
 expect 0 "unlock" unlock auth-app
 expect 0 "status" "$CLI" status
-grep -q 'open *auth-app' "$OUT" && say "  ok    auth-app reported open" \
+grep -q 'authorized *auth-app' "$OUT" && say "  ok    auth-app reported authorized" \
   || { say "  FAIL  auth-app not reported as open"; FAILED=$((FAILED + 1)); }
 expect 0 "lock one app" "$CLI" lock auth-app
 expect 0 "status" "$CLI" status
-tail -5 "$OUT" | grep -q 'lock *auth-app' && say "  ok    auth-app locked again" \
+tail -5 "$OUT" | grep -q 'locked *auth-app' && say "  ok    auth-app locked again" \
   || { say "  FAIL  auth-app still open after lock"; FAILED=$((FAILED + 1)); }
 
 say "== T7 window state =="
