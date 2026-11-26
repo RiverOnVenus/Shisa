@@ -19,6 +19,7 @@ tauri-plugin-single-instance = "2"
 shisa-core = { path = "../../../crates/shisa-core" }
 zbus = { version = "5", features = ["tokio"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
+futures-channel = "0.3"
 serde = { version = "1", features = ["derive"] }
 base64 = "0.22"
 glib = "0.18"
