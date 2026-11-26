@@ -11,6 +11,7 @@
     detail,
     duration,
     gracePresets,
+    iconPixels,
     isPreset,
     isRelockPreset,
     kindText,
@@ -437,7 +438,10 @@
       rows.map(async (row) => {
         if (!row.icon || row.id in icons) return;
         try {
-          icons[row.id] = await invoke("icon", { name: row.icon });
+          icons[row.id] = await invoke("icon", {
+            name: row.icon,
+            px: iconPixels(window.devicePixelRatio),
+          });
         } catch {
           icons[row.id] = null;
         }

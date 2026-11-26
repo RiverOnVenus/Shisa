@@ -4,6 +4,7 @@ import {
   ago,
   detail,
   duration,
+  iconPixels,
   isPreset,
   isRelockPreset,
   kindText,
@@ -236,6 +237,17 @@ test("translations fill parameters and choose the plural form", () => {
   );
   // A missing key is visible instead of silently empty.
   assert.equal(zh("no.such.key"), "no.such.key");
+});
+
+test("an icon is requested at the pixels the display draws it", () => {
+  // The rows draw at 22 CSS pixels, and a scaled desktop needs more raster
+  // than that. A 1.25x display asks for 28 so the shell does not hand back a
+  // 16px PNG to stretch.
+  assert.equal(iconPixels(1), 22);
+  assert.equal(iconPixels(1.25), 28);
+  assert.equal(iconPixels(2), 44);
+  // An unreadable ratio falls back to the CSS size instead of zero.
+  assert.equal(iconPixels(undefined), 22);
 });
 
 test("language tags outside Chinese are English", () => {

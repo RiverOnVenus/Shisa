@@ -582,29 +582,37 @@ async fn watch_lock(app: &tauri::AppHandle, bus: &Bus) -> Result<bool, String> {
     Ok(false)
 }
 
-/// Resolved icon files, as data URLs. The theme lookup happens once per name.
+/// Resolved icon files, as data URLs, keyed by theme name and pixel size. The
+/// theme lookup happens once per key.
+type IconCache = HashMap<(String, u32), Option<String>>;
+
 #[derive(Clone, Default)]
-struct Icons(Arc<Mutex<HashMap<String, Option<String>>>>);
+struct Icons(Arc<Mutex<IconCache>>);
 
 /// Resolving an icon walks several theme directories. Keep that off the IPC
 /// thread: the first app list asks for one icon per row, and a few hundred
 /// misses would otherwise freeze the window while it paints.
+///
+/// `px` is the physical pixel size the page will draw the icon at, from its
+/// `devicePixelRatio`. The page sends it because this side cannot see how the
+/// desktop scales the window.
 #[tauri::command]
-async fn icon(state: State<'_, Icons>, name: String) -> R<Option<String>> {
+async fn icon(state: State<'_, Icons>, name: String, px: u32) -> R<Option<String>> {
     if name.is_empty() {
         return Ok(None);
     }
-    if let Some(hit) = state.0.lock().unwrap().get(&name) {
+    let px = px.clamp(16, 512);
+    if let Some(hit) = state.0.lock().unwrap().get(&(name.clone(), px)) {
         return Ok(hit.clone());
     }
     let cache = state.0.clone();
     let found = tauri::async_runtime::spawn_blocking(move || {
         // Two rows can ask for the same icon before either one finishes.
-        if let Some(hit) = cache.lock().unwrap().get(&name) {
+        if let Some(hit) = cache.lock().unwrap().get(&(name.clone(), px)) {
             return hit.clone();
         }
-        let found = find_icon(&name);
-        cache.lock().unwrap().insert(name, found.clone());
+        let found = find_icon(&name, px);
+        cache.lock().unwrap().insert((name, px), found.clone());
         found
     })
     .await
@@ -717,13 +725,21 @@ fn inherited_themes(text: &str) -> Vec<String> {
     chain
 }
 
-/// Size order for icon lookup. Rows draw icons at 16 and 22px, so the small
-/// rasters come first: a 512px PNG would be a hundred times the pixels and
-/// bytes for an image that is downscaled anyway. Larger sizes and scalable
-/// art remain as fallbacks for themes that ship nothing smaller.
-const SIZES: [&str; 11] = [
-    "16", "22", "24", "32", "48", "64", "96", "128", "256", "512", "scalable",
-];
+/// Raster sizes icon themes ship, ascending. `scalable` is tried before any of
+/// them because vector art is sharp at every size.
+const RASTER_SIZES: [u32; 10] = [16, 22, 24, 32, 48, 64, 96, 128, 256, 512];
+
+/// Icon sizes to try, best first. A raster at least as large as the request is
+/// drawn down and stays sharp, so those come first with the smallest winning
+/// to keep the data URL short. Sizes below the request follow, largest first,
+/// because they can only be stretched and the largest stretches least. This is
+/// why a 16px PNG must not be picked for a 22px row on a scaled display.
+fn size_order(px: u32) -> Vec<u32> {
+    let (mut order, below): (Vec<u32>, Vec<u32>) =
+        RASTER_SIZES.iter().copied().partition(|size| *size >= px);
+    order.extend(below.into_iter().rev());
+    order
+}
 
 /// The theme chain is the same for every icon in one run of the window.
 /// Reading kdeglobals and every index.theme once keeps a long app list from
@@ -746,7 +762,7 @@ fn icon_themes() -> &'static [String] {
     })
 }
 
-fn find_icon(name: &str) -> Option<String> {
+fn find_icon(name: &str, px: u32) -> Option<String> {
     // Icon= may be an absolute path.
     if name.starts_with('/') {
         return data_url(std::path::Path::new(name));
@@ -761,21 +777,32 @@ fn find_icon(name: &str) -> Option<String> {
             return Some(found);
         }
         for theme in themes {
-            for size in SIZES {
+            // A theme's scalable art is sharp at every size, so it wins over
+            // any raster even when the raster matches the request exactly.
+            for ext in ["svg", "png"] {
+                let file = format!("{name}.{ext}");
+                for path in [
+                    root.join(theme).join("scalable").join("apps").join(&file),
+                    root.join(theme).join("apps").join("scalable").join(&file),
+                ] {
+                    if let Some(found) = data_url(&path) {
+                        return Some(found);
+                    }
+                }
+            }
+            for size in size_order(px) {
                 for ext in ["svg", "png"] {
                     let file = format!("{name}.{ext}");
-                    let mut candidates = vec![root.join(theme).join("apps").join(size).join(&file)];
-                    if size == "scalable" {
-                        candidates.push(root.join(theme).join("scalable").join("apps").join(&file));
-                    } else {
-                        candidates.push(
-                            root.join(theme)
-                                .join(format!("{size}x{size}"))
-                                .join("apps")
-                                .join(&file),
-                        );
-                    }
-                    for path in candidates {
+                    for path in [
+                        root.join(theme)
+                            .join("apps")
+                            .join(size.to_string())
+                            .join(&file),
+                        root.join(theme)
+                            .join(format!("{size}x{size}"))
+                            .join("apps")
+                            .join(&file),
+                    ] {
                         if let Some(found) = data_url(&path) {
                             return Some(found);
                         }
@@ -1096,6 +1123,23 @@ mod tests {
         std::os::unix::fs::symlink("/dev/zero", &zero).unwrap();
         assert!(data_url(&zero).is_none());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_small_raster_is_not_chosen_for_a_larger_box() {
+        // A 1.25x desktop draws the 22px row at 28 physical pixels. The 16px
+        // raster used to come first and was stretched, which is the blur.
+        assert_eq!(size_order(28)[0], 32);
+        assert_eq!(size_order(22)[0], 22);
+        assert_eq!(size_order(20)[0], 22);
+        assert_eq!(size_order(44)[0], 48);
+        // Nothing large enough leaves the largest raster first: it stretches
+        // the least.
+        assert_eq!(size_order(900)[0], 512);
+        // Every size is still tried, so a theme that ships only one resolves.
+        let mut order = size_order(28);
+        order.sort_unstable();
+        assert_eq!(order, RASTER_SIZES);
     }
 
     #[test]

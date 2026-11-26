@@ -7,7 +7,7 @@
   import { onMount, tick, untrack } from "svelte";
   import { fade, fly } from "svelte/transition";
   import { createTranslator, languageFromTag } from "./i18n.js";
-  import { lockNotice } from "./format.js";
+  import { iconPixels, lockNotice } from "./format.js";
   import { motionMs, paintTheme } from "./motion.js";
 
   let { language: initialLanguage = "en" } = $props();
@@ -188,7 +188,10 @@
       }
       for (const row of rows) {
         if (row.icon && !(row.icon in icons)) {
-          invoke("icon", { name: row.icon }).then((icon) => {
+          invoke("icon", {
+            name: row.icon,
+            px: iconPixels(window.devicePixelRatio),
+          }).then((icon) => {
             icons[row.icon] = icon;
           }).catch(() => {});
         }

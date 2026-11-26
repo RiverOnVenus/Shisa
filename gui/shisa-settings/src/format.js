@@ -152,3 +152,12 @@ export function matches(app, query, filter) {
   if (filter === "unlocked" && !(app.protected && app.unlocked)) return false;
   return true;
 }
+
+// The largest box a list row draws an app icon in, in CSS pixels. One image
+// per app serves the 16px sidebar row and the 22px settings and restore rows.
+export const ICON_CSS_PX = 22;
+
+// The physical pixels that box covers. The shell picks a raster at least this
+// large and lets the browser shrink it: a 16px PNG stretched to 28 pixels on a
+// 1.25x desktop is the blur the size order exists to avoid.
+export const iconPixels = (dpr) => Math.ceil(ICON_CSS_PX * (Number(dpr) || 1));

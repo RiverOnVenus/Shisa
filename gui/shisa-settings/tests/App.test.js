@@ -162,7 +162,12 @@ test("the General row draws its own gear instead of asking the icon theme", asyn
   // colours are the theme's rather than the row's.
   const general = document.querySelector(".side-foot button.row");
   expect(general.querySelector("svg")).not.toBeNull();
-  expect(calls).not.toContainEqual(["icon", { name: "preferences-system" }]);
+  expect(
+    calls.some(
+      ([command, args]) =>
+        command === "icon" && args?.name === "preferences-system",
+    ),
+  ).toBe(false);
 });
 
 test("the search narrows the sidebar", async () => {
