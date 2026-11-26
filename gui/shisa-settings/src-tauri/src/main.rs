@@ -579,11 +579,18 @@ async fn watch_lock(app: &tauri::AppHandle, bus: &Bus) -> Result<bool, String> {
     };
     let mut locked = manager.receive_settings_locked().await.map_err(err)?;
     manager.register_settings().await.map_err(err)?;
-    if let Some(generation) = generation
-        && manager.settings_generation().await.map_err(err)? != generation
-    {
-        app.exit(0);
-        return Ok(true);
+    if let Some(generation) = generation {
+        match manager.settings_generation().await {
+            Ok(current) if current == generation => {}
+            // The second read failed, or it reported a newer generation. A
+            // daemon that vanished while the registration was in flight
+            // starts with an empty settings registry, so the retained
+            // authorization must not outlive the restart.
+            _ => {
+                app.exit(0);
+                return Ok(true);
+            }
+        }
     }
     // Close the race between the owner lookup and the registration. A
     // registration that reached the previous instance is not useful. A

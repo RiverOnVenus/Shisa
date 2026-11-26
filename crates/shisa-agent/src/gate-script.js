@@ -94,6 +94,10 @@ let lastSnapshot;
 // generation starts with null so the first pass records what was already
 // open instead of reporting every window as closed.
 let presentApps = null;
+// Reports the agent has not accepted yet. A rejected report is sent again on
+// the next poll. Declared before the first possible report call.
+const pendingReports = new Map();
+let reportSequence = 0;
 
 // A protected app that loses its last window can be reopened from its own
 // tray icon without an exec, so the launch gate never sees it. Report the
@@ -118,16 +122,10 @@ function reportClosedApps() {
     // The daemon rejects malformed ids, but they must not reach the bus or a
     // log line in the first place. The line-based reports use the same guard.
     if (/[\x00\r\n]/.test(app)) continue;
-    callDBus(
-      SERVICE,
-      PATH,
-      IFACE,
-      "WindowEvent",
-      app,
-      "",
-      "closed",
-      function () {},
-    );
+    // The action queue can be full behind a slow authentication prompt.
+    // Reuse the report retry so a rejected close is sent again instead of
+    // leaving the app with window permission.
+    report(app, "", "closed");
   }
 }
 
@@ -156,7 +154,10 @@ function reportHiddenWindows() {
     String(++inventorySequence),
     snapshot,
     function (accepted) {
-      if (accepted === true || (Array.isArray(accepted) && accepted[0] === true))
+      if (
+        accepted === true ||
+        (Array.isArray(accepted) && accepted[0] === true)
+      )
         lastSnapshot = report;
     },
   );
@@ -423,8 +424,6 @@ if (workspace.windowRemoved)
 // hidden is the tray's or a relaunch's job.
 let activeApp = "";
 let activePid = "";
-const pendingReports = new Map();
-let reportSequence = 0;
 function report(app, pid, event) {
   if (!app) return;
   const key = app + "\t" + pid;

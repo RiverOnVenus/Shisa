@@ -207,6 +207,12 @@ const ERROR_TEXT: &[(&str, &str)] = &[
         "还有一个认证没有结束，完成或取消后再试。",
     ),
     (
+        "too many pending window actions",
+        "窗口操作太多，稍后再试。",
+    ),
+    ("file larger than", "文件超过了大小上限。"),
+    ("config larger than", "配置文件超过了大小上限。"),
+    (
         "authentication was rejected",
         "认证没有通过，改动没有生效。",
     ),
@@ -375,6 +381,18 @@ mod tests {
         assert_eq!(
             error_text("ServiceUnknown: no owner", Language::ZhCn),
             "应用锁没有响应，稍后再试。"
+        );
+        assert_eq!(
+            error_text("config larger than 1048576 bytes", Language::ZhCn),
+            "配置文件超过了大小上限。"
+        );
+        assert_eq!(
+            error_text("file larger than 65536 bytes", Language::ZhCn),
+            "文件超过了大小上限。"
+        );
+        assert_eq!(
+            error_text("too many pending window actions", Language::ZhCn),
+            "窗口操作太多，稍后再试。"
         );
         // English clients get the daemon's own wording.
         assert_eq!(
