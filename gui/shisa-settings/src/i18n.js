@@ -128,7 +128,7 @@ const zh = {
   "app.inactive.count": "{count} 条保护路径未生效，启动拦截不完整。",
   "app.grace.name": "宽限期",
   "app.relock.name": "失焦后隐藏",
-  "app.relock.sub": "失焦这么久后隐藏窗口。宽限期内恢复不再询问。",
+  "app.relock.sub": "宽限期内恢复不再询问。",
   "app.relock.warn":
     "失焦隐藏保留启动凭证，宽限期内从恢复面板或应用自己的托盘图标都能免密还原。借出桌面前请先「锁定受保护应用」。",
   "app.advanced": "高级设置",
@@ -357,8 +357,7 @@ const en = {
     "{count} protected path does not take effect, so launch gating is incomplete.|{count} protected paths do not take effect, so launch gating is incomplete.",
   "app.grace.name": "Grace period",
   "app.relock.name": "Hide when focus is lost",
-  "app.relock.sub":
-    "Hides the window after this long without focus. Restoring in the grace period does not ask again.",
+  "app.relock.sub": "Restoring in the grace period does not ask again.",
   "app.relock.warn":
     "A focus-loss hide keeps the launch ticket, so the restore panel and the app's own tray icon can restore the window without a password until the grace period ends. Use Lock protected apps before lending the desktop.",
   "app.advanced": "Advanced settings",
