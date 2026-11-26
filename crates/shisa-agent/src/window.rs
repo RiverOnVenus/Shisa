@@ -14,7 +14,7 @@ use shisa_core::dbus::{LockReport, WINDOW_BUS_NAME, WINDOW_INTERFACE, WINDOW_PAT
 use std::collections::HashMap;
 use std::env;
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -28,6 +28,14 @@ use zbus::message::Header;
 /// The fixed plugin name older agents used. Unloaded once at startup so its
 /// stale handlers do not fight the per-generation scripts.
 const LEGACY_PLUGIN: &str = "shisa-window-gate";
+const SNAPSHOT_FILE: &str = "window-snapshots.json";
+/// The runtime directory is user-writable. A huge journal must not be read
+/// into the agent or embedded into the next script.
+const MAX_SNAPSHOT_BYTES: u64 = 1 << 20;
+/// The script reports only after it has concealed. A failed journal write is
+/// retried for about a second before the script falls back to the values it
+/// holds in memory, so the wait must outlast that path, not just the load.
+const SCRIPT_START_TIMEOUT: Duration = Duration::from_millis(3000);
 /// The focus and relock state shared by the session-bus service and the
 /// refresh that follows shisad.
 #[derive(Default)]
@@ -134,6 +142,7 @@ pub struct Ready {
     expected: AtomicU64,
     desired: Mutex<String>,
     inventory: Mutex<Inventory>,
+    snapshot_version: Mutex<(u64, u64)>,
     changed: Condvar,
 }
 
@@ -144,6 +153,23 @@ impl Ready {
 
     fn expect(&self, generation: u64) {
         self.expected.store(generation, Ordering::SeqCst);
+    }
+
+    fn save_snapshots(&self, path: &Path, generation: u64, sequence: u64, snapshots: &str) -> bool {
+        let mut stored = self.snapshot_version.lock().unwrap();
+        let version = (generation, sequence);
+        if generation != self.expected.load(Ordering::SeqCst) || version < *stored {
+            return false;
+        }
+        if version == *stored {
+            return true;
+        }
+        if let Err(error) = write_atomic(path, snapshots) {
+            warn!("window snapshots: {error}");
+            return false;
+        }
+        *stored = version;
+        true
     }
 
     fn note(&self, generation: u64, matched: u32, hidden: u32, missed: HashMap<String, u32>) {
@@ -329,6 +355,35 @@ impl WindowService {
             .map_err(|error| zbus::fdo::Error::Failed(error.to_string()))
     }
 
+    /// The script waits for this write before changing a newly concealed window.
+    async fn save_window_snapshots(
+        &self,
+        generation: &str,
+        sequence: &str,
+        snapshots: &str,
+        #[zbus(header)] hdr: Header<'_>,
+        #[zbus(connection)] conn: &AsyncConnection,
+    ) -> bool {
+        if !from_kwin(conn, &hdr).await {
+            return false;
+        }
+        if snapshots.len() as u64 > MAX_SNAPSHOT_BYTES {
+            return false;
+        }
+        let (Ok(generation), Ok(sequence)) = (generation.parse(), sequence.parse()) else {
+            return false;
+        };
+        let Some(runtime) = env::var_os("XDG_RUNTIME_DIR") else {
+            return false;
+        };
+        self.ready.save_snapshots(
+            &PathBuf::from(runtime).join("shisa").join(SNAPSHOT_FILE),
+            generation,
+            sequence,
+            snapshots,
+        )
+    }
+
     async fn windows_checked(
         &self,
         generation: &str,
@@ -432,6 +487,11 @@ pub struct Gate {
     /// after a fresh script has reported started: unloading one script right
     /// before loading another makes KWin ignore the new one.
     stale: Vec<String>,
+    legacy_snapshots: bool,
+    /// A previous script generation left its plugin name behind. With no
+    /// journal, a concealed window may have lost its original properties,
+    /// including when a save failed.
+    had_plugin_file: bool,
 }
 
 impl Gate {
@@ -456,6 +516,8 @@ impl Gate {
             plugin: String::new(),
             ready,
             stale: vec![LEGACY_PLUGIN.to_string()],
+            legacy_snapshots: false,
+            had_plugin_file: false,
             instance: 0,
             foreground: String::new(),
         };
@@ -465,6 +527,14 @@ impl Gate {
         if let Ok(previous) = fs::read_to_string(gate.plugin_file()) {
             let previous = previous.trim();
             if !previous.is_empty() {
+                gate.had_plugin_file = true;
+                let source = previous
+                    .rsplit('-')
+                    .next()
+                    .and_then(|n| n.parse::<u64>().ok())
+                    .map(|generation| gate.directory.join(format!("kwin-gate-{generation}.js")))
+                    .and_then(|path| fs::read_to_string(path).ok());
+                gate.legacy_snapshots = script_is_legacy(previous, source.as_deref());
                 gate.stale.push(previous.to_string());
             }
         }
@@ -489,7 +559,9 @@ impl Gate {
             // A KWin restart or a manual unload drops the script without
             // telling the agent. Load it again instead of trusting the
             // cached list.
-            if self.is_loaded() {
+            if (protected.is_empty() && self.plugin.is_empty() && self.stale.is_empty())
+                || self.is_loaded()
+            {
                 // Nothing changed and the script is still loaded. The caller
                 // that runs this path ignores the result.
                 return Err(NoReport::Unconfirmed);
@@ -511,7 +583,14 @@ impl Gate {
             })
             .unwrap_or_default();
         if protected.is_empty() && !verify {
-            if restore.is_empty() {
+            if restore.is_empty()
+                && (self.loaded.is_some()
+                    || !self
+                        .directory
+                        .join(SNAPSHOT_FILE)
+                        .try_exists()
+                        .unwrap_or(true))
+            {
                 self.unload();
                 self.loaded = Some((protected, allowed));
                 return Err(NoReport::Unconfirmed);
@@ -656,10 +735,7 @@ impl Gate {
             self.generation += 1;
             self.ready.expect(self.generation);
             self.publish_state(protected, allowed, restore);
-            if self
-                .ready
-                .wait(self.generation, Duration::from_millis(1200))
-            {
+            if self.ready.wait(self.generation, SCRIPT_START_TIMEOUT) {
                 return Ok(());
             }
         }
@@ -702,14 +778,29 @@ impl Gate {
             let path = self
                 .directory
                 .join(format!("kwin-gate-{}.js", self.generation));
+            // Read after publishing the generation, under the writer lock. A
+            // retiring script cannot replace this snapshot after the handoff.
+            let snapshots = {
+                let _writer = self.ready.snapshot_version.lock().unwrap();
+                read_snapshots(&self.directory.join(SNAPSHOT_FILE))
+            };
+            let legacy = snapshots.is_none() && (self.legacy_snapshots || self.had_plugin_file);
             let source = script_for_foreground(
                 protected,
                 allowed,
                 restore,
                 self.generation,
                 &self.foreground,
+            )
+            .replace(
+                "/* @SNAPSHOTS@ */ \"[]\"",
+                &js_string(snapshots.as_deref().unwrap_or("[]")),
+            )
+            .replace(
+                "/* @LEGACY@ */ false",
+                if legacy { "true" } else { "false" },
             );
-            write_script(&path, &source).map_err(LoadError::Other)?;
+            write_atomic(&path, &source).map_err(LoadError::Other)?;
             let plugin = format!(
                 "shisa-window-gate-{}-{}",
                 std::process::id(),
@@ -722,10 +813,7 @@ impl Gate {
                 return Err(error);
             }
             attempted.push(plugin);
-            if self
-                .ready
-                .wait(self.generation, Duration::from_millis(1200))
-            {
+            if self.ready.wait(self.generation, SCRIPT_START_TIMEOUT) {
                 // The fresh script is running. Retire everything older.
                 let running = attempted.pop().unwrap_or_default();
                 let mut retired = std::mem::take(&mut self.stale);
@@ -738,6 +826,7 @@ impl Gate {
                     self.unload_named(&previous);
                 }
                 self.plugin = running;
+                self.legacy_snapshots = false;
                 let _ = fs::write(self.plugin_file(), &self.plugin);
                 self.remove_old_scripts(&path);
                 return Ok(());
@@ -882,8 +971,47 @@ fn kwin_error(e: zbus::Error) -> LoadError {
     }
 }
 
-fn write_script(path: &Path, script: &str) -> Result<(), String> {
-    let tmp = path.with_extension("js.tmp");
+/// Read the snapshot journal without trusting its type or size. The file is
+/// user-writable, and a corrupt journal must not stop the window layer.
+fn read_snapshots(path: &Path) -> Option<String> {
+    let file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(error) => {
+            warn!("window snapshots: {}: {error}", path.display());
+            return None;
+        }
+    };
+    let meta = match file.metadata() {
+        Ok(meta) => meta,
+        Err(error) => {
+            warn!("window snapshots: {}: {error}", path.display());
+            return None;
+        }
+    };
+    if !meta.is_file() || meta.len() > MAX_SNAPSHOT_BYTES {
+        warn!(
+            "window snapshots: {} is not a small regular file, ignoring",
+            path.display()
+        );
+        return None;
+    }
+    let mut text = String::new();
+    if let Err(error) = file.take(MAX_SNAPSHOT_BYTES).read_to_string(&mut text) {
+        warn!("window snapshots: {}: {error}", path.display());
+        return None;
+    }
+    Some(text)
+}
+
+/// An older per-generation script wrote no journal, and the fixed plugin
+/// always predates it.
+fn script_is_legacy(previous: &str, source: Option<&str>) -> bool {
+    previous == LEGACY_PLUGIN || source.is_some_and(|s| !s.contains("SaveWindowSnapshots"))
+}
+
+fn write_atomic(path: &Path, content: &str) -> Result<(), String> {
+    let tmp = path.with_extension("tmp");
     let mut file = fs::OpenOptions::new()
         .write(true)
         .create(true)
@@ -891,7 +1019,7 @@ fn write_script(path: &Path, script: &str) -> Result<(), String> {
         .mode(0o600)
         .open(&tmp)
         .map_err(|e| format!("{}: {e}", tmp.display()))?;
-    file.write_all(script.as_bytes())
+    file.write_all(content.as_bytes())
         .map_err(|e| format!("{}: {e}", tmp.display()))?;
     fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
 }
@@ -967,6 +1095,56 @@ mod tests {
     // event name being dropped, not whether the script does the right thing:
     // running it needs a KWin session.
     #[test]
+    fn only_the_current_window_revision_can_replace_saved_snapshots() {
+        let directory =
+            std::env::temp_dir().join(format!("shisa-snapshots-{}", std::process::id()));
+        let path = directory.join(SNAPSHOT_FILE);
+        let ready = Ready::default();
+        ready.expect(1);
+        assert!(!ready.save_snapshots(&path, 1, 1, "first"));
+        fs::create_dir(&directory).unwrap();
+        assert!(ready.save_snapshots(&path, 1, 1, "first"));
+        assert!(ready.save_snapshots(&path, 1, 3, "latest"));
+        assert!(!ready.save_snapshots(&path, 1, 2, "delayed"));
+        ready.expect(2);
+        assert!(!ready.save_snapshots(&path, 1, 4, "retired"));
+        assert_eq!(fs::read_to_string(&path).unwrap(), "latest");
+        assert!(ready.save_snapshots(&path, 2, 1, "[]"));
+        assert_eq!(fs::read_to_string(&path).unwrap(), "[]");
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn an_oversized_snapshot_file_is_ignored() {
+        let directory =
+            std::env::temp_dir().join(format!("shisa-snapshot-size-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join(SNAPSHOT_FILE);
+        fs::write(&path, vec![b'x'; MAX_SNAPSHOT_BYTES as usize + 1]).unwrap();
+        assert!(read_snapshots(&path).is_none());
+        fs::write(&path, "[]").unwrap();
+        assert_eq!(read_snapshots(&path).as_deref(), Some("[]"));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn legacy_scripts_are_the_fixed_plugin_or_missing_the_save_method() {
+        assert!(script_is_legacy(LEGACY_PLUGIN, None));
+        assert!(script_is_legacy(
+            "shisa-window-gate-1-2",
+            Some("old script")
+        ));
+        assert!(!script_is_legacy(
+            "shisa-window-gate-1-3",
+            Some("SaveWindowSnapshots")
+        ));
+        // A per-generation name whose script file was removed is treated as
+        // new; the missing-journal fallback covers that at load time.
+        assert!(!script_is_legacy("shisa-window-gate-1-4", None));
+    }
+
+    #[test]
     fn the_script_carries_every_list() {
         let script = script_for(
             &["org.kde.kwrite".into(), "a\"b".into()],
@@ -990,9 +1168,6 @@ mod tests {
         let script = script_for(&["app".into()], &[], &[], 1);
         assert!(script.contains(r#""unfocused""#));
         assert!(script.contains(r#""focused""#));
-        // A window the user minimized by hand has opacity 1 and must stay
-        // minimized across an unrelated reload.
-        assert!(script.contains("w.opacity === 0"));
     }
 
     #[test]

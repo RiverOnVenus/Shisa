@@ -9,9 +9,11 @@ import vm from "node:vm";
 // focus reporting.
 const template = readFileSync(new URL("../src/gate-script.js", import.meta.url), "utf8");
 
-function render({ locked = [], allowed = [], restore = [], generation = 1, foreground = "" }) {
+function render({ locked = [], allowed = [], restore = [], generation = 1, foreground = "", journal = { value: "[]" }, legacy = false }) {
   const script = template
     .replace('"@SERVICE@"', JSON.stringify("svc"))
+    .replace('/* @SNAPSHOTS@ */ "[]"', JSON.stringify(journal.value))
+    .replace('/* @LEGACY@ */ false', String(legacy))
     .replace('"@PATH@"', JSON.stringify("/window"))
     .replace('"@IFACE@"', JSON.stringify("iface"))
     .replace("/* @PROTECTED@ */ []", JSON.stringify(locked))
@@ -23,8 +25,10 @@ function render({ locked = [], allowed = [], restore = [], generation = 1, foreg
   return script;
 }
 
+let nextId = 0;
 function makeWindow(desktopFileName, resourceClass, pid = 100) {
   return {
+    internalId: String(++nextId),
     desktopFileName,
     resourceClass,
     pid,
@@ -69,13 +73,30 @@ function boot(options = {}) {
 
   function callDBus(...args) {
     calls.push(args);
-    if (args[3] === "WindowState" && options.state !== undefined) {
-      args[args.length - 1](JSON.stringify(options.state));
+    if (args[3] === "SaveWindowSnapshots") {
+      if (options.failSave) {
+        args.at(-1)(false);
+        return;
+      }
+      const commit = () => {
+        if (options.journal) options.journal.value = args[6];
+        args.at(-1)(true);
+      };
+      if (options.defer) options.defer.push(commit);
+      else commit();
+    }
+    if (args[3] === "WindowState") {
+      const owner = options.generation ?? 1;
+      const payload = options.state ?? [owner, 1, [], [], [], ""];
+      args[args.length - 1](JSON.stringify(payload));
     }
   }
 
-  vm.runInContext(render(options), vm.createContext({ workspace, callDBus, QTimer }));
-  return { calls, windows, handlers, timers, workspace };
+  vm.runInContext(
+    render(options),
+    vm.createContext({ workspace, callDBus, QTimer, Date: options.Date ?? Date }),
+  );
+  return { calls, windows, handlers, timers, workspace, options };
 }
 
 function methodCalls(env, method) {
@@ -148,15 +169,18 @@ test("an app id with a quote still runs", () => {
 
 test("a window hidden by an earlier generation is restored", () => {
   const window = makeWindow("old.app", "old");
-  window.opacity = 0;
-  window.minimized = true;
-  window.skipTaskbar = true;
-  window.skipSwitcher = true;
+  window.opacity = 0.75;
   window.skipPager = true;
-  boot({ restore: ["old.app"], windows: [window] });
-  assert.equal(window.opacity, 1);
-  assert.equal(window.minimized, false);
+  window.minimized = true;
+  const journal = { value: "[]" };
+  boot({ locked: ["old.app"], windows: [window], journal });
+  assert.equal(window.opacity, 0);
+  boot({ restore: ["old.app"], windows: [window], journal, generation: 2 });
+  assert.equal(window.opacity, 0.75);
+  assert.equal(window.minimized, true);
   assert.equal(window.skipTaskbar, false);
+  assert.equal(window.skipPager, true);
+  assert.equal(journal.value, "[]");
 });
 
 test("a window the user minimized by hand stays minimized", () => {
@@ -290,4 +314,175 @@ test("a newly assigned transient parent updates the window and its descendants",
   child.transientFor = parent;
   changed();
   assert.equal(grandchild.minimized, true);
+});
+
+
+test("a hidden-looking unrelated window keeps all its properties", () => {
+  const w = makeWindow("other", "other");
+  Object.assign(w, { opacity: 0, minimized: true, skipTaskbar: true, skipPager: true, skipSwitcher: true });
+  const before = { ...w };
+  boot({ locked: ["app"], windows: [w] });
+  assert.deepEqual(w, before);
+});
+
+test("a closed window cannot pass its snapshot to a new window of the same app", () => {
+  const old = makeWindow("app", "app");
+  old.opacity = 0.4;
+  const defer = [];
+  const journal = { value: "[]" };
+  const env = boot({ locked: ["app"], windows: [old], journal, defer });
+  assert.equal(old.opacity, 0.4);
+  assert.equal(methodCalls(env, "WindowsChecked").length, 0);
+  env.windows.pop();
+  env.handlers.removed[0](old);
+  const next = makeWindow("app", "app");
+  env.windows.push(next);
+  env.handlers.added[0](next);
+  while (defer.length) defer.shift()();
+  assert.equal(next.opacity, 0);
+  assert.deepEqual(JSON.parse(journal.value).map(([id]) => id), [next.internalId]);
+  boot({ windows: [next], journal, generation: 2 });
+  assert.equal(next.opacity, 1);
+  assert.equal(journal.value, "[]");
+});
+
+test("explicit restore activates a visible window and preserves its minimized sibling", () => {
+  const minimized = makeWindow("app", "app");
+  minimized.minimized = true;
+  const visible = makeWindow("app", "app");
+  const env = boot({ locked: ["app"], windows: [minimized, visible],
+    state: [1, 2, ["app"], ["app"], [], "app"] });
+  env.timers[0].onTimeout();
+  assert.equal(minimized.minimized, true);
+  assert.equal(env.workspace.activeWindow, visible);
+});
+
+test("legacy migration restores only known windows with the old concealment signature", () => {
+  const app = makeWindow("app", "app");
+  const unrelated = makeWindow("unrelated", "unrelated");
+  for (const w of [app, unrelated]) {
+    Object.assign(w, { minimized: true, opacity: 0, skipTaskbar: true, skipPager: true, skipSwitcher: true });
+  }
+  boot({ locked: ["app"], allowed: ["app"], windows: [app, unrelated], legacy: true });
+  assert.equal(app.opacity, 1);
+  assert.equal(unrelated.opacity, 0);
+});
+
+test("a corrupt snapshot journal starts empty instead of failing the script", () => {
+  const window = makeWindow("app", "app");
+  const journal = { value: "{" };
+  boot({ locked: ["app"], windows: [window], journal });
+  assert.equal(window.opacity, 0);
+  assert.equal(window.minimized, true);
+  const written = JSON.parse(journal.value);
+  assert.ok(Array.isArray(written));
+  assert.equal(written.length, 1);
+});
+
+test("a snapshot with the wrong shape is ignored", () => {
+  const window = makeWindow("app", "app");
+  const journal = {
+    value: JSON.stringify([[String(window.internalId), { opacity: "zero" }]]),
+  };
+  boot({ locked: ["app"], windows: [window], journal });
+  assert.equal(window.opacity, 0);
+  const written = JSON.parse(journal.value);
+  assert.equal(written.length, 1);
+  assert.equal(written[0][1].opacity, 1);
+});
+
+test("a snapshot that cannot be saved still conceals after a bounded retry", () => {
+  let now = 0;
+  class ClockDate extends Date {
+    static now() {
+      return now;
+    }
+  }
+  const window = makeWindow("app", "app");
+  window.opacity = 0.4;
+  const journal = { value: "[]" };
+  const env = boot({
+    locked: ["app"],
+    windows: [window],
+    journal,
+    failSave: true,
+    Date: ClockDate,
+  });
+  assert.equal(window.opacity, 0.4);
+  // Two retries, then the third save attempt gives up and conceals with the
+  // captured original still in memory.
+  for (let i = 0; i < 3; i++) {
+    now += 500;
+    env.timers[0].onTimeout();
+  }
+  assert.equal(window.opacity, 0);
+  assert.equal(window.minimized, true);
+  assert.equal(journal.value, "[]");
+
+  // Unlocking in the same generation restores the captured values.
+  env.options.state = [1, 2, ["app"], ["app"], [], ""];
+  now += 500;
+  env.timers[0].onTimeout();
+  assert.equal(window.opacity, 0.4);
+  assert.equal(window.minimized, false);
+});
+
+test("a corrupt journal migrates a concealed known window back", () => {
+  const window = makeWindow("app", "app");
+  Object.assign(window, {
+    opacity: 0,
+    minimized: true,
+    skipTaskbar: true,
+    skipSwitcher: true,
+    skipPager: true,
+  });
+  const journal = { value: "{" };
+  boot({
+    locked: ["app"],
+    allowed: ["app"],
+    windows: [window],
+    journal,
+    legacy: false,
+  });
+  assert.equal(window.opacity, 1);
+  assert.equal(window.minimized, false);
+});
+
+test("a restore that KWin delays is retried", () => {
+  let now = 0;
+  class ClockDate extends Date {
+    static now() {
+      return now;
+    }
+  }
+  const window = makeWindow("app", "app");
+  let minimized = false;
+  let blockRestore = true;
+  Object.defineProperty(window, "minimized", {
+    get: () => minimized,
+    set: (value) => {
+      if (value === false && blockRestore) return;
+      minimized = value;
+    },
+  });
+  const env = boot({
+    locked: ["app"],
+    windows: [window],
+    journal: { value: "[]" },
+    Date: ClockDate,
+  });
+  assert.equal(window.opacity, 0);
+  assert.equal(minimized, true);
+
+  // Unlock: the first restore is blocked, so the script keeps the original
+  // and schedules a retry.
+  env.options.state = [1, 2, ["app"], ["app"], [], ""];
+  now += 250;
+  env.timers[0].onTimeout();
+  assert.equal(minimized, true);
+
+  blockRestore = false;
+  now += 500;
+  env.timers[0].onTimeout();
+  assert.equal(minimized, false);
 });
