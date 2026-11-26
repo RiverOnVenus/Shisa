@@ -166,6 +166,20 @@ test("a rejected focus report is sent again", () => {
   assert.equal(methodCalls(env, "WindowEvent").length, 2);
 });
 
+test("a rejected close report is sent again", () => {
+  const window = makeWindow("org.kde.kate", "kate");
+  const env = boot({
+    locked: ["org.kde.kate"],
+    windows: [window],
+    rejectWindowEvent: true,
+  });
+  env.windows.splice(0, 1);
+  env.handlers.removed.forEach((fn) => fn(window));
+  assert.equal(methodCalls(env, "WindowEvent").length, 1);
+  env.timers.at(-1).onTimeout();
+  assert.equal(methodCalls(env, "WindowEvent").length, 2);
+});
+
 test("an app id that would split the report line is left out", () => {
   const window = makeWindow("a\nb", "a\nb");
   Object.defineProperty(window, "skipSwitcher", {
