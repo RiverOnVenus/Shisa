@@ -28,6 +28,10 @@
   let loadingShown = $state(false);
   let closeTimer = 0;
   let opening = $state("");
+  // The panel focuses its first control when it opens so Enter works at
+  // once, but a pointer open should not paint the keyboard ring. The ring
+  // waits for the first key press.
+  let keyboard = $state(false);
 
   $effect(() => {
     if (loading) {
@@ -339,6 +343,7 @@
   }
 
   function keydown(event) {
+    keyboard = true;
     if (event.key === "Escape" && !opening && !busyLock) {
       panel.close();
     }
@@ -354,7 +359,7 @@
 
 <svelte:window onkeydown={keydown} />
 
-<main>
+<main class:kbd={keyboard}>
   <div class="top" role="presentation" onmousedown={startDrag}>
     <div class="crumb"><b>{t("restore.title")}</b></div>
     <div class="actions">
@@ -490,6 +495,11 @@
     padding: 0;
     background: var(--bg);
     color: var(--fg);
+  }
+
+  /* The auto-focus on open is for Enter, not for showing a ring. */
+  main:not(.kbd) button:focus-visible {
+    outline: none;
   }
 
   .scroll {
