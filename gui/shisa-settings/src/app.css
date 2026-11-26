@@ -25,6 +25,13 @@
   --font: system-ui, "Noto Sans CJK SC", sans-serif;
   --code:
     ui-monospace, "SF Mono", Menlo, Consolas, "Noto Sans Mono CJK SC", monospace;
+  /* Four text sizes and nothing between them: captions, secondary text,
+     body, and the row and page titles. Half-pixel steps between six or
+     seven values read as noise instead of as levels. */
+  --text-xs: 11px;
+  --text-sm: 12px;
+  --text-md: 13px;
+  --text-lg: 13.5px;
   /* One motion language. Entrances settle, exits leave quickly, and presses
      answer within one frame. Every duration here has a matching helper in
      motion.js so script-driven transitions keep the same rhythm. */
@@ -79,7 +86,7 @@ body,
 
 body {
   font-family: var(--font);
-  font-size: 13px;
+  font-size: var(--text-md);
   line-height: 1.4;
   color: var(--fg);
   -webkit-font-smoothing: antialiased;
@@ -220,7 +227,7 @@ input:focus-visible {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 13.5px;
+  font-size: var(--text-lg);
   font-weight: 600;
   letter-spacing: 0.01em;
 }
@@ -254,7 +261,7 @@ input:focus-visible {
   border: 1px solid var(--line);
   background: var(--card);
   color: var(--fg);
-  font-size: 12px;
+  font-size: var(--text-sm);
   outline: none;
 }
 
@@ -297,7 +304,7 @@ input:focus-visible {
   height: 22px;
   padding: 0 6px;
   border-radius: 0;
-  font-size: 11px;
+  font-size: var(--text-xs);
   color: var(--muted);
   transition:
     color var(--dur-base) var(--ease-out),
@@ -330,7 +337,7 @@ input:focus-visible {
 
 .nav-gl {
   padding: 14px 8px 4px;
-  font-size: 11px;
+  font-size: var(--text-xs);
   font-weight: 500;
   letter-spacing: 0.04em;
   color: var(--muted);
@@ -350,7 +357,7 @@ input:focus-visible {
   height: 30px;
   padding: 0 8px;
   border-radius: 0;
-  font-size: 13px;
+  font-size: var(--text-md);
   color: var(--fg-2);
   text-align: left;
   white-space: nowrap;
@@ -413,7 +420,7 @@ input:focus-visible {
 }
 
 .sidebar .sub {
-  font-size: 10.5px;
+  font-size: var(--text-xs);
   color: var(--muted);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -439,7 +446,7 @@ input:focus-visible {
 .empty-state {
   padding: 18px 8px;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-sm);
   text-align: center;
 }
 
@@ -460,7 +467,7 @@ input:focus-visible {
   margin-top: 2px;
   padding: 0 9px;
   border-radius: 0;
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   color: var(--muted);
   white-space: nowrap;
   transition: color var(--dur-base) var(--ease-out);
@@ -528,7 +535,7 @@ input:focus-visible {
   gap: 7px;
   overflow: hidden;
   white-space: nowrap;
-  font-size: 13.5px;
+  font-size: var(--text-lg);
 }
 
 .crumb > span {
@@ -637,7 +644,7 @@ input:focus-visible {
 
 .set-none {
   margin: 18px 2px;
-  font-size: 13px;
+  font-size: var(--text-md);
   color: var(--muted);
   text-align: center;
 }
@@ -695,7 +702,7 @@ button.prefrow {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   color: var(--muted);
   transition: color var(--dur-base) var(--ease-out);
 }
@@ -722,7 +729,7 @@ button.prefrow {
 
 .act-summary {
   margin: 0 2px 10px;
-  font-size: 12.5px;
+  font-size: var(--text-md);
   line-height: 1.5;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
@@ -730,7 +737,7 @@ button.prefrow {
 
 .prefrow .name .when {
   margin-left: 8px;
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   font-weight: 400;
   color: var(--muted);
 }
@@ -740,7 +747,7 @@ button.prefrow {
   display: inline-flex;
   align-items: baseline;
   gap: 6px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--muted);
 }
 
@@ -757,7 +764,7 @@ button.prefrow {
 }
 
 .outcome .why {
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   color: var(--muted);
 }
 
@@ -772,7 +779,7 @@ button.prefrow {
 .label {
   display: block;
   padding: 0 2px 6px;
-  font-size: 11px;
+  font-size: var(--text-xs);
   font-weight: 600;
   letter-spacing: 0.05em;
   color: var(--muted);
@@ -882,12 +889,12 @@ button.prefrow {
 
 .prefrow .name.mono {
   font-family: var(--code);
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-weight: 400;
 }
 
 .prefrow .sub {
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   color: var(--muted);
   margin-top: 1px;
   line-height: 1.45;
@@ -906,13 +913,13 @@ button.prefrow {
 /* a path or a config location, set apart from the sentence around it */
 .prefrow .sub.mono {
   font-family: var(--code);
-  font-size: 11px;
+  font-size: var(--text-xs);
   word-break: break-all;
 }
 
 .prefrow .sub code {
   font-family: var(--code);
-  font-size: 11px;
+  font-size: var(--text-xs);
   padding: 1px 5px;
   border-radius: 0;
   background: var(--pill);
@@ -951,7 +958,7 @@ button.prefrow {
 }
 
 .unit {
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   color: var(--muted);
   white-space: nowrap;
 }
@@ -964,7 +971,7 @@ button.prefrow {
   border: 1px solid var(--line);
   background: var(--card);
   color: var(--fg);
-  font-size: 12.5px;
+  font-size: var(--text-md);
   font-variant-numeric: tabular-nums;
   outline: none;
 }
@@ -1041,7 +1048,7 @@ button.prefrow {
 }
 
 .text {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--ctl-fg);
   padding: 3px 7px;
   border-radius: 0;
@@ -1114,7 +1121,7 @@ button.prefrow {
   border: 1px solid var(--line);
   background: var(--card);
   color: var(--fg);
-  font-size: 12px;
+  font-size: var(--text-sm);
   outline: none;
 }
 
@@ -1129,7 +1136,7 @@ button.prefrow {
 .empty {
   margin: 18px auto;
   color: var(--muted);
-  font-size: 13px;
+  font-size: var(--text-md);
 }
 
 /* ---- the waiting sheet ---- */
@@ -1160,7 +1167,7 @@ button.prefrow {
   box-shadow:
     0 16px 44px rgba(20, 22, 30, 0.16),
     0 2px 8px rgba(20, 22, 30, 0.06);
-  font-size: 13px;
+  font-size: var(--text-md);
   color: var(--fg-2);
   animation: sheet-in var(--dur-base) var(--ease-out);
 }
@@ -1203,7 +1210,7 @@ button.prefrow {
   border: 1px solid var(--red-soft);
   background: var(--red-soft);
   color: var(--red);
-  font-size: 12px;
+  font-size: var(--text-sm);
   box-shadow:
     0 8px 24px rgba(20, 22, 30, 0.12),
     0 0 0 0.5px rgba(20, 22, 30, 0.08);

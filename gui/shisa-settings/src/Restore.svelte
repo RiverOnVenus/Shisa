@@ -516,13 +516,13 @@
 
   .blank-name {
     color: var(--fg-2);
-    font-size: 13px;
+    font-size: var(--text-md);
   }
 
   .blank-sub {
     margin-top: 6px;
     color: var(--muted);
-    font-size: 12px;
+    font-size: var(--text-sm);
     line-height: 1.5;
     overflow-wrap: anywhere;
   }
@@ -575,7 +575,7 @@
   /* the app id, shown only when two apps share a display name */
   .row .id {
     font-family: var(--code);
-    font-size: 11px;
+    font-size: var(--text-xs);
     color: var(--muted);
   }
 
