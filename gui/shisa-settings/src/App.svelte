@@ -77,10 +77,15 @@
 
   let global = $state({ grace: 300, clearOnLock: true, promptTimeout: 60 });
   let graceGlobal = $state(false);
+  let globalGeneration = 0;
   let newPath = $state("");
   // Bumped by every full refresh and every authenticated change, so a poll
   // that started earlier cannot put its pre-change snapshot back.
   let generation = 0;
+  // Ticket polling does not take a full refresh generation. Track it
+  // separately so concurrent focus and timer polls can only publish their
+  // newest answer, including their failure state.
+  let ticketGeneration = 0;
   let globalReady = $state(false);
 
   let busy = $state(0);
@@ -106,6 +111,8 @@
   // hiding are separate from shisad, so they get their own line.
   let agent = $state(false);
   let appVersion = $state("");
+  let agentGeneration = 0;
+  let diagGeneration = 0;
   // The general page's search narrows the cards to those whose words it
   // holds. It reads the rendered cards, so it cannot drift from what the page
   // says.
@@ -348,6 +355,9 @@
   async function recheckSetup() {
     const previous = diag;
     const failure = await loadDiag();
+    // A newer diagnostics read owns the card now. That read reports its own
+    // result, so this one must not announce a result from a superseded check.
+    if (failure === undefined) return;
     if (failure) {
       diag = previous;
       fail(failure);
@@ -401,11 +411,19 @@
   });
 
   async function refresh() {
-    generation++;
-    const [installed, protectedList] = await Promise.all([
-      invoke("list_installed"),
-      invoke("list_apps"),
-    ]);
+    const gen = ++generation;
+    let installed;
+    let protectedList;
+    try {
+      [installed, protectedList] = await Promise.all([
+        invoke("list_installed"),
+        invoke("list_apps"),
+      ]);
+    } catch (error) {
+      if (gen === generation) throw error;
+      return false;
+    }
+    if (gen !== generation) return false;
     daemon = true;
     const rows = [];
     const byId = new Map();
@@ -429,6 +447,7 @@
     apps = rows;
     appsReady = true;
     loadIcons(rows);
+    return true;
   }
 
   async function loadIcons(rows) {
@@ -582,8 +601,10 @@
   }
 
   async function loadGlobal() {
+    const gen = ++globalGeneration;
     try {
       const [grace, clearOnLock, promptTimeout] = await invoke("global_config");
+      if (gen !== globalGeneration) return;
       global = { grace, clearOnLock, promptTimeout };
       graceGlobal = !isPreset(grace);
       globalReady = true;
@@ -592,13 +613,14 @@
       await tick();
       filterSettings();
     } catch (e) {
-      if (page === "general") fail(e);
+      if (gen === globalGeneration && page === "general") fail(e);
     }
   }
 
   /// The daemon's own numbers. An older daemon has no such method, and then
   /// the card says so instead of the window failing.
   async function loadDiag() {
+    const gen = ++diagGeneration;
     try {
       const [
         version,
@@ -611,6 +633,7 @@
         adminReady,
         configFailed,
       ] = await invoke("diagnostics");
+      if (gen !== diagGeneration) return undefined;
       diag = {
         version,
         started,
@@ -624,6 +647,7 @@
       };
       return null;
     } catch (e) {
+      if (gen !== diagGeneration) return undefined;
       diag = null;
       return e;
     }
@@ -820,10 +844,11 @@
   /// rows, the open page and the selection stay where they are.
   async function syncTickets() {
     const gen = generation;
+    const poll = ++ticketGeneration;
     try {
       const list = await invoke("list_apps");
       // A full refresh or a change finished while this poll was in flight.
-      if (gen !== generation) return;
+      if (gen !== generation || poll !== ticketGeneration) return;
       daemon = true;
       const protectedIds = new Set();
       let missing = false;
@@ -849,7 +874,7 @@
           row.effective = [];
         }
       }
-      if (missing && gen === generation) await refresh();
+      if (missing && gen === generation && poll === ticketGeneration) await refresh();
       // Someone else changed protection or this page is simply older than
       // the daemon. Reload it rather than leave a switch that does the
       // opposite of what it shows.
@@ -858,13 +883,15 @@
         await select(currentId);
       }
     } catch {
-      daemon = false;
+      if (gen === generation && poll === ticketGeneration) daemon = false;
       // Keep the last good snapshot. A user action or the next tick retries.
     }
   }
 
   async function checkAgent() {
-    agent = await invoke("agent_status").catch(() => false);
+    const gen = ++agentGeneration;
+    const available = await invoke("agent_status").catch(() => false);
+    if (gen === agentGeneration) agent = available;
   }
 
   async function refreshTickets() {
@@ -873,7 +900,7 @@
       // The window may have opened before shisad was running. A full refresh
       // on this tick brings the list back once it is.
       try {
-        await refresh();
+        if (!(await refresh())) return;
         if (!currentId && page === "app" && apps.length) {
           const target = preferredApp();
           if (target) await select(target);
@@ -896,7 +923,9 @@
         await refresh();
         await loadDiag();
         const target = preferredApp();
-        if (target) await select(target);
+        // The daemon may answer after the user already chose a page or
+        // another row. Initial selection must not pull them back.
+        if (page === "app" && !currentId && target) await select(target);
       } catch (e) {
         daemon = false;
         appsReady = true;

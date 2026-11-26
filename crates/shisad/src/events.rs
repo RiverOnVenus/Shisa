@@ -37,6 +37,9 @@ pub enum Event {
         sender: String,
         /// The lock generations this request started under.
         revocation: (u64, u64),
+        /// The screen or manual lock generation that invalidates a retained
+        /// settings authorization.
+        settings_revocation: u64,
     },
     /// A D-Bus client asked to authenticate for an app and leave a ticket.
     UnlockRequest {

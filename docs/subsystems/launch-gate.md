@@ -4,7 +4,7 @@
 
 shisad uses fanotify `FAN_OPEN_EXEC_PERM`. The kernel pauses the caller while opening an executable and waits for the daemon's decision. This event has been available since Linux 5.0 and requires `CAP_SYS_ADMIN`.
 
-Marks apply to the inodes of protected files. Unmarked applications launch without involving Shisa. Before marking an open descriptor, shisad checks that it refers to a regular file and excludes shells, interpreters, systemd, and Shisa executables. The check and the mark refer to the same inode even if the path is replaced in between.
+Marks apply to the inodes of protected files. Unmarked applications launch without involving Shisa. Before marking an open descriptor, shisad checks that it refers to a regular file and excludes shells, interpreters, systemd, and Shisa executables. The check compares the opened inode with the known system programs as well as names, so renaming a hard link does not hide a shell or interpreter. The check and the mark refer to the same inode even if the path is replaced in between.
 
 Symlinks and hard links to the same inode are covered. A copied binary has a different inode. If the bounded fanotify queue overflows, Linux can allow discarded permission events without a decision. The daemon logs `FAN_Q_OVERFLOW`. See the [threat model](../architecture.md#threat-model).
 
@@ -42,7 +42,7 @@ On daemon exit the kernel releases pending events and removes marks. systemd use
 
 Tickets are stored in memory by user and app. The grace period starts on authorization. A zero grace period allows the pending launch once. An explicit `shisa unlock` without a pending launch issues a one-use ticket that expires after the configured wait limit.
 
-Manual locking revokes tickets and window allowance. It also refuses authentication that was already waiting: the launch records the user's and app's lock generations when it is decided, and an answer that crosses a lock is denied. Focus-loss hiding revokes only the window allowance, so the ticket and its grace period survive the hide. When all active graphical sessions for a user are locked, shisad clears both states unless `clear_on_screen_lock` is disabled. It reacts to logind signals and checks `LockedHint` every 30 seconds as a fallback. Daemon restart clears tickets. Ticket expiry alone affects subsequent launches and leaves existing window allowance in place.
+Manual locking revokes tickets and window allowance. It also refuses authentication that was already waiting: the launch records the user's and app's lock generations when it is decided, and an answer that crosses a lock is denied. Focus-loss hiding revokes only the window allowance, so the ticket and its grace period survive the hide. When all active graphical sessions for a user are locked, shisad clears both states unless `clear_on_screen_lock` is disabled. It reacts to logind signals and checks `LockedHint` every two seconds as a fallback, which limits how long a complete missed lock cycle can go unobserved. Daemon restart clears tickets. Ticket expiry alone affects subsequent launches and leaves existing window allowance in place.
 
 An instance records the PID and start time of the admitted process. Its descendants qualify while that process is alive. Grace-period expiry and screen locking leave instances intact. After a daemon restart the instance table is empty, but an already-running app can still execute its own protected image.
 
@@ -57,5 +57,7 @@ Already-open windows are handled by [window management](window-management.md). L
 ## Verification
 
 See [Tests and verification](../testing.md) for allow, deny, file replacement, and terminal entry-point checks. Live checks confirmed that execution from inside a Flatpak sandbox hits the host inode mark and that hard links and symlinks share coverage. See [Arch packaging](../packaging.md#installation-and-upgrade-verification) for the upgrade re-marking check.
+
+On 2026-11-26, the resolver test suite passed the renamed hard-link check, and the logind unit tests passed the two-second `LockedHint` fallback. The full workspace and release package checks passed. The sudo gate script then passed with 0 failed, covering deny and allow, symlinks and hard links, tickets and instances, the zero-grace one-shot, file replacement with SIGHUP and the 30-second re-mark, a broken and a foreign-owned config, the Plasma `kioclient` path with KWrite, and daemon shutdown.
 
 The service sandbox was verified on 2026-11-15: the system bus, SIGHUP reload, and interception all work under `SystemCallFilter=@system-service fanotify_init fanotify_mark` with `SystemCallErrorNumber=EPERM`. On systemd 262.2, `systemd-analyze syscall-filter` lists `fanotify_init` and `fanotify_mark` in `@privileged` only, not in `@mount`, so the unit has to name them explicitly.

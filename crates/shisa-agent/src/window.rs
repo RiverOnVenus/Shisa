@@ -14,7 +14,7 @@ use shisa_core::dbus::{LockReport, WINDOW_BUS_NAME, WINDOW_INTERFACE, WINDOW_PAT
 use std::collections::HashMap;
 use std::env;
 use std::fs;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -94,7 +94,7 @@ impl Tracker {
 /// back. KWin compiles the source asynchronously, so `run` right after
 /// `loadScript` can silently do nothing. This is the proof that the new
 /// script really executed and connected its handlers.
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Inventory {
     version: (u64, u64),
     counts: HashMap<String, u32>,
@@ -270,7 +270,7 @@ fn parse_counts(text: &str) -> HashMap<String, u32> {
 /// authenticates on its own.
 #[derive(Clone)]
 pub struct WindowService {
-    actions: std::sync::mpsc::Sender<super::Action>,
+    actions: std::sync::mpsc::SyncSender<super::Action>,
     tracker: Arc<Mutex<Tracker>>,
     ready: Arc<Ready>,
 }
@@ -279,7 +279,7 @@ impl WindowService {
     pub(super) fn new(
         tracker: Arc<Mutex<Tracker>>,
         ready: Arc<Ready>,
-        actions: std::sync::mpsc::Sender<super::Action>,
+        actions: std::sync::mpsc::SyncSender<super::Action>,
     ) -> Self {
         WindowService {
             tracker,
@@ -321,9 +321,11 @@ impl WindowService {
             // reopen follows the grace period and then the restore panel.
             // `Hide` is a no-op when the app has no permission.
             "closed" => {
-                let _ = self
-                    .actions
-                    .send(super::Action::AppWindowClosed(app_id.to_string()));
+                return super::enqueue_action(
+                    &self.actions,
+                    super::Action::AppWindowClosed(app_id.to_string()),
+                )
+                .is_ok();
             }
             _ => {}
         }
@@ -342,8 +344,7 @@ impl WindowService {
     }
 
     fn restore_window(&self, app: String) -> zbus::fdo::Result<()> {
-        self.actions
-            .send(super::Action::Unlock(app))
+        super::enqueue_action(&self.actions, super::Action::Unlock(app))
             .map_err(|error| zbus::fdo::Error::Failed(error.to_string()))
     }
 
@@ -362,8 +363,7 @@ impl WindowService {
                 "only KWin may restore a hidden window".into(),
             ));
         }
-        self.actions
-            .send(super::Action::RestoreIfTicketed(app))
+        super::enqueue_action(&self.actions, super::Action::RestoreIfTicketed(app))
             .map_err(|error| zbus::fdo::Error::Failed(error.to_string()))
     }
 
@@ -423,32 +423,42 @@ impl WindowService {
         counts: &str,
         #[zbus(header)] hdr: Header<'_>,
         #[zbus(connection)] conn: &AsyncConnection,
-    ) {
+    ) -> bool {
         if !from_kwin(conn, &hdr).await {
-            return;
+            return false;
         }
         let (Ok(generation), Ok(sequence)) = (generation.parse(), sequence.parse()) else {
-            return;
+            return false;
         };
         let counts = parse_counts(counts);
-        {
+        let previous = {
             let mut current = self.ready.inventory.lock().unwrap();
             if (generation, sequence) <= current.version {
-                return;
+                return false;
             }
+            let previous = current.clone();
             *current = Inventory {
                 version: (generation, sequence),
                 counts: counts.clone(),
             };
+            previous
+        };
+        if let Err(error) = super::enqueue_action(
+            &self.actions,
+            super::Action::HiddenWindows((generation, sequence), counts),
+        ) {
+            let mut current = self.ready.inventory.lock().unwrap();
+            if current.version == (generation, sequence) {
+                *current = previous;
+            }
+            debug!("hidden windows: {error}");
+            return false;
         }
-        let _ = self
-            .actions
-            .send(super::Action::HiddenWindows((generation, sequence), counts));
+        true
     }
 
     fn verify_lock(&self) -> zbus::fdo::Result<()> {
-        self.actions
-            .send(super::Action::VerifyLock)
+        super::enqueue_action(&self.actions, super::Action::VerifyLock)
             .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
     }
 
@@ -457,8 +467,7 @@ impl WindowService {
     /// KWin was silent or has no scripting interface on this desktop.
     async fn verify_lock_report(&self) -> zbus::fdo::Result<LockReport> {
         let (reply, wait) = oneshot::channel();
-        self.actions
-            .send(super::Action::VerifyLockReport(reply))
+        super::enqueue_action(&self.actions, super::Action::VerifyLockReport(reply))
             .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
         wait.await
             .map_err(|_| zbus::fdo::Error::Failed("window check dropped".into()))
@@ -966,34 +975,14 @@ fn kwin_error(e: zbus::Error) -> LoadError {
 /// Read the snapshot journal without trusting its type or size. The file is
 /// user-writable, and a corrupt journal must not stop the window layer.
 fn read_snapshots(path: &Path) -> Option<String> {
-    let file = match fs::File::open(path) {
-        Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+    match shisa_core::files::read_small_text(path, MAX_SNAPSHOT_BYTES, |_, _| Ok(())) {
+        Ok(text) => Some(text),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
         Err(error) => {
             warn!("window snapshots: {}: {error}", path.display());
-            return None;
+            None
         }
-    };
-    let meta = match file.metadata() {
-        Ok(meta) => meta,
-        Err(error) => {
-            warn!("window snapshots: {}: {error}", path.display());
-            return None;
-        }
-    };
-    if !meta.is_file() || meta.len() > MAX_SNAPSHOT_BYTES {
-        warn!(
-            "window snapshots: {} is not a small regular file, ignoring",
-            path.display()
-        );
-        return None;
     }
-    let mut text = String::new();
-    if let Err(error) = file.take(MAX_SNAPSHOT_BYTES).read_to_string(&mut text) {
-        warn!("window snapshots: {}: {error}", path.display());
-        return None;
-    }
-    Some(text)
 }
 
 fn write_atomic(path: &Path, content: &str) -> Result<(), String> {
@@ -1261,7 +1250,7 @@ mod tests {
         let service = WindowService::new(
             tracker.clone(),
             Arc::new(Ready::new()),
-            std::sync::mpsc::channel().0,
+            std::sync::mpsc::sync_channel(super::super::ACTION_QUEUE_CAPACITY).0,
         );
         assert!(service.apply_window_event("app", "unfocused"));
         assert!(tracker.lock().unwrap().unfocused.contains_key("app"));
@@ -1285,7 +1274,7 @@ mod tests {
         let service = WindowService::new(
             tracker.clone(),
             Arc::new(Ready::new()),
-            std::sync::mpsc::channel().0,
+            std::sync::mpsc::sync_channel(super::super::ACTION_QUEUE_CAPACITY).0,
         );
         assert!(service.apply_window_event("app", "unfocused"));
         assert!(tracker.lock().unwrap().unfocused.contains_key("app"));
@@ -1301,7 +1290,8 @@ mod tests {
     #[test]
     fn a_closed_window_event_asks_the_agent_to_drop_window_permission() {
         let tracker = Arc::new(Mutex::new(Tracker::default()));
-        let (actions, requests) = std::sync::mpsc::channel();
+        let (actions, requests) =
+            std::sync::mpsc::sync_channel(super::super::ACTION_QUEUE_CAPACITY);
         let service = WindowService::new(tracker, Arc::new(Ready::new()), actions);
         assert!(service.apply_window_event("app", "closed"));
         assert!(matches!(

@@ -56,6 +56,9 @@ struct Counts {
 struct Inner {
     entries: VecDeque<Launch>,
     counts: HashMap<u32, Counts>,
+    // A pending group can outlive its display row. Keep its owner until the
+    // first answer so the lifetime totals survive eviction and duplicate replies.
+    pending: HashMap<u64, u32>,
 }
 
 #[derive(Default)]
@@ -83,7 +86,9 @@ impl Log {
         let counts = inner.counts.entry(uid).or_default();
         counts.requests += 1;
         match kind {
-            ASKED => {}
+            ASKED => {
+                inner.pending.insert(id, uid);
+            }
             GRANTED | TICKET | INSTANCE | AUTOSTART | SELF_EXEC => counts.allowed += 1,
             _ => counts.denied += 1,
         }
@@ -119,17 +124,14 @@ impl Log {
     /// request the loop already dropped must be.
     pub fn resolve(&self, id: u64, kind: &'static str) {
         let mut inner = self.inner.lock().unwrap();
-        let Some(entry) = inner
-            .entries
-            .iter_mut()
-            .find(|e| e.id == id && e.kind == ASKED)
-        else {
+        let Some(uid) = inner.pending.remove(&id) else {
             return;
         };
-        entry.kind = kind;
-        entry.until = 0;
-        entry.resolved_at = now_ms();
-        let uid = entry.uid;
+        if let Some(entry) = inner.entries.iter_mut().find(|e| e.id == id) {
+            entry.kind = kind;
+            entry.until = 0;
+            entry.resolved_at = now_ms();
+        }
         if let Some(counts) = inner.counts.get_mut(&uid) {
             match kind {
                 GRANTED => counts.allowed += 1,
@@ -236,6 +238,24 @@ mod tests {
         assert_eq!((requests, allowed, denied), (1, 1, 0));
         assert_eq!(log.recent(2000).1, 1);
         assert_eq!(log.recent(3000).0.len(), 0);
+    }
+
+    #[test]
+    fn an_answer_after_row_eviction_still_counts_once() {
+        let log = Log::default();
+        log.record(1000, 1, "waiting", 42, ASKED, 0);
+        for id in 2..=KEEP as u64 + 1 {
+            log.record(1000, id, "busy", 43, TICKET, 0);
+        }
+        log.resolve(1, DENIED);
+        log.resolve(1, GRANTED);
+        let (rows, requests, allowed, denied) = log.recent(1000);
+        assert_eq!(rows.len(), KEEP);
+        assert_eq!(rows[0].0, 2);
+        assert_eq!(
+            (requests, allowed, denied),
+            (KEEP as u64 + 1, KEEP as u64, 1)
+        );
     }
 
     #[test]

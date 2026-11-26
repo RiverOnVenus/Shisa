@@ -12,6 +12,9 @@ const { calls, languageWrites, state } = vi.hoisted(() => ({
     agentOnline: true,
     daemonOnline: true,
     diagFails: false,
+    pendingDiagnostics: null,
+    agentReads: [],
+    listReads: [],
     diagnostics: [
       "0.1.1",
       1,
@@ -50,6 +53,7 @@ vi.mock("@tauri-apps/api/core", () => ({
           ["org.kde.dolphin", "Dolphin", "dolphin"],
         ];
       case "list_apps":
+        if (state.listReads.length) return state.listReads.shift();
         return [["org.kde.kate", true, ["/usr/bin/kate"], ["/usr/bin/kate"]]];
       case "app_config":
         return args.appId === "org.kde.dolphin"
@@ -64,9 +68,11 @@ vi.mock("@tauri-apps/api/core", () => ({
       case "recent_launches":
         return [[], 0, 0, 0];
       case "diagnostics":
+        if (state.pendingDiagnostics) return state.pendingDiagnostics;
         if (state.diagFails) throw "daemon unavailable";
         return state.diagnostics;
       case "agent_status":
+        if (state.agentReads.length) return state.agentReads.shift();
         return state.agentOnline;
       case "set_ui_language":
         languageWrites.push(args.language);
@@ -100,6 +106,9 @@ beforeEach(() => {
   state.agentOnline = true;
   state.daemonOnline = true;
   state.diagFails = false;
+  state.pendingDiagnostics = null;
+  state.agentReads = [];
+  state.listReads = [];
   state.diagnostics = [
     "0.1.1",
     1,
@@ -197,6 +206,47 @@ test("selecting an app loads its settings", async () => {
     expect(calls).toContainEqual(["app_config", { appId: "org.kde.dolphin" }]),
   );
   expect(document.querySelector(".crumb b").textContent).toBe("Dolphin");
+});
+
+test("finishing startup keeps the page the user opened", async () => {
+  let finish;
+  state.pendingDiagnostics = new Promise((resolve) => { finish = resolve; });
+  await render();
+  document.querySelector(".side-foot button.row").click();
+  finish(state.diagnostics);
+  await vi.waitFor(() => expect(document.body.textContent).toContain("Default grace period"));
+  expect(calls.filter(([command]) => command === "app_config")).toEqual([]);
+});
+
+test("an older failed ticket poll cannot mark a responsive daemon offline", async () => {
+  await render();
+  let failFirst;
+  state.listReads.push(new Promise((_, reject) => { failFirst = reject; }));
+  window.dispatchEvent(new Event("focus"));
+  window.dispatchEvent(new Event("focus"));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  failFirst("old read failed");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(document.querySelector(".side-foot .gw").textContent).toContain("Running normally");
+});
+
+test("an older failed agent check cannot mark a running agent offline", async () => {
+  await render();
+  await vi.waitFor(() =>
+    expect(document.querySelector(".side-foot .gw").textContent).toContain("Running normally"),
+  );
+  let failFirst;
+  state.agentReads.push(
+    new Promise((_, reject) => {
+      failFirst = reject;
+    }),
+  );
+  window.dispatchEvent(new Event("focus"));
+  window.dispatchEvent(new Event("focus"));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  failFirst("old agent check failed");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(document.querySelector(".side-foot .gw").textContent).toContain("Running normally");
 });
 
 test("the settings search is case-insensitive and covers the language card", async () => {

@@ -98,8 +98,8 @@ sudo stat -c '%a' "$W/etc" | grep -q '^700$' && say "  ok    config directory mo
 sudo grep -q "id = \"$APP\"" "$W/etc/$ME.toml" && sudo grep -q '/usr/bin/kwrite' "$W/etc/$ME.toml" \
   && say "  ok    app and its path are in the file" \
   || { say "  FAIL  file content unexpected"; sudo cat "$W/etc/$ME.toml" | tee -a "$OUT"; FAILED=$((FAILED + 1)); }
-tail -4 "$OUT" | grep -q "lock *$APP" && say "  ok    approving the change left no ticket" \
-  || { grep -q "lock *$APP" "$W/status.txt" && say "  ok    approving the change left no ticket" \
+tail -4 "$OUT" | grep -q "locked *$APP" && say "  ok    approving the change left no ticket" \
+  || { grep -q "locked *$APP" "$W/status.txt" && say "  ok    approving the change left no ticket" \
        || { say "  FAIL  the app is unlocked after a settings change"; FAILED=$((FAILED + 1)); }; }
 
 say "== T4 a ticket does not approve a waiting change =="

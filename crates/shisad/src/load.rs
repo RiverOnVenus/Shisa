@@ -9,8 +9,8 @@ use shisa_core::config::{
 };
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io::{self, Read, Write};
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::io::{self, Write};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tracing::{error, info, warn};
@@ -71,26 +71,7 @@ fn read_config_with(
     path: &Path,
     owner: fn(&Path, &fs::Metadata) -> io::Result<()>,
 ) -> io::Result<String> {
-    let file = fs::File::open(path)?;
-    let meta = file.metadata()?;
-    if !meta.is_file() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "not a regular file",
-        ));
-    }
-    owner(path, &meta)?;
-    // Truncating silently could cut at a line boundary and leave a smaller
-    // but valid config, which would shrink protection without any error.
-    if meta.len() > MAX_CONFIG_SIZE {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("config larger than {MAX_CONFIG_SIZE} bytes"),
-        ));
-    }
-    let mut text = String::new();
-    file.take(MAX_CONFIG_SIZE).read_to_string(&mut text)?;
-    Ok(text)
+    shisa_core::files::read_small_text(path, MAX_CONFIG_SIZE, |_, meta| owner(path, meta))
 }
 
 fn uid_of(name: &str) -> Option<u32> {
@@ -145,6 +126,12 @@ fn write_user_with(
     let text = config
         .to_toml()
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+    if text.len() as u64 > MAX_CONFIG_SIZE {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("config larger than {MAX_CONFIG_SIZE} bytes"),
+        ));
+    }
     let path = dir.join(&file);
     let temp = dir.join(format!(".{file}.new"));
     // A temp file left by a crash is removed before the retry, which also
@@ -162,6 +149,7 @@ fn write_user_with(
     let written = fs::OpenOptions::new()
         .write(true)
         .create_new(true)
+        .mode(0o600)
         .open(&temp)
         .and_then(|mut file| {
             file.write_all(text.as_bytes())?;
@@ -867,6 +855,23 @@ mod tests {
         );
         assert_eq!(fs::metadata(&dir).unwrap().mode() & 0o777, 0o700);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_oversized_write_preserves_the_readable_policy() {
+        let (dir, name, _) = config_dir("oversized-write");
+        let original = sample();
+        write_user_with(&dir, &name, &original, permissive).unwrap();
+        let mut large = original.clone();
+        large.apps[0].paths = vec![PathBuf::from(format!(
+            "/{}",
+            "x".repeat(MAX_CONFIG_SIZE as usize)
+        ))];
+        let result = write_user_with(&dir, &name, &large, permissive);
+        let saved = read_config_with(&dir.join(format!("{name}.toml")), permissive);
+        fs::remove_dir_all(dir).unwrap();
+        assert!(result.is_err());
+        assert_eq!(UserConfig::parse(&saved.unwrap()).unwrap(), original);
     }
 
     #[test]

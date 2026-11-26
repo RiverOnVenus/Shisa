@@ -8,8 +8,8 @@
 
 use serde::Deserialize;
 use std::fs;
-use std::io::{self, Read, Write};
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+use std::io::{self, Write};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 /// The interface languages Shisa ships with.
@@ -93,27 +93,17 @@ pub fn saved_as(config_home: &Path, owner: Option<u32>) -> Option<Language> {
 /// shisad calls this while it represents the account, so the same limits as
 /// the desktop-file reader apply.
 fn read_preference(path: &Path, owner: Option<u32>) -> io::Result<String> {
-    let file = fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NONBLOCK | libc::O_NOCTTY)
-        .open(path)?;
-    let meta = file.metadata()?;
-    if !meta.is_file() || meta.len() > MAX_UI_CONFIG {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "not a small regular file",
-        ));
-    }
-    if let Some(uid) = owner
-        && meta.uid() != uid
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "not owned by the account",
-        ));
-    }
-    let mut text = String::new();
-    file.take(MAX_UI_CONFIG).read_to_string(&mut text)?;
+    let text = crate::files::read_small_text(path, MAX_UI_CONFIG, |_, meta| {
+        if let Some(uid) = owner
+            && meta.uid() != uid
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "not owned by the account",
+            ));
+        }
+        Ok(())
+    })?;
     if text.contains('\0') {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,

@@ -6,10 +6,12 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io::{self, Read};
+use std::io;
 use std::os::fd::AsRawFd;
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use crate::i18n::Language;
 
@@ -132,33 +134,23 @@ impl Env {
     /// there may point anywhere, and root must not read on the account's
     /// behalf what the account could not read itself.
     fn read(&self, path: &Path) -> io::Result<String> {
-        let file = fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NONBLOCK | libc::O_NOCTTY)
-            .open(path)?;
-        let meta = file.metadata()?;
-        if !meta.is_file() || meta.len() > MAX_FILE_SIZE {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "not a small regular file",
-            ));
-        }
-        if let Some((uid, _home)) = &self.owner {
-            // The raw path says little: a link in a system directory can
-            // point anywhere, and a link anywhere can point into one. The
-            // descriptor is what root will read, so judge the path of the
-            // opened object. If that path cannot be read, fall back to the
-            // owner check instead of trusting the raw path.
-            let resolved = fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd())).ok();
-            if !may_read_as_owner(*uid, meta.uid(), resolved.as_deref()) {
-                return Err(io::Error::new(
-                    io::ErrorKind::PermissionDenied,
-                    "not owned by the account",
-                ));
+        let text = crate::files::read_small_text(path, MAX_FILE_SIZE, |file, meta| {
+            if let Some((uid, _home)) = &self.owner {
+                // The raw path says little: a link in a system directory can
+                // point anywhere, and a link anywhere can point into one. The
+                // descriptor is what root will read, so judge the path of the
+                // opened object. If that path cannot be read, fall back to the
+                // owner check instead of trusting the raw path.
+                let resolved = fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd())).ok();
+                if !may_read_as_owner(*uid, meta.uid(), resolved.as_deref()) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        "not owned by the account",
+                    ));
+                }
             }
-        }
-        let mut text = String::new();
-        file.take(MAX_FILE_SIZE).read_to_string(&mut text)?;
+            Ok(())
+        })?;
         // A NUL cannot travel in a D-Bus string, and a file with one is not a
         // desktop file the daemon should trust.
         if text.contains('\0') {
@@ -783,66 +775,149 @@ impl Unsuitable {
     }
 }
 
-/// Programs that must not become a protected path, and why.
-pub fn unsuitable(path: &Path) -> Option<Unsuitable> {
-    const OWN: &[&str] = &["shisa", "shisad", "shisa-agent", "shisa-settings"];
-    const GENERAL: &[&str] = &[
-        "sh",
-        "bash",
-        "dash",
-        "ash",
-        "zsh",
-        "fish",
-        "ksh",
-        "csh",
-        "tcsh",
-        "rbash",
-        "busybox",
-        "env",
-        "sudo",
-        "pkexec",
-        "su",
-        "login",
-        "expect",
-        "systemd",
-        "systemd-executor",
-        "systemd-run",
-        "dbus-daemon",
-        "dbus-broker",
-        "dbus-broker-launch",
-        "python",
-        "perl",
-        "ruby",
-        "node",
-        "deno",
-        "bun",
-        "lua",
-        "luajit",
-        "php",
-        "tclsh",
-        "wish",
-        "java",
-        "flatpak",
-        "bwrap",
-        "xdg-open",
-        "kioclient",
-        "kwin_wayland",
-        "plasmashell",
-        "ld-linux-x86-64.so.2",
-        "pkttyagent",
-        "polkit-kde-authentication-agent-1",
-    ];
-    let real = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    let name = real.file_name()?.to_str()?;
+const OWN_PROGRAMS: &[&str] = &["shisa", "shisad", "shisa-agent", "shisa-settings"];
+const SYSTEM_PROGRAMS: &[&str] = &[
+    "sh",
+    "bash",
+    "dash",
+    "ash",
+    "zsh",
+    "fish",
+    "ksh",
+    "csh",
+    "tcsh",
+    "rbash",
+    "busybox",
+    "env",
+    "sudo",
+    "pkexec",
+    "su",
+    "login",
+    "expect",
+    "systemd",
+    "systemd-executor",
+    "systemd-run",
+    "dbus-daemon",
+    "dbus-broker",
+    "dbus-broker-launch",
+    "python",
+    "perl",
+    "ruby",
+    "node",
+    "nodejs",
+    "deno",
+    "bun",
+    "lua",
+    "luajit",
+    "php",
+    "tclsh",
+    "wish",
+    "java",
+    "flatpak",
+    "bwrap",
+    "xdg-open",
+    "kioclient",
+    "kwin_wayland",
+    "plasmashell",
+    "ld-linux-x86-64.so.2",
+    "pkttyagent",
+    "polkit-kde-authentication-agent-1",
+];
+const PROGRAM_DIRS: &[&str] = &[
+    "/usr/bin",
+    "/usr/sbin",
+    "/usr/lib",
+    "/usr/lib64",
+    "/usr/libexec",
+    "/usr/local/bin",
+    "/usr/local/sbin",
+    "/bin",
+    "/sbin",
+    "/lib",
+    "/lib64",
+];
+
+fn program_class(name: &str) -> Option<Unsuitable> {
     // python3, python3.13 and the like count as their base name.
     let base = name.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.');
-    if OWN.contains(&name) {
+    if OWN_PROGRAMS.contains(&name) {
         Some(Unsuitable::OwnProgram)
-    } else if GENERAL.contains(&name) || GENERAL.contains(&base) {
+    } else if SYSTEM_PROGRAMS.contains(&name) || SYSTEM_PROGRAMS.contains(&base) {
         Some(Unsuitable::SystemProgram)
     } else {
         None
     }
+}
+
+type Inode = (u64, u64);
+
+/// Known dangerous programs by inode. A hard link with an innocuous name has
+/// the same permission and session impact as the program it names.
+struct ProgramIndex {
+    built: Instant,
+    kinds: HashMap<Inode, Unsuitable>,
+}
+
+fn scan_programs() -> HashMap<Inode, Unsuitable> {
+    let mut found = HashMap::new();
+    for directory in PROGRAM_DIRS {
+        let Ok(entries) = fs::read_dir(directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
+            let Some(kind) = program_class(&name) else {
+                continue;
+            };
+            let Ok(meta) = entry.metadata() else {
+                continue;
+            };
+            if !meta.is_file() {
+                continue;
+            }
+            let inode = (meta.dev(), meta.ino());
+            match found.get_mut(&inode) {
+                Some(previous) if kind == Unsuitable::OwnProgram => *previous = kind,
+                Some(_) => {}
+                None => {
+                    found.insert(inode, kind);
+                }
+            }
+        }
+    }
+    found
+}
+
+fn program_kind(inode: Inode) -> Option<Unsuitable> {
+    const INDEX_AGE: Duration = Duration::from_secs(30);
+    static INODES: OnceLock<Mutex<ProgramIndex>> = OnceLock::new();
+    let index = INODES.get_or_init(|| {
+        let kinds = scan_programs();
+        Mutex::new(ProgramIndex {
+            built: Instant::now(),
+            kinds,
+        })
+    });
+    let mut index = index.lock().unwrap();
+    if index.built.elapsed() >= INDEX_AGE {
+        index.kinds = scan_programs();
+        index.built = Instant::now();
+    }
+    index.kinds.get(&inode).copied()
+}
+
+/// Programs that must not become a protected path, and why.
+pub fn unsuitable(path: &Path) -> Option<Unsuitable> {
+    if let Ok(meta) = fs::metadata(path)
+        && let Some(kind) = program_kind((meta.dev(), meta.ino()))
+    {
+        return Some(kind);
+    }
+    let real = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let name = real.file_name()?.to_str()?;
+    program_class(name)
 }
 
 /// `Exec=env VAR=value program ...` starts the program, not env. Drop the
@@ -1439,6 +1514,24 @@ mod tests {
         assert!(unsuitable(Path::new("/usr/bin/lua")).is_some());
         assert!(unsuitable(Path::new("/usr/bin/kwrite")).is_none());
         assert!(unsuitable(Path::new("/opt/firefox-nightly/firefox")).is_none());
+    }
+
+    #[test]
+    fn a_renamed_hard_link_to_a_shell_is_unsuitable() {
+        let dir = std::env::temp_dir().join(format!("shisa-hard-link-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let link = dir.join("innocent-editor");
+        if let Err(error) = fs::hard_link("/usr/bin/bash", &link) {
+            // Protected hard links refuse a link to a system program the
+            // account does not own, so some test systems cannot exercise the
+            // inode path. Print a skip instead of failing a different check.
+            eprintln!("skip hard link: {error}");
+            let _ = fs::remove_dir_all(dir);
+            return;
+        }
+        assert_eq!(unsuitable(&link), Some(Unsuitable::SystemProgram));
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]

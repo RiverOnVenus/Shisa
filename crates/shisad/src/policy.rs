@@ -209,6 +209,10 @@ pub struct State {
     /// The same for one app, so locking one app does not refuse an
     /// authentication that is waiting for another.
     app_revocations: HashMap<Key, u64>,
+    /// Settings authorization is process-scoped, independently of whether a
+    /// screen lock clears launch tickets. A lock must still refuse a settings
+    /// change that began before the desktop changed hands.
+    settings_revocations: HashMap<u32, u64>,
 }
 
 impl State {
@@ -243,6 +247,14 @@ impl State {
                 .copied()
                 .unwrap_or(0),
         )
+    }
+
+    pub fn settings_revocation(&self, uid: u32) -> u64 {
+        self.settings_revocations.get(&uid).copied().unwrap_or(0)
+    }
+
+    pub fn invalidate_settings(&mut self, uid: u32) {
+        *self.settings_revocations.entry(uid).or_insert(0) += 1;
     }
 
     /// Name and wait limit of a user that has a policy.
@@ -431,6 +443,7 @@ impl State {
     /// The screen of this user locked. Drops the tickets unless the user
     /// turned `clear_on_screen_lock` off. Returns the apps that had one.
     pub fn screen_locked(&mut self, uid: u32) -> Vec<String> {
+        self.invalidate_settings(uid);
         if self
             .policy
             .users
@@ -1460,14 +1473,21 @@ mod tests {
         let now = Instant::now();
         let mut s = state();
         s.grant(UID, "app", now);
+        let settings = s.settings_revocation(UID);
         assert_eq!(s.screen_locked(UID), vec!["app".to_string()]);
         assert!(!s.has_ticket(UID, "app", now));
+        assert!(s.settings_revocation(UID) > settings);
 
         let mut policy = s.policy().clone();
         policy.users.get_mut(&UID).unwrap().clear_on_lock = false;
         s.set_policy(policy);
         s.grant(UID, "app", now);
+        let settings = s.settings_revocation(UID);
         assert!(s.screen_locked(UID).is_empty());
         assert!(s.has_ticket(UID, "app", now));
+        assert!(
+            s.settings_revocation(UID) > settings,
+            "a screen lock must invalidate settings authorization even when tickets stay"
+        );
     }
 }

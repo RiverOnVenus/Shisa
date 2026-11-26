@@ -84,20 +84,50 @@ mod appearance {
 /// page paints itself from the latest answer, so a switch of Plasma's colours
 /// reaches an open window.
 async fn follow_appearance(window: tauri::WebviewWindow) {
-    use futures_util::StreamExt;
+    use futures_util::future::{Either, select};
+    use futures_util::{StreamExt, pin_mut};
+    let (closed_tx, mut closed) = futures_channel::oneshot::channel();
+    let closed_tx = Arc::new(Mutex::new(Some(closed_tx)));
+    window.on_window_event({
+        let closed_tx = closed_tx.clone();
+        move |event| {
+            if matches!(event, tauri::WindowEvent::Destroyed)
+                && let Some(tx) = closed_tx.lock().unwrap().take()
+            {
+                let _ = tx.send(());
+            }
+        }
+    });
+    drop(closed_tx);
     let Ok(conn) = zbus::Connection::session().await else {
         return;
     };
     let Ok(settings) = appearance::SettingsProxy::new(&conn).await else {
         return;
     };
-    if let Ok(value) = settings.read(appearance::NAMESPACE, appearance::KEY).await {
+    let first = settings.read(appearance::NAMESPACE, appearance::KEY);
+    pin_mut!(first);
+    let first = match select(first, &mut closed).await {
+        Either::Left((Ok(value), _)) => Some(value),
+        Either::Left((Err(_), _)) => None,
+        Either::Right(_) => return,
+    };
+    if let Some(value) = first {
         let _ = window.emit("color_scheme", appearance::scheme(value));
     }
-    let Ok(mut changes) = settings.receive_setting_changed().await else {
-        return;
+    let changes = settings.receive_setting_changed();
+    pin_mut!(changes);
+    let mut changes = match select(changes, &mut closed).await {
+        Either::Left((Ok(changes), _)) => changes,
+        Either::Left((Err(_), _)) | Either::Right(_) => return,
     };
-    while let Some(signal) = changes.next().await {
+    loop {
+        let next = changes.next();
+        pin_mut!(next);
+        let signal = match select(next, &mut closed).await {
+            Either::Left((Some(signal), _)) => signal,
+            Either::Left((None, _)) | Either::Right(_) => break,
+        };
         let Ok(args) = signal.args() else {
             continue;
         };
@@ -538,10 +568,23 @@ async fn watch_lock(app: &tauri::AppHandle, bus: &Bus) -> Result<bool, String> {
     let Some(current) = name_owner(&conn, BUS_NAME).await else {
         return Ok(false);
     };
-    manager.register_settings().await.map_err(err)?;
-    // Subscribe to the settings signal before the owner is checked again, so
-    // a restarted daemon that does send a lock still reaches this window.
+    // A lock between the generation snapshot and registration has no
+    // destination to signal. The second snapshot catches that gap. An older
+    // daemon has no generation method, so its registration keeps the previous
+    // behavior instead of making the settings window unusable after upgrade.
+    let generation = match manager.settings_generation().await {
+        Ok(generation) => Some(generation),
+        Err(error) if unavailable(&error) => None,
+        Err(error) => return Err(err(error)),
+    };
     let mut locked = manager.receive_settings_locked().await.map_err(err)?;
+    manager.register_settings().await.map_err(err)?;
+    if let Some(generation) = generation
+        && manager.settings_generation().await.map_err(err)? != generation
+    {
+        app.exit(0);
+        return Ok(true);
+    }
     // Close the race between the owner lookup and the registration. A
     // registration that reached the previous instance is not useful. A
     // failed lookup is treated the same way: the window cannot prove which
@@ -840,11 +883,7 @@ fn data_url(path: &std::path::Path) -> Option<String> {
         Some("xpm") => "image/x-xpixmap",
         _ => return None,
     };
-    let meta = std::fs::metadata(path).ok()?;
-    if !meta.is_file() || meta.len() > MAX_ICON_BYTES {
-        return None;
-    }
-    let bytes = std::fs::read(path).ok()?;
+    let bytes = shisa_core::files::read_small_file(path, MAX_ICON_BYTES, |_, _| Ok(())).ok()?;
     let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
     Some(format!("data:{mime};base64,{encoded}"))
 }
