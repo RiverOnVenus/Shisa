@@ -45,7 +45,41 @@ pub enum Msg {
     SettingsLocked { uid: u32 },
 }
 
-type Waiting = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<(), String>>>>>;
+struct Waiter {
+    uid: u32,
+    result: oneshot::Sender<Result<(), String>>,
+}
+
+type Waiting = Arc<Mutex<HashMap<u64, Waiter>>>;
+
+/// Authentication requests that may be queued or waiting for an answer.
+/// Enforcing this before an event is queued keeps a local account from
+/// growing the root daemon's wait table and event queue without bound.
+pub const MAX_WAITING_AUTH: usize = 32;
+pub const MAX_WAITING_AUTH_PER_USER: usize = 4;
+
+fn register_waiter(
+    waiting: &Waiting,
+    id: u64,
+    uid: u32,
+    result: oneshot::Sender<Result<(), String>>,
+) -> bool {
+    let mut state = waiting.lock().unwrap();
+    let mine = state.values().filter(|waiter| waiter.uid == uid).count();
+    if state.len() >= MAX_WAITING_AUTH || mine >= MAX_WAITING_AUTH_PER_USER {
+        return false;
+    }
+    state.insert(id, Waiter { uid, result });
+    true
+}
+
+fn take_waiter(waiting: &Waiting, id: u64) -> Option<oneshot::Sender<Result<(), String>>> {
+    waiting
+        .lock()
+        .unwrap()
+        .remove(&id)
+        .map(|waiter| waiter.result)
+}
 
 /// Settings windows per user, and the windows a lock has already invalidated.
 ///
@@ -226,7 +260,7 @@ fn run(
                 }
             }
             Msg::ChangeDone { id, result } => {
-                if let Some(tx) = waiting.lock().unwrap().remove(&id) {
+                if let Some(tx) = take_waiter(&waiting, id) {
                     let _ = tx.send(result);
                 }
             }
@@ -369,7 +403,9 @@ impl ManagerIface {
             let cleared = {
                 let mut state = self.state.lock().unwrap();
                 if global {
-                    state.clear_tickets(uid)
+                    let cleared = state.clear_tickets(uid);
+                    state.invalidate_settings(uid);
+                    cleared
                 } else {
                     state.lock_app(uid, app_id).into_iter().collect()
                 }
@@ -490,7 +526,11 @@ impl ManagerIface {
         };
         let id = self.events.next_id();
         let (tx, rx) = oneshot::channel();
-        self.waiting.lock().unwrap().insert(id, tx);
+        if !register_waiter(&self.waiting, id, uid, tx) {
+            return Err(zbus::fdo::Error::Failed(
+                "too many pending authentication requests".into(),
+            ));
+        }
         self.events.push(Event::UnlockRequest {
             id,
             uid,
@@ -602,6 +642,18 @@ impl ManagerIface {
     ) -> zbus::fdo::Result<(u64, bool, u64)> {
         let uid = caller_uid(conn, &hdr).await?;
         Ok(self.state.lock().unwrap().global_config(uid))
+    }
+
+    /// The generation a settings window records around its signal
+    /// subscription and registration. A lock in that gap has no registered
+    /// destination to signal, but changes the generation.
+    async fn settings_generation(
+        &self,
+        #[zbus(header)] hdr: Header<'_>,
+        #[zbus(connection)] conn: &AsyncConnection,
+    ) -> zbus::fdo::Result<u64> {
+        let uid = caller_uid(conn, &hdr).await?;
+        Ok(self.state.lock().unwrap().settings_revocation(uid))
     }
 
     /// Mark an app as protected or not. The change only happens after the
@@ -752,18 +804,23 @@ impl ManagerIface {
         // The lock generation is read under the same mutex a lock takes, so
         // a lock that starts after this point makes the answer fail at
         // commit time instead of applying a change the user revoked.
-        let revocation = {
+        let (revocation, settings_revocation) = {
             let _commit = self.commit.lock().unwrap();
             if self.settings.lock().unwrap().is_locked(uid, &sender) {
                 return Err(zbus::fdo::Error::Failed(
                     "settings locked, reopen Shisa Settings".into(),
                 ));
             }
-            self.state.lock().unwrap().revocation(uid, app)
+            let state = self.state.lock().unwrap();
+            (state.revocation(uid, app), state.settings_revocation(uid))
         };
         let id = self.events.next_id();
         let (tx, rx) = oneshot::channel();
-        self.waiting.lock().unwrap().insert(id, tx);
+        if !register_waiter(&self.waiting, id, uid, tx) {
+            return Err(zbus::fdo::Error::Failed(
+                "too many pending authentication requests".into(),
+            ));
+        }
         let request = Event::ChangeRequest {
             id,
             uid,
@@ -771,6 +828,7 @@ impl ManagerIface {
             change,
             sender,
             revocation,
+            settings_revocation,
         };
         self.events.push(request);
         match rx.await {
@@ -903,6 +961,33 @@ mod tests {
         let state = limits.lock().unwrap();
         assert_eq!(state.total, 0);
         assert!(state.per_uid.is_empty());
+    }
+
+    #[test]
+    fn authentication_waits_are_capped_before_they_are_queued() {
+        let per_user: Waiting = Arc::default();
+        for id in 0..MAX_WAITING_AUTH_PER_USER as u64 {
+            let (tx, _rx) = oneshot::channel();
+            assert!(register_waiter(&per_user, id, 7, tx));
+        }
+        let (tx, _rx) = oneshot::channel();
+        assert!(!register_waiter(&per_user, 10, 7, tx));
+
+        let waiting: Waiting = Arc::default();
+        for id in 0..MAX_WAITING_AUTH as u64 {
+            let uid = (id as u32) / MAX_WAITING_AUTH_PER_USER as u32;
+            let (tx, _rx) = oneshot::channel();
+            assert!(register_waiter(&waiting, id, uid, tx));
+        }
+
+        let (tx, _receiver) = oneshot::channel();
+        assert!(!register_waiter(&waiting, 100, 0, tx));
+
+        let removed = take_waiter(&waiting, 0).expect("first request");
+        drop(removed);
+        assert!(take_waiter(&waiting, 0).is_none());
+        let (tx, _rx) = oneshot::channel();
+        assert!(register_waiter(&waiting, 101, 0, tx));
     }
 
     #[test]

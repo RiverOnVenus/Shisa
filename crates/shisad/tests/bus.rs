@@ -143,6 +143,7 @@ fn interface_and_settings_changes() {
     });
     let conn = Connection::system().unwrap();
     let manager = ManagerProxyBlocking::new(&conn).unwrap();
+    assert_eq!(manager.settings_generation().unwrap(), 0);
     let apps = manager.list_apps().unwrap();
     assert_eq!(
         apps,
@@ -346,8 +347,14 @@ fn a_lock_starts_a_new_generation_and_a_single_app_lock_stays_scoped() {
 
     manager.lock("").unwrap();
     let global = state.lock().unwrap().revocation(uid(), "app");
+    let settings = state.lock().unwrap().settings_revocation(uid());
     assert_ne!(after.0, global.0, "a global lock must bump the user");
     assert_eq!(after.1, global.1, "it must not bump the app generation");
+    assert!(
+        settings > 0,
+        "a global lock must invalidate settings changes"
+    );
+    assert_eq!(manager.settings_generation().unwrap(), settings);
 }
 
 #[test]

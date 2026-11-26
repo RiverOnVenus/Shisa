@@ -12,7 +12,7 @@
 //!
 //! Decisions are logged at debug level only (docs/subsystems/configuration.md).
 
-use bus::Msg;
+use bus::{MAX_WAITING_AUTH, MAX_WAITING_AUTH_PER_USER, Msg};
 use events::{Event, Events};
 use gate::{Gate, Request};
 use load::Marks;
@@ -43,12 +43,6 @@ const REVALIDATE: Duration = Duration::from_secs(30);
 const CONFIG_RETRY_MAX: Duration = Duration::from_secs(30 * 60);
 /// Wait limit when the user's policy has none.
 const DEFAULT_WAIT: Duration = policy::DEFAULT_PROMPT_TIMEOUT;
-/// A local user can ask for settings changes and unlocks as often as the bus
-/// accepts them, and every check owns a thread and a bus connection. These
-/// caps keep that from growing the root process without bound. Launch
-/// requests are already one per protected app, so they are not counted here.
-const MAX_WAITING_AUTH: usize = 32;
-const MAX_WAITING_AUTH_PER_USER: usize = 4;
 /// The most held execs one app and one user may have waiting at once. Each
 /// waiting caller keeps a fanotify event descriptor in the daemon. A user can
 /// start authenticated launches as fast as the kernel accepts them, and
@@ -135,6 +129,8 @@ enum Job {
         change: Change,
         /// The lock generations the request started under.
         revocation: (u64, u64),
+        /// The settings authorization generation that must still be current.
+        settings_revocation: u64,
     },
 }
 
@@ -147,6 +143,8 @@ struct PendingChange {
     deadline: Instant,
     /// The lock generations this request started under.
     revocation: (u64, u64),
+    /// The settings authorization generation this request started under.
+    settings_revocation: u64,
 }
 
 /// An unlock request held until the user authenticates.
@@ -160,9 +158,8 @@ struct PendingUnlock {
 
 /// Read, modify and write one user's config, then reload the policy. Runs on
 /// the reload thread because it does file and inode work.
-// The five pieces of reload-thread state are threaded through together on
-// purpose: the thread owns them, and bundling them would not make this
-// clearer for one caller.
+// The reload thread owns these pieces together. Bundling them only for this
+// one caller would not make the state flow clearer.
 #[allow(clippy::too_many_arguments)]
 fn apply_change(
     gate: &Gate,
@@ -175,6 +172,7 @@ fn apply_change(
     app: &str,
     change: &Change,
     revocation: (u64, u64),
+    settings_revocation: u64,
 ) -> Result<(), String> {
     let name = shisa_core::users::name(uid).ok_or("unknown user")?;
     let mut config = load::read_user(dir, &name)?;
@@ -200,8 +198,13 @@ fn apply_change(
     // mutex because they can be slow and do not change what is protected.
     {
         let _commit = commit.lock().unwrap();
-        if state.lock().unwrap().revocation(uid, app) != revocation {
-            return Err("locked before the change was applied".to_string());
+        {
+            let state = state.lock().unwrap();
+            if state.revocation(uid, app) != revocation
+                || state.settings_revocation(uid) != settings_revocation
+            {
+                return Err("locked before the change was applied".to_string());
+            }
         }
         load::write_user(dir, &name, &config).map_err(|e| e.to_string())?;
     }
@@ -519,8 +522,9 @@ fn held_exec_crowded<'a>(held: impl Iterator<Item = (u32, &'a str)>, uid: u32, a
     for_app >= MAX_HELD_EXECS_PER_APP || for_user >= MAX_HELD_EXECS_PER_USER
 }
 
-/// More authentication boxes than the daemon will hold at once. Settings
-/// changes and unlocks draw from a shared budget per user and overall.
+/// The bus enforces this budget before queueing a request. Rechecking the
+/// accepted work here catches limits lowered while requests are in flight.
+/// Settings changes and unlocks draw from a shared budget per user and overall.
 fn auth_crowded(changes: &[PendingChange], unlocks: &[PendingUnlock], uid: u32) -> bool {
     let total = changes.len() + unlocks.len();
     let mine = changes.iter().filter(|c| c.uid == uid).count()
@@ -636,11 +640,21 @@ fn main() {
                         app,
                         change,
                         revocation,
+                        settings_revocation,
                     }) => {
                         info!(uid, %app, "applying a settings change");
                         let result = apply_change(
-                            &gate, &dir, &state, &commit, &mut marks, &diag, uid, &app, &change,
+                            &gate,
+                            &dir,
+                            &state,
+                            &commit,
+                            &mut marks,
+                            &diag,
+                            uid,
+                            &app,
+                            &change,
                             revocation,
+                            settings_revocation,
                         );
                         let applied = result.is_ok();
                         let _ = bus.send(Msg::ChangeDone { id, result });
@@ -819,6 +833,7 @@ fn main() {
                     change,
                     sender,
                     revocation,
+                    settings_revocation,
                 } => {
                     // Every change is authenticated on its own. A ticket
                     // lets an app start, it does not let settings change.
@@ -848,6 +863,7 @@ fn main() {
                         change,
                         deadline: deadline + Duration::from_secs(2),
                         revocation,
+                        settings_revocation,
                     });
                 }
                 Event::UnlockRequest {
@@ -897,6 +913,7 @@ fn main() {
                                     app: done.app,
                                     change: done.change,
                                     revocation: done.revocation,
+                                    settings_revocation: done.settings_revocation,
                                 };
                                 let _ = jobs.send(job);
                             }
@@ -1125,6 +1142,7 @@ mod tests {
                 change: Change::Grace(1),
                 deadline: Instant::now(),
                 revocation: (0, 0),
+                settings_revocation: 0,
             })
             .collect()
     }

@@ -5,8 +5,8 @@
 //! The Plasma lock screen sets `LockedHint` directly.
 //!
 //! logind announces every change with a signal, and each signal triggers one
-//! look at the sessions. A slow timer does the same in case a signal is ever
-//! missed, so a lost signal delays the clearing instead of preventing it.
+//! look at the sessions. A short timer does the same in case a signal is ever
+//! missed, including a lock and unlock that both fit between sweeps.
 
 use crate::bus::{Msg, Shared};
 use std::collections::{HashMap, HashSet};
@@ -21,9 +21,9 @@ use zbus::blocking::{Connection, MessageIterator, Proxy};
 use zbus::message::Type;
 use zbus::zvariant::OwnedObjectPath;
 
-/// Sweep interval while signals arrive, as a safety net.
-const FALLBACK: Duration = Duration::from_secs(30);
-/// Sweep interval when the signals could not be subscribed to.
+/// Signal-triggered sweeps handle the normal path. This short safety net also
+/// observes LockedHint directly, so a missed transient signal cannot hide a
+/// complete lock and unlock cycle.
 const POLL: Duration = Duration::from_secs(2);
 /// logind sends several signals for one change. Wait this long so they are
 /// handled by one sweep.
@@ -56,37 +56,40 @@ fn poll(state: Shared, notify: Sender<Msg>, commit: Arc<Mutex<()>>) {
         }
     };
     let (wake_tx, wake_rx) = mpsc::channel::<()>();
-    let subscribed = match signals(&conn) {
-        Ok(stream) => thread::Builder::new()
-            .name("logind-signals".into())
-            .spawn(move || {
-                for message in stream {
-                    if message.is_err() || wake_tx.send(()).is_err() {
-                        break;
+    match signals(&conn) {
+        Ok(stream) => {
+            if thread::Builder::new()
+                .name("logind-signals".into())
+                .spawn(move || {
+                    for message in stream {
+                        if message.is_err() || wake_tx.send(()).is_err() {
+                            break;
+                        }
                     }
-                }
-            })
-            .is_ok(),
+                })
+                .is_err()
+            {
+                warn!("logind: cannot start the signal thread, polling instead");
+            }
+        }
         Err(e) => {
             warn!("logind: cannot subscribe to signals, polling instead: {e}");
-            false
         }
-    };
-    let mut interval = if subscribed { FALLBACK } else { POLL };
+    }
     let mut seen = Sessions::new();
     loop {
         if let Err(e) = sweep(&conn, &state, &notify, &mut seen, &commit) {
             debug!("logind: {e}");
         }
-        match wake_rx.recv_timeout(interval) {
+        match wake_rx.recv_timeout(POLL) {
             Ok(()) => {
                 thread::sleep(SETTLE);
                 while wake_rx.try_recv().is_ok() {}
             }
             Err(RecvTimeoutError::Timeout) => {}
-            // The signal thread ended: fall back to polling.
+            // The signal thread ended. This arm keeps the polling loop moving
+            // and lets the sender's disconnect wake every subsequent receive.
             Err(RecvTimeoutError::Disconnected) => {
-                interval = POLL;
                 thread::sleep(POLL);
             }
         }
@@ -328,6 +331,11 @@ mod tests {
         assert_eq!(lock_change(&one_locked, &empty, 1), LockChange::None);
         assert_eq!(lock_change(&empty, &one_unlocked, 1), LockChange::None);
         assert_eq!(lock_change(&one_locked, &other_user, 1), LockChange::None);
+    }
+
+    #[test]
+    fn locked_hint_is_polled_at_least_every_two_seconds() {
+        assert!(POLL <= Duration::from_secs(2));
     }
 
     #[test]
