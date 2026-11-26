@@ -52,6 +52,48 @@ export const reasonText = (kind, t) => {
 };
 export const outcomeClass = (kind) => kinds[kind]?.[0] ?? "wait";
 
+// The lock result the restore panel and settings window show. A missing
+// result (an older agent, or a lock that did not ask for a check) is
+// unconfirmed, never a success. Unknown statuses from a newer agent are
+// treated the same way.
+export function lockNotice(result, t, nameOf = (id) => id) {
+  if (!result || result.status === "unconfirmed") {
+    return t("lock.notice.unconfirmed");
+  }
+  if (result.status === "no-window-layer") {
+    return t("lock.notice.noLayer");
+  }
+  if (result.status === "partial") {
+    const missed = result.missed ?? [];
+    if (missed.length === 0) return t("lock.notice.unconfirmed");
+    const shown = missed.slice(0, 3).map((item) => nameOf(item.app));
+    let apps = shown.join(t("lock.notice.separator"));
+    if (missed.length > shown.length) {
+      apps += t("lock.notice.more", { count: missed.length - shown.length });
+    }
+    return t("lock.notice.partial", {
+      hidden: result.hidden ?? 0,
+      matched: result.matched ?? 0,
+      count: result.matched ?? 0,
+      apps,
+    });
+  }
+  if (result.status !== "confirmed") {
+    return t("lock.notice.unconfirmed");
+  }
+  if (typeof result.matched !== "number") {
+    return t("lock.notice.unconfirmed");
+  }
+  if (!result.matched) return t("lock.notice.none");
+  const hidden = result.hidden ?? 0;
+  if (hidden < result.matched) return t("lock.notice.unconfirmed");
+  return t("lock.notice.confirmed", {
+    hidden,
+    matched: result.matched,
+    count: result.matched,
+  });
+}
+
 export function ago(at, now, t) {
   const s = Math.max(0, Math.round((now - at) / 1000));
   if (s < 5) return t("ago.justNow");

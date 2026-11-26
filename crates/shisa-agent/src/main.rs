@@ -9,11 +9,13 @@
 //! When shisad restarts or goes away the agent keeps running, marks itself
 //! offline and registers again.
 
+use futures_channel::oneshot;
 use ksni::blocking::{Handle, TrayMethods};
 use ksni::menu::{MenuItem, StandardItem};
 use ksni::{Category, Status, Tray};
 use shisa_core::dbus::{
-    AppRow, BUS_NAME, INTERFACE, ManagerProxyBlocking, WINDOW_BUS_NAME, WINDOW_PATH,
+    AppRow, BUS_NAME, INTERFACE, LOCK_CONFIRMED, LOCK_NO_LAYER, LOCK_PARTIAL, LOCK_UNCONFIRMED,
+    LockReport, ManagerProxyBlocking, WINDOW_BUS_NAME, WINDOW_PATH,
 };
 use shisa_core::i18n::{self, Language};
 use std::collections::HashMap;
@@ -34,10 +36,11 @@ mod window;
 use window::{NoReport, WindowReport};
 
 /// What a menu entry asks the worker thread to do.
-#[derive(Clone)]
 enum Action {
     LockAll,
     VerifyLock,
+    /// A caller needs the report for this check, not only the notification.
+    VerifyLockReport(oneshot::Sender<LockReport>),
     Unlock(String),
     RestoreIfTicketed(String),
     HiddenWindows((u64, u64), HashMap<String, u32>),
@@ -426,10 +429,10 @@ impl Tray for TrayState {
 
     fn menu(&self) -> Vec<MenuItem<Self>> {
         use ksni::menu::MenuItem::Separator;
-        let send = |action: Action| -> Box<dyn Fn(&mut TrayState) + Send> {
+        let send = |action: fn() -> Action| -> Box<dyn Fn(&mut TrayState) + Send> {
             let actions = self.actions.clone();
             Box::new(move |_this: &mut TrayState| {
-                let _ = actions.send(action.clone());
+                let _ = actions.send(action());
             })
         };
         // A disabled row that only says "Lock protected apps" leaves the
@@ -449,21 +452,21 @@ impl Tray for TrayState {
         vec![
             StandardItem {
                 label: text(self.language, "恢复窗口…", "Restore windows…").into(),
-                activate: send(Action::OpenRestore),
+                activate: send(|| Action::OpenRestore),
                 ..Default::default()
             }
             .into(),
             StandardItem {
                 label: lock_label.into(),
                 enabled: !self.offline && self.protected_count > 0,
-                activate: send(Action::LockAll),
+                activate: send(|| Action::LockAll),
                 ..Default::default()
             }
             .into(),
             Separator,
             StandardItem {
                 label: text(self.language, "打开设置", "Open settings").into(),
-                activate: send(Action::OpenSettings),
+                activate: send(|| Action::OpenSettings),
                 ..Default::default()
             }
             .into(),
@@ -867,7 +870,9 @@ fn action_loop(
     for action in rx {
         match action {
             Action::LockAll => match lock("") {
-                Ok(()) => verify_lock(gate, handle, dnd_hinted),
+                Ok(()) => {
+                    let _ = verify_lock(gate, handle, dnd_hinted);
+                }
                 Err(e) => {
                     let language = i18n::current();
                     let message = match language {
@@ -877,7 +882,17 @@ fn action_loop(
                     notify_lock(handle, &message, None, false, NOTIFY_PROBLEM_TIMEOUT_MS);
                 }
             },
-            Action::VerifyLock => verify_lock(gate, handle, dnd_hinted),
+            Action::VerifyLock => {
+                let _ = verify_lock(gate, handle, dnd_hinted);
+            }
+            Action::VerifyLockReport(reply) => {
+                let result = check_lock(gate);
+                // The caller gets its report before the notification, which
+                // can wait on a desktop notification service that stopped
+                // answering.
+                let _ = reply.send(lock_report(result.0, &result.1));
+                notify_lock_result(handle, dnd_hinted, &result);
+            }
             Action::Unlock(app) => unlock(&app, gate),
             Action::RestoreIfTicketed(app) => restore_if_ticketed(&app, gate),
             Action::HiddenWindows(version, counts) => {
@@ -910,19 +925,32 @@ fn verify_lock(
     gate: &Mutex<Option<window::Gate>>,
     handle: &Handle<TrayState>,
     dnd_hinted: &AtomicBool,
-) {
-    // `None` from the closure means the check could not run: the system bus
-    // or the daemon failed, or an unlock raced the check. Only a completed
-    // sync can tell a desktop without KWin from a KWin that did not answer.
-    let check = (|| -> Option<Result<WindowReport, NoReport>> {
+) -> (u64, Result<WindowReport, NoReport>) {
+    let result = check_lock(gate);
+    notify_lock_result(handle, dnd_hinted, &result);
+    result
+}
+
+/// Run the window check. `None` from the closure means the check could not
+/// run: the system bus or the daemon failed, or an unlock raced the check.
+/// Only a completed sync can tell a desktop without KWin from a KWin that
+/// did not answer.
+fn check_lock(gate: &Mutex<Option<window::Gate>>) -> (u64, Result<WindowReport, NoReport>) {
+    (|| -> Option<(u64, Result<WindowReport, NoReport>)> {
         let mut gate = gate.lock().unwrap();
         // No gate means the agent has no window layer at all, for example
         // because the session has no runtime directory. Say so instead of
         // reporting a state that was never checked.
         let Some(gate) = gate.as_mut() else {
-            return Some(Err(NoReport::NoWindowLayer));
+            return Some((0, Err(NoReport::NoWindowLayer)));
         };
-        let conn = Connection::system().ok()?;
+        // The daemon reads stay short so a hung shisad does not hold the
+        // action thread and the caller's report.
+        let conn = zbus::blocking::connection::Builder::system()
+            .ok()?
+            .method_timeout(Duration::from_secs(2))
+            .build()
+            .ok()?;
         let manager = ManagerProxyBlocking::new(&conn).ok()?;
         let protected = manager
             .list_apps()
@@ -935,28 +963,67 @@ fn verify_lock(
             return None;
         }
         let report = gate.sync(&protected, &allowed, true);
+        let generation = gate.generation();
         // An unlock can complete while KWin is compiling the script.
         if !manager.window_states().ok()?.is_empty() {
             return None;
         }
-        Some(report)
+        Some((generation, report))
     })()
-    .unwrap_or(Err(NoReport::Unconfirmed));
+    .unwrap_or((0, Err(NoReport::Unconfirmed)))
+}
+
+/// Put a check's result in the tray and a notification. The report caller
+/// sends the result over the bus before this runs.
+fn notify_lock_result(
+    handle: &Handle<TrayState>,
+    dnd_hinted: &AtomicBool,
+    result: &(u64, Result<WindowReport, NoReport>),
+) {
+    let check = &result.1;
     let language = i18n::current();
-    let names = match &check {
+    let names = match check {
         Ok(report) => missed_names(&report.missed, language),
         Err(_) => String::new(),
     };
-    let concealed = matches!(&check, Ok(report) if report.hidden > 0);
+    let concealed = matches!(check, Ok(report) if report.hidden > 0);
     let hint = concealed && should_hint_dnd(dnd_hinted);
-    let text = lock_summary(&check, language, hint, &names);
-    let timeout = match &check {
+    let text = lock_summary(check, language, hint, &names);
+    let timeout = match check {
         Ok(report) if report.missed.is_empty() && report.matched == report.hidden => {
             NOTIFY_TIMEOUT_MS
         }
         _ => NOTIFY_PROBLEM_TIMEOUT_MS,
     };
     notify_lock(handle, &text.summary, text.hint, concealed, timeout);
+}
+
+/// The D-Bus shape of one check: status, script generation, matched and
+/// concealed windows, and the apps with a window that stayed visible.
+fn lock_report(generation: u64, check: &Result<WindowReport, NoReport>) -> LockReport {
+    match check {
+        Ok(report) => {
+            // A report that matched more windows than it concealed is not a
+            // confirmation even when no app was named: an app id that cannot
+            // be put in the missed list still leaves its window visible.
+            let status = if !report.missed.is_empty() {
+                LOCK_PARTIAL
+            } else if report.matched == report.hidden {
+                LOCK_CONFIRMED
+            } else {
+                LOCK_UNCONFIRMED
+            };
+            (
+                status,
+                generation,
+                report.matched as u64,
+                report.hidden as u64,
+                report.missed.clone(),
+            )
+        }
+        Err(NoReport::Unconfirmed) => (LOCK_UNCONFIRMED, generation, 0, 0, Vec::new()),
+        Err(NoReport::NoWindowLayer) => (LOCK_NO_LAYER, generation, 0, 0, Vec::new()),
+    }
 }
 
 /// The display names of the apps that could not be concealed. A malformed or
@@ -1088,7 +1155,11 @@ fn notify_lock(
 /// path.
 fn notify(message: &str, timeout_ms: i32, icon: &str) -> bool {
     let result = (|| -> zbus::Result<u32> {
-        let conn = Connection::session()?;
+        // A hung notification service must not hold the action thread after
+        // the lock result is already known.
+        let conn = zbus::blocking::connection::Builder::session()?
+            .method_timeout(Duration::from_millis(750))
+            .build()?;
         let proxy = Proxy::new(
             &conn,
             NOTIFY_SERVICE,
@@ -1832,6 +1903,31 @@ mod tests {
             !lock_summary(&no_layer, Language::En, false, "")
                 .summary
                 .contains("not confirmed")
+        );
+    }
+
+    #[test]
+    fn a_lock_report_carries_the_status_and_counts() {
+        let full = Ok(report(2, 2, &[]));
+        assert_eq!(lock_report(7, &full), (LOCK_CONFIRMED, 7, 2, 2, Vec::new()));
+
+        let partial = Ok(report(3, 2, &[("org.kde.kate", 1)]));
+        assert_eq!(
+            lock_report(8, &partial),
+            (LOCK_PARTIAL, 8, 3, 2, vec![("org.kde.kate".to_string(), 1)])
+        );
+
+        assert_eq!(
+            lock_report(9, &Err(NoReport::Unconfirmed)),
+            (LOCK_UNCONFIRMED, 9, 0, 0, Vec::new())
+        );
+        assert_eq!(
+            lock_report(10, &Ok::<_, NoReport>(report(2, 1, &[]))),
+            (LOCK_UNCONFIRMED, 10, 2, 1, Vec::new())
+        );
+        assert_eq!(
+            lock_report(0, &Err(NoReport::NoWindowLayer)),
+            (LOCK_NO_LAYER, 0, 0, 0, Vec::new())
         );
     }
 

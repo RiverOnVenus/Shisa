@@ -18,15 +18,32 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Add skip-changelog to release housekeeping pull requests
+      - name: Keep skip-changelog on release housekeeping pull requests
         uses: actions/github-script@v9
         with:
           script: |
             const title = context.payload.pull_request.title
             const housekeeping = /^(release: |packaging: .*(checksum|release record|record the release)|docs: record .* release)/i
-            if (!housekeeping.test(title)) return
-
             const label = 'skip-changelog'
+            if (!housekeeping.test(title)) {
+              // Only a title that was housekeeping is the workflow's label
+              // to remove. A label a maintainer added by hand stays.
+              const previous = context.payload.changes?.title?.from
+              if (context.action === 'edited' && previous && housekeeping.test(previous)) {
+                try {
+                  await github.rest.issues.removeLabel({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: context.payload.pull_request.number,
+                    name: label,
+                  })
+                } catch (error) {
+                  if (error.status !== 404) throw error
+                }
+              }
+              return
+            }
+
             try {
               await github.rest.issues.createLabel({
                 owner: context.repo.owner,

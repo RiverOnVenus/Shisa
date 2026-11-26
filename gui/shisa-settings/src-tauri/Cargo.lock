@@ -3184,6 +3184,7 @@ dependencies = [
  "futures-util",
  "glib",
  "gtk",
+ "serde",
  "shisa-core",
  "tauri",
  "tauri-build",

@@ -11,7 +11,10 @@
 
 use base64::Engine;
 use futures_util::StreamExt;
-use shisa_core::dbus::{AppRow, BUS_NAME, DiagRow, LaunchRow, ManagerProxy};
+use shisa_core::dbus::{
+    AppRow, BUS_NAME, DiagRow, LOCK_CONFIRMED, LOCK_NO_LAYER, LOCK_PARTIAL, LaunchRow, LockReport,
+    ManagerProxy,
+};
 use shisa_core::i18n::{self, Language};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -311,26 +314,120 @@ async fn set_prompt_timeout(bus: State<'_, Bus>, seconds: u64) -> R<()> {
         .map_err(err)
 }
 
+#[derive(serde::Serialize)]
+struct MissedWindow {
+    app: String,
+    count: u32,
+}
+
+/// The window layer's answer for this lock. The panel shows the status and
+/// counts instead of claiming a success that KWin did not confirm.
+#[derive(serde::Serialize)]
+struct LockResult {
+    /// `confirmed`, `partial`, `unconfirmed`, or `no-window-layer`.
+    status: &'static str,
+    generation: u64,
+    matched: u64,
+    hidden: u64,
+    missed: Vec<MissedWindow>,
+}
+
+impl LockResult {
+    fn from_reply((status, generation, matched, hidden, missed): LockReport) -> Self {
+        let status = match status {
+            LOCK_CONFIRMED => "confirmed",
+            LOCK_PARTIAL => "partial",
+            LOCK_NO_LAYER => "no-window-layer",
+            _ => "unconfirmed",
+        };
+        Self {
+            status,
+            generation,
+            matched,
+            hidden,
+            missed: missed
+                .into_iter()
+                .map(|(app, count)| MissedWindow { app, count })
+                .collect(),
+        }
+    }
+
+    fn unconfirmed() -> Self {
+        Self {
+            status: "unconfirmed",
+            generation: 0,
+            matched: 0,
+            hidden: 0,
+            missed: Vec::new(),
+        }
+    }
+}
+
 #[tauri::command]
-async fn lock(app_id: String) -> R<()> {
+async fn lock(app_id: String) -> R<Option<LockResult>> {
     let conn = zbus::Connection::system().await.map_err(err)?;
     let manager = ManagerProxy::new(&conn).await.map_err(err)?;
     manager.lock(&app_id).await.map_err(err)?;
-    if app_id.is_empty() {
-        use shisa_core::dbus::{WINDOW_BUS_NAME, WINDOW_INTERFACE, WINDOW_PATH};
-        let check = async {
-            let session = zbus::Connection::session().await?;
-            let proxy =
-                zbus::Proxy::new(&session, WINDOW_BUS_NAME, WINDOW_PATH, WINDOW_INTERFACE).await?;
-            proxy.call::<_, _, ()>("VerifyLock", &()).await
-        }
-        .await;
-        check.map_err(|e| match i18n::current() {
-            Language::ZhCn => format!("启动已上锁，窗口状态未确认：{e}"),
-            Language::En => format!("Lock applied, but the window state was not confirmed: {e}"),
-        })?;
+    if !app_id.is_empty() {
+        return Ok(None);
     }
-    Ok(())
+    Ok(Some(check_lock_windows().await))
+}
+
+/// The bus error names that mean the agent is absent or too old for the new
+/// method. Other errors, including a timeout, must not trigger a second
+/// check and a second notification.
+fn unavailable(error: &zbus::Error) -> bool {
+    matches!(
+        error,
+        zbus::Error::MethodError(name, _, _) if matches!(
+            name.as_str(),
+            "org.freedesktop.DBus.Error.UnknownMethod"
+                | "org.freedesktop.DBus.Error.UnknownInterface"
+                | "org.freedesktop.DBus.Error.ServiceUnknown"
+                | "org.freedesktop.DBus.Error.NameHasNoOwner"
+        )
+    )
+}
+
+/// Ask the session agent for this lock's window report. A failed or older
+/// agent call leaves the lock in force but the window state unconfirmed. The
+/// method timeout bounds a check that is waiting on a hung KWin.
+async fn check_lock_windows() -> LockResult {
+    use shisa_core::dbus::{WINDOW_BUS_NAME, WINDOW_INTERFACE, WINDOW_PATH};
+    let checked = async {
+        let session = zbus::connection::Builder::session()?
+            .method_timeout(std::time::Duration::from_secs(5))
+            .build()
+            .await?;
+        let proxy =
+            zbus::Proxy::new(&session, WINDOW_BUS_NAME, WINDOW_PATH, WINDOW_INTERFACE).await?;
+        proxy
+            .call::<_, _, LockReport>("VerifyLockReport", &())
+            .await
+    }
+    .await;
+    match checked {
+        Ok(reply) => LockResult::from_reply(reply),
+        Err(e) => {
+            // An older agent only has VerifyLock. It still shows its own
+            // notification, but this window has no report for the operation.
+            if unavailable(&e) {
+                let _ = verify_lock_legacy().await;
+            }
+            LockResult::unconfirmed()
+        }
+    }
+}
+
+async fn verify_lock_legacy() -> zbus::Result<()> {
+    use shisa_core::dbus::{WINDOW_BUS_NAME, WINDOW_INTERFACE, WINDOW_PATH};
+    let session = zbus::connection::Builder::session()?
+        .method_timeout(std::time::Duration::from_secs(5))
+        .build()
+        .await?;
+    let proxy = zbus::Proxy::new(&session, WINDOW_BUS_NAME, WINDOW_PATH, WINDOW_INTERFACE).await?;
+    proxy.call::<_, _, ()>("VerifyLock", &()).await
 }
 
 /// The connection used for commands that may authenticate, and for the lock
@@ -956,6 +1053,31 @@ mod tests {
         assert!(owner_replaced("shisa", "old", "shisa", ""));
         assert!(!owner_replaced("shisa", "old", "shisa", "old"));
         assert!(!owner_replaced("shisa", "old", "other", "new"));
+    }
+
+    #[test]
+    fn a_lock_report_maps_the_status_and_counts() {
+        let full = LockResult::from_reply((LOCK_CONFIRMED, 7, 2, 2, Vec::new()));
+        assert_eq!(full.status, "confirmed");
+        assert_eq!((full.generation, full.matched, full.hidden), (7, 2, 2));
+        assert!(full.missed.is_empty());
+
+        let partial =
+            LockResult::from_reply((LOCK_PARTIAL, 8, 3, 2, vec![("org.kde.kate".into(), 1)]));
+        assert_eq!(partial.status, "partial");
+        assert_eq!(partial.missed[0].app, "org.kde.kate");
+        assert_eq!(partial.missed[0].count, 1);
+
+        assert_eq!(
+            LockResult::from_reply((LOCK_NO_LAYER, 0, 0, 0, Vec::new())).status,
+            "no-window-layer"
+        );
+        // A status from a newer agent is not read as a confirmation.
+        assert_eq!(
+            LockResult::from_reply((99, 0, 0, 0, Vec::new())).status,
+            "unconfirmed"
+        );
+        assert_eq!(LockResult::unconfirmed().status, "unconfirmed");
     }
 
     #[test]

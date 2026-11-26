@@ -7,6 +7,7 @@ import {
   isPreset,
   isRelockPreset,
   kindText,
+  lockNotice,
   matches,
   outcomeClass,
   reasonText,
@@ -78,6 +79,87 @@ test("launch outcomes name the decision and its reason", () => {
   assert.equal(kindText("granted", en), "allow");
   assert.equal(reasonText("granted", en), "authenticated");
   assert.equal(kindText("asked", en), "wait");
+});
+
+test("a lock notice reports the window check's result", () => {
+  assert.equal(
+    lockNotice({ status: "confirmed", matched: 2, hidden: 2, missed: [] }, zh),
+    "启动已上锁，已收起 2/2 个受保护窗口。",
+  );
+  assert.equal(
+    lockNotice({ status: "confirmed", matched: 0, hidden: 0, missed: [] }, zh),
+    "启动已上锁，当前桌面没有匹配的受保护窗口。",
+  );
+  assert.equal(
+    lockNotice(
+      {
+        status: "partial",
+        matched: 3,
+        hidden: 2,
+        missed: [{ app: "org.kde.kate", count: 1 }],
+      },
+      zh,
+      (id) => (id === "org.kde.kate" ? "Kate" : id),
+    ),
+    "启动已上锁，已收起 2/3 个受保护窗口，未确认：Kate。",
+  );
+  assert.equal(
+    lockNotice({ status: "unconfirmed" }, zh),
+    "启动已上锁，窗口状态未确认。",
+  );
+  assert.equal(
+    lockNotice({ status: "no-window-layer" }, zh),
+    "启动已上锁，本桌面没有窗口层，未能收起窗口。",
+  );
+  // Name the first three apps and count the rest.
+  const missed = ["a", "b", "c", "d"].map((app) => ({ app, count: 1 }));
+  assert.equal(
+    lockNotice({ status: "partial", matched: 5, hidden: 1, missed }, zh, (id) =>
+      id.toUpperCase(),
+    ),
+    "启动已上锁，已收起 1/5 个受保护窗口，未确认：A、B、C 等 1 个应用。",
+  );
+  // A missing result, an unknown status, and a report without names are
+  // never shown as a success.
+  assert.equal(lockNotice(null, zh), "启动已上锁，窗口状态未确认。");
+  assert.equal(
+    lockNotice({ status: "future" }, zh),
+    "启动已上锁，窗口状态未确认。",
+  );
+  assert.equal(
+    lockNotice({ status: "confirmed" }, zh),
+    "启动已上锁，窗口状态未确认。",
+  );
+  assert.equal(
+    lockNotice({ status: "partial", matched: 2, hidden: 1, missed: [] }, zh),
+    "启动已上锁，窗口状态未确认。",
+  );
+
+  assert.equal(
+    lockNotice({ status: "confirmed", matched: 1, hidden: 1, missed: [] }, en),
+    "Lock applied. Hid 1 of 1 protected window.",
+  );
+  assert.equal(
+    lockNotice({ status: "confirmed", matched: 2, hidden: 2, missed: [] }, en),
+    "Lock applied. Hid 2 of 2 protected windows.",
+  );
+  assert.equal(
+    lockNotice(
+      {
+        status: "partial",
+        matched: 2,
+        hidden: 1,
+        missed: [{ app: "a", count: 1 }],
+      },
+      en,
+      (id) => id.toUpperCase(),
+    ),
+    "Lock applied. Hid 1 of 2 protected windows. Not confirmed: A.",
+  );
+  assert.equal(
+    lockNotice({ status: "no-window-layer" }, en),
+    "Lock applied. This desktop has no window layer, so windows were not hidden.",
+  );
 });
 
 test("preset checks match the picker values", () => {

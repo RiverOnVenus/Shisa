@@ -177,7 +177,15 @@ const zh = {
   "restore.settings": "设置",
   "restore.lockAll": "锁定受保护应用",
   "restore.lockAllHint": "只锁定受保护的应用，未受保护的应用不受影响。",
-  "restore.lockedAll": "已锁定受保护的应用。",
+  "lock.notice.none": "启动已上锁，当前桌面没有匹配的受保护窗口。",
+  "lock.notice.confirmed":
+    "启动已上锁，已收起 {hidden}/{matched} 个受保护窗口。",
+  "lock.notice.partial":
+    "启动已上锁，已收起 {hidden}/{matched} 个受保护窗口，未确认：{apps}。",
+  "lock.notice.unconfirmed": "启动已上锁，窗口状态未确认。",
+  "lock.notice.noLayer": "启动已上锁，本桌面没有窗口层，未能收起窗口。",
+  "lock.notice.separator": "、",
+  "lock.notice.more": " 等 {count} 个应用",
   "restore.restored": "已恢复，窗口马上回来。",
   "restore.waiting": "正在恢复…",
   "restore.error.read": "无法读取隐藏窗口。",
@@ -412,7 +420,18 @@ const en = {
   "restore.lockAll": "Lock protected apps",
   "restore.lockAllHint":
     "Only protected apps are locked. Unprotected apps are unaffected.",
-  "restore.lockedAll": "Protected apps locked.",
+  "lock.notice.none":
+    "Lock applied. No protected window matched on this desktop.",
+  "lock.notice.confirmed":
+    "Lock applied. Hid {hidden} of {matched} protected window.|Lock applied. Hid {hidden} of {matched} protected windows.",
+  "lock.notice.partial":
+    "Lock applied. Hid {hidden} of {matched} protected window. Not confirmed: {apps}.|Lock applied. Hid {hidden} of {matched} protected windows. Not confirmed: {apps}.",
+  "lock.notice.unconfirmed":
+    "Lock applied, but the window state was not confirmed.",
+  "lock.notice.noLayer":
+    "Lock applied. This desktop has no window layer, so windows were not hidden.",
+  "lock.notice.separator": ", ",
+  "lock.notice.more": " and {count} more",
   "restore.restored": "Restored. The window is coming back.",
   "restore.waiting": "Restoring…",
   "restore.error.read": "Could not read hidden windows.",

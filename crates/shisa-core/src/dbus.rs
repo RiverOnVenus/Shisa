@@ -36,6 +36,20 @@ pub type LaunchRow = (u64, i64, String, i32, String, i64, i64);
 /// the latest load read every file).
 pub type DiagRow = (String, i64, i64, i64, u64, u64, String, bool, i64);
 
+/// A lock's window report from the session agent: status, script
+/// generation, matched windows, concealed windows, and the apps with a
+/// window that stayed visible.
+pub type LockReport = (u8, u64, u64, u64, Vec<(String, u32)>);
+
+/// Every matched protected window is concealed.
+pub const LOCK_CONFIRMED: u8 = 0;
+/// Some matched protected windows stayed visible. `LockReport` names them.
+pub const LOCK_PARTIAL: u8 = 1;
+/// KWin did not report for the requested generation.
+pub const LOCK_UNCONFIRMED: u8 = 2;
+/// KWin's scripting interface is not available on this desktop.
+pub const LOCK_NO_LAYER: u8 = 3;
+
 #[zbus::proxy(
     interface = "io.github.RiverOnVenus.Shisa.Manager",
     default_service = "io.github.RiverOnVenus.Shisa",

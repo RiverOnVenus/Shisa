@@ -7,6 +7,7 @@
   import { onMount, tick, untrack } from "svelte";
   import { fade, fly } from "svelte/transition";
   import { createTranslator, languageFromTag } from "./i18n.js";
+  import { lockNotice } from "./format.js";
   import { motionMs, paintTheme } from "./motion.js";
 
   let { language: initialLanguage = "en" } = $props();
@@ -265,10 +266,18 @@
     }
   }
 
+  /// A display name for an app the lock report names. The installed index
+  /// covers every application; the hidden rows cover an app whose desktop
+  /// file is missing from it.
+  function nameOf(id) {
+    return installed?.get(id)?.name ?? rows.find((row) => row.id === id)?.name ?? id;
+  }
+
   /// Lock revokes the daemon's state before the agent has applied it in
-  /// KWin. Wait for a concealed window to appear so the refreshed list is
-  /// not the one from before the lock. A lock with nothing to hide pays the
-  /// short timeout instead of showing a stale list.
+  /// KWin. The report carries this check's counts, but the panel's list
+  /// comes from the inventory message that follows. Wait for a concealed
+  /// window only when the report says something was hidden, so a lock with
+  /// nothing to hide does not pay the short timeout.
   async function waitLocked() {
     for (let attempt = 0; attempt < 20; attempt++) {
       const counts = await invoke("hidden_apps").catch(() => null);
@@ -284,10 +293,14 @@
     notice = "";
     error = "";
     try {
-      await invoke("lock", { appId: "" });
-      await waitLocked();
+      const report = await invoke("lock", { appId: "" });
+      // A confirmed empty result needs no wait. An unconfirmed or missing
+      // result may still be followed by the inventory message.
+      if (!report || report.status === "unconfirmed" || report.hidden > 0) {
+        await waitLocked();
+      }
       await load(false);
-      if (!error) notice = t("restore.lockedAll");
+      if (!error) notice = lockNotice(report, t, nameOf);
     } catch (reason) {
       const message = typeof reason === "string" ? reason : t("restore.error.lock");
       await load(false);
