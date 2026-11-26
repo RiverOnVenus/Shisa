@@ -1640,12 +1640,8 @@
 
         {#if config.ready}
           <section class="set" in:fade={{ duration: motionMs(160) }}>
+            <div class="label">{t("app.coverage.name")}</div>
             <div class="list">
-              <div class="prefrow">
-                <div class="who">
-                  <div class="name">{t("app.coverage.name")}</div>
-                </div>
-              </div>
               <div class="prefrow">
                 <div class="who">
                   <div class="name">{t("app.paths.name")}</div>
