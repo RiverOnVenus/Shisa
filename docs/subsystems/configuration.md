@@ -41,6 +41,10 @@ The settings window writes the file from the General page's language selector. T
 
 The daemon keeps D-Bus error strings in English so the bus contract and the debug log stay stable. The settings shell and the CLI translate the known ones for the Chinese interface (`shisa_core::i18n::error_text`). Resolution notes from `ResolveApp` are formatted in the caller's saved language because they are content rather than error codes. The `.policy` file carries both languages through `xml:lang`, and polkit selects the action text by the session locale. The detail that names the target of a global settings change uses the saved choice instead.
 
+### Settings interface
+
+The settings window keeps four text sizes as `--text-*` tokens at 11, 12, 13, and 14px, and control spacing on the 4px grid. Row copy adds only what the label does not already say, such as a focus-loss hide keeping the launch ticket valid. Both dictionaries use the same key set.
+
 ## System D-Bus
 
 The service is `io.github.RiverOnVenus.Shisa`, at `/io/github/RiverOnVenus/Shisa/Manager`. It derives the caller's identity from bus connection credentials and scopes state and settings to that user.
