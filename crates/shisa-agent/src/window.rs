@@ -288,8 +288,10 @@ impl WindowService {
         }
     }
 
-    /// The focus bookkeeping behind `WindowEvent`, kept synchronous so the
-    /// unit tests can exercise it without a bus connection.
+    /// The bookkeeping behind `WindowEvent`, kept synchronous so the unit
+    /// tests can exercise it without a bus connection. Focus events update
+    /// the relock clock, and a close report is forwarded to the action
+    /// thread, which drops the app's window permission.
     fn apply_window_event(&self, app_id: &str, event: &str) -> bool {
         let mut tracker = self.tracker.lock().unwrap();
         match event {
@@ -312,6 +314,16 @@ impl WindowService {
             "focused" => {
                 tracker.unfocused.remove(app_id);
                 tracker.focused = Some(app_id.to_string());
+            }
+            // The app's last window closed. The script reports every
+            // protected app's close because its cached window state can lag a
+            // grant. Dropping the permission keeps the ticket, so the next
+            // reopen follows the grace period and then the restore panel.
+            // `Hide` is a no-op when the app has no permission.
+            "closed" => {
+                let _ = self
+                    .actions
+                    .send(super::Action::AppWindowClosed(app_id.to_string()));
             }
             _ => {}
         }
@@ -452,8 +464,9 @@ impl WindowService {
             .map_err(|_| zbus::fdo::Error::Failed("window check dropped".into()))
     }
 
-    /// The app lost or regained focus. The agent starts and cancels its
-    /// relock clock when that app has the feature enabled.
+    /// The app lost or regained focus, or its last window closed. The agent
+    /// starts and cancels the relock clock, and drops the window permission
+    /// of a closed app while keeping its ticket.
     async fn window_event(
         &self,
         app_id: String,
@@ -1283,5 +1296,17 @@ mod tests {
         tracker.lock().unwrap().unfocused.remove("app");
         assert!(service.apply_window_event("app", "activated"));
         assert!(tracker.lock().unwrap().unfocused.is_empty());
+    }
+
+    #[test]
+    fn a_closed_window_event_asks_the_agent_to_drop_window_permission() {
+        let tracker = Arc::new(Mutex::new(Tracker::default()));
+        let (actions, requests) = std::sync::mpsc::channel();
+        let service = WindowService::new(tracker, Arc::new(Ready::new()), actions);
+        assert!(service.apply_window_event("app", "closed"));
+        assert!(matches!(
+            requests.try_recv(),
+            Ok(crate::Action::AppWindowClosed(app)) if app == "app"
+        ));
     }
 }

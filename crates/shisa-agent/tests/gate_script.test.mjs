@@ -33,6 +33,7 @@ function makeWindow(desktopFileName, resourceClass, pid = 100) {
     pid,
     opacity: 1,
     minimized: false,
+    hidden: false,
     skipTaskbar: false,
     skipSwitcher: false,
     skipPager: false,
@@ -197,6 +198,82 @@ test("a new window of a locked app is concealed", () => {
   env.handlers.added[0](window);
   assert.equal(window.opacity, 0);
   assert.equal(window.minimized, true);
+});
+
+test("the last window of a protected app reports its close", () => {
+  const window = makeWindow("org.kde.motrix", "motrix");
+  const env = boot({
+    locked: ["org.kde.motrix"],
+    allowed: ["org.kde.motrix"],
+    windows: [window],
+  });
+  // The first pass records what was already open and reports nothing.
+  assert.equal(
+    methodCalls(env, "WindowEvent").filter((call) => call[6] === "closed").length,
+    0,
+  );
+  env.windows.pop();
+  env.handlers.removed[0](window);
+  const closed = methodCalls(env, "WindowEvent").filter((call) => call[6] === "closed");
+  assert.equal(closed.length, 1);
+  assert.deepEqual(closed[0].slice(4, 7), ["org.kde.motrix", "", "closed"]);
+  // A repeated removal does not ask the agent to hide the app again.
+  env.handlers.removed[0](window);
+  assert.equal(
+    methodCalls(env, "WindowEvent").filter((call) => call[6] === "closed").length,
+    1,
+  );
+});
+
+test("a close is reported even when the app has no window permission", () => {
+  const window = makeWindow("org.kde.kate", "kate");
+  const env = boot({ locked: ["org.kde.kate"], windows: [window] });
+  env.windows.pop();
+  env.handlers.removed[0](window);
+  // The script's window state can lag a grant, so the report cannot depend
+  // on the cached permission. The agent's Hide is a no-op without one.
+  assert.equal(
+    methodCalls(env, "WindowEvent").filter((call) => call[6] === "closed").length,
+    1,
+  );
+});
+
+test("closing one of several windows leaves the app open", () => {
+  const first = makeWindow("org.kde.kate", "kate");
+  const second = makeWindow("org.kde.kate", "kate");
+  const env = boot({
+    locked: ["org.kde.kate"],
+    allowed: ["org.kde.kate"],
+    windows: [first, second],
+  });
+  env.windows.pop();
+  env.handlers.removed[0](second);
+  assert.equal(
+    methodCalls(env, "WindowEvent").filter((call) => call[6] === "closed").length,
+    0,
+  );
+  env.windows.pop();
+  env.handlers.removed[0](first);
+  assert.equal(
+    methodCalls(env, "WindowEvent").filter((call) => call[6] === "closed").length,
+    1,
+  );
+});
+
+test("a window the app hides without destroying reports a close", () => {
+  const window = makeWindow("org.kde.motrix", "motrix");
+  let hiddenChanged;
+  window.hiddenChanged = { connect(fn) { hiddenChanged = fn; } };
+  const env = boot({
+    locked: ["org.kde.motrix"],
+    allowed: ["org.kde.motrix"],
+    windows: [window],
+  });
+  window.hidden = true;
+  hiddenChanged();
+  const closed = methodCalls(env, "WindowEvent").filter((call) => call[6] === "closed");
+  assert.equal(closed.length, 1);
+  assert.deepEqual(closed[0].slice(4, 7), ["org.kde.motrix", "", "closed"]);
 });
 
 test("focus loss and gain are reported for protected apps", () => {

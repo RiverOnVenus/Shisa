@@ -43,6 +43,9 @@ enum Action {
     VerifyLockReport(oneshot::Sender<LockReport>),
     Unlock(String),
     RestoreIfTicketed(String),
+    /// The last window of a protected app closed. The agent drops its window
+    /// permission while keeping its ticket.
+    AppWindowClosed(String),
     HiddenWindows((u64, u64), HashMap<String, u32>),
     OpenSettings,
     OpenRestore,
@@ -52,8 +55,8 @@ const OFFLINE_ICON: &str = "shisa-tray-offline-symbolic";
 /// Used while at least one concealed window would ask for the app-lock
 /// password to restore it.
 const LOCKED_ICON: &str = "shisa-tray-locked-symbolic";
-/// Used while at least one concealed app still has a valid launch ticket, so
-/// restoring it within the grace period asks no password.
+/// Used while a protected app can appear without the app-lock password
+/// within its grace period, whether its window is concealed or not.
 const RESTORABLE_ICON: &str = "shisa-tray-restorable-symbolic";
 const NOTIFY_SERVICE: &str = "org.freedesktop.Notifications";
 /// How long the desktop keeps a lock result notification on screen. A
@@ -70,13 +73,25 @@ static RELOCK_HINTED: AtomicBool = AtomicBool::new(false);
 static RELOCK_HINT_ATTEMPTS: AtomicU8 = AtomicU8::new(0);
 const RELOCK_HINT_MAX_ATTEMPTS: u8 = 3;
 
+/// Ticket state read from the daemon: concealed apps and every protected app
+/// that still has a valid launch ticket.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct TicketCounts {
+    /// Concealed apps with a valid ticket, so restoring one asks no password.
+    hidden: usize,
+    /// Every protected app with a valid ticket, concealed or not. A launch,
+    /// or an app's own tray reopen, within the grace period asks no password,
+    /// so the ring leaves the safe state even when nothing is concealed.
+    total: usize,
+}
+
 struct TrayState {
     protected_count: usize,
     hidden_windows: ((u64, u64), HashMap<String, u32>),
-    /// Concealed apps that still have a valid launch ticket, so restoring
-    /// them would not ask for the app-lock password. `None` means no daemon
-    /// read has confirmed it, and the tray keeps the locked state.
-    hidden_ticketed: Option<usize>,
+    /// Apps with a valid launch ticket. `None` means no daemon read has
+    /// confirmed it, and the tray keeps a non-green state while nothing is
+    /// concealed.
+    ticketed: Option<TicketCounts>,
     last_lock: Option<String>,
     offline: bool,
     /// Ticket grants expected to bring a concealed window back, with the
@@ -123,27 +138,37 @@ fn watch_language(handle: Handle<TrayState>) -> ! {
     }
 }
 
-/// Concealed apps that still have a valid launch ticket, so the restore panel
-/// can bring them back without a prompt.
-fn ticketed_hidden(apps: &[AppRow], hidden: &HashMap<String, u32>) -> usize {
-    apps.iter()
-        .filter(|(id, unlocked, _, _)| *unlocked && hidden.contains_key(id))
-        .count()
+/// Count the daemon's tickets against the apps the script reports hidden.
+/// `total` covers every protected app, because a ticket with no concealed
+/// window still makes a launch or a tray reopen password-free.
+fn ticketed_counts(apps: &[AppRow], hidden: &HashMap<String, u32>) -> TicketCounts {
+    let mut counts = TicketCounts::default();
+    for (id, unlocked, _, _) in apps {
+        if !*unlocked {
+            continue;
+        }
+        counts.total += 1;
+        if hidden.contains_key(id) {
+            counts.hidden += 1;
+        }
+    }
+    counts
 }
 
 /// What one ticket poll should show. `Skip` keeps the last value because
-/// shisad is offline, `Confirmed` replaces it with the number of hidden apps
-/// that can still restore without a password, and `Unconfirmed` is a read
-/// that did not come back.
+/// shisad is offline, `Confirmed` replaces it with the daemon's ticket
+/// counts, and `Unconfirmed` is a read that did not come back.
 #[derive(Debug, PartialEq, Eq)]
 enum TicketPoll {
     Skip,
-    Confirmed(usize),
+    Confirmed(TicketCounts),
     Unconfirmed,
 }
 
 /// Decide the tray's ticket state for one poll. Kept apart from the loop so
-/// the decisions can be tested without a live agent.
+/// the decisions can be tested without a live agent. The loop only asks for
+/// a poll when a read is needed, so a missing read means the daemon did not
+/// answer.
 fn ticket_poll(
     hidden: &HashMap<String, u32>,
     offline: bool,
@@ -152,30 +177,24 @@ fn ticket_poll(
     if offline {
         return TicketPoll::Skip;
     }
-    if hidden.is_empty() {
-        return TicketPoll::Confirmed(0);
-    }
     match read {
-        Some(Ok(apps)) => TicketPoll::Confirmed(ticketed_hidden(&apps, hidden)),
+        Some(Ok(apps)) => TicketPoll::Confirmed(ticketed_counts(&apps, hidden)),
         Some(Err(_)) | None => TicketPoll::Unconfirmed,
     }
 }
 
-/// Reads the daemon's ticket state for the apps a report says are hidden.
-/// The action thread uses it to publish a new hidden set together with its
-/// ticket count, so a hide that is still ticketed goes straight to amber
-/// instead of showing the blue unconfirmed fallback until the next poll.
+/// Reads the daemon's ticket state after a hidden-window report. The action
+/// thread uses it to publish the new hidden set together with its ticket
+/// counts, so a hide that is still ticketed goes straight to amber instead
+/// of showing the blue unconfirmed fallback until the next poll.
 #[derive(Default)]
 struct TicketReader(Option<Connection>);
 
 impl TicketReader {
-    /// How many hidden apps still have a valid launch ticket. `None` means
-    /// the daemon could not be asked, which keeps the tray on the locked
+    /// The daemon's ticket counts for the current hidden set. `None` means
+    /// the daemon could not be asked, which keeps the tray on the unconfirmed
     /// fallback, the same decision `ticket_poll` makes.
-    fn read(&mut self, hidden: &HashMap<String, u32>) -> Option<usize> {
-        if hidden.is_empty() {
-            return Some(0);
-        }
+    fn read(&mut self, hidden: &HashMap<String, u32>) -> Option<TicketCounts> {
         if self.0.is_none() {
             self.0 = Connection::system().ok();
         }
@@ -188,20 +207,20 @@ impl TicketReader {
             // Reconnect on the next read: the bus may have restarted.
             self.0 = None;
         }
-        apps.map(|apps| ticketed_hidden(&apps, hidden))
+        apps.map(|apps| ticketed_counts(&apps, hidden))
     }
 }
 
-/// Publish a script's hidden-window report together with the ticket count
+/// Publish a script's hidden-window report together with the ticket counts
 /// read after it arrived. Both fields change in one update so the ring goes
 /// from green straight to amber when the hidden app still has a ticket,
 /// instead of showing the blue unconfirmed fallback first. `None` for the
-/// count means the daemon could not be asked and keeps that fallback.
+/// counts means the daemon could not be asked and keeps that fallback.
 fn apply_hidden_windows(
     tray: &mut TrayState,
     version: (u64, u64),
     counts: HashMap<String, u32>,
-    ticketed: Option<usize>,
+    ticketed: Option<TicketCounts>,
 ) -> bool {
     if version <= tray.hidden_windows.0 {
         return false;
@@ -246,18 +265,20 @@ fn apply_state_change(tray: &mut TrayState, app: &str, unlocked: bool, now: Inst
 /// Publish a ticket state read from the daemon. While a grant is expected to
 /// bring a concealed window back, the ring keeps its previous color: the
 /// ticket exists before KWin reports the window shown, so counting it now
-/// would flash amber. A confirmed drop still applies, because a revoked or
-/// expired ticket can only move the ring toward the locked state, and a
-/// failed read holds the same way.
-fn publish_ticket_state(tray: &mut TrayState, ticketed: Option<usize>) {
+/// would flash amber. A confirmed drop still applies when the concealed count
+/// falls or every ticket is gone, because a revocation or a lock can only
+/// move the ring toward the locked state. An unrelated ticket expiring while
+/// the grant is pending does not interrupt the hold.
+fn publish_ticket_state(tray: &mut TrayState, ticketed: Option<TicketCounts>) {
     let now = Instant::now();
     tray.ticket_grants.retain(|_, until| now < *until);
     let dropped = matches!(
-        (ticketed, tray.hidden_ticketed),
-        (Some(next), Some(current)) if next < current
+        (ticketed, tray.ticketed),
+        (Some(next), Some(current))
+            if next.hidden < current.hidden || (next.total == 0 && current.total > 0)
     );
     if dropped || tray.ticket_grants.is_empty() {
-        tray.hidden_ticketed = ticketed;
+        tray.ticketed = ticketed;
     }
 }
 
@@ -271,11 +292,18 @@ fn apply_ticket_poll(tray: &mut TrayState, poll: TicketPoll) {
     }
 }
 
-/// Keep the hidden apps' ticket state fresh. A ticket expiring is a lazy
-/// check with no signal, so the tray would keep showing the password-free
-/// dot after the grace period ended. Two seconds matches the language
-/// watcher and the restore panel's poll, and the bus call only runs while a
-/// window is hidden and shisad is known to be online.
+/// Whether the background poll needs to read the daemon. A concealed window
+/// always needs a read, and so does any ticket count until a read confirms
+/// that no protected app has one. A missing count is unconfirmed, not zero.
+fn needs_ticket_poll(hidden: &HashMap<String, u32>, ticketed: Option<TicketCounts>) -> bool {
+    !hidden.is_empty() || ticketed.is_none_or(|counts| counts.total > 0)
+}
+
+/// Keep the ticket state fresh. A ticket expiring is a lazy check with no
+/// signal, so the tray would keep showing a password-free state after the
+/// grace period ended. Two seconds matches the language watcher and the
+/// restore panel's poll. The bus call runs while a window is hidden, while a
+/// ticket is still counted, or until the first read confirms there is none.
 fn watch_ticket_state(handle: Handle<TrayState>, ticket_sync: &Mutex<()>) {
     let mut connection: Option<Connection> = None;
     loop {
@@ -284,12 +312,16 @@ fn watch_ticket_state(handle: Handle<TrayState>, ticket_sync: &Mutex<()>) {
         // the hidden report use, so a count taken before a lock or unlock
         // cannot land after a fresher one.
         let _sync = ticket_sync.lock().unwrap();
-        let Some((hidden, offline)) =
-            handle.update(|tray| (tray.hidden_windows.1.clone(), tray.offline))
+        let Some((hidden, offline, ticketed)) =
+            handle.update(|tray| (tray.hidden_windows.1.clone(), tray.offline, tray.ticketed))
         else {
             return;
         };
-        let read = if offline || hidden.is_empty() {
+        // A missing count is unconfirmed, not zero, so it also needs a read.
+        if !needs_ticket_poll(&hidden, ticketed) {
+            continue;
+        }
+        let read = if offline {
             None
         } else {
             if connection.is_none() {
@@ -307,7 +339,7 @@ fn watch_ticket_state(handle: Handle<TrayState>, ticket_sync: &Mutex<()>) {
             }
             TicketPoll::Unconfirmed => {
                 // A failed read is not proof that a ticket is still valid.
-                // Drop to the locked state and reconnect on the next tick.
+                // Drop to the unconfirmed state and reconnect on the next tick.
                 connection = None;
                 let _ = handle.update(|tray| apply_ticket_poll(tray, TicketPoll::Unconfirmed));
             }
@@ -340,8 +372,14 @@ impl Tray for TrayState {
         if self.offline {
             OFFLINE_ICON
         } else if self.hidden_count() == 0 {
-            "shisa-tray-symbolic"
-        } else if self.hidden_ticketed.unwrap_or(0) > 0 {
+            // Nothing is concealed, but a protected app with a valid ticket
+            // can still be launched, or reopened from its own tray icon,
+            // without the app-lock password in its grace period.
+            match self.ticketed {
+                Some(counts) if counts.total == 0 => "shisa-tray-symbolic",
+                _ => RESTORABLE_ICON,
+            }
+        } else if self.ticketed.is_some_and(|counts| counts.hidden > 0) {
             RESTORABLE_ICON
         } else {
             LOCKED_ICON
@@ -383,16 +421,16 @@ impl Tray for TrayState {
                 (1, Language::En) => "\nShisa hid 1 window".to_string(),
                 (hidden, Language::En) => format!("\nShisa hid {hidden} windows"),
             });
-            match self.hidden_ticketed {
-                Some(ticketed) if ticketed > 0 => {
-                    description.push_str(&match (ticketed, self.language) {
+            match self.ticketed {
+                Some(counts) if counts.hidden > 0 => {
+                    description.push_str(&match (counts.hidden, self.language) {
                         (1, Language::ZhCn) => "\n其中 1 个应用可免密还原".to_string(),
-                        (ticketed, Language::ZhCn) => format!("\n其中 {ticketed} 个应用可免密还原"),
+                        (counts, Language::ZhCn) => format!("\n其中 {counts} 个应用可免密还原"),
                         (1, Language::En) => {
                             "\n1 app can restore without the app-lock password".to_string()
                         }
-                        (ticketed, Language::En) => {
-                            format!("\n{ticketed} apps can restore without the app-lock password")
+                        (counts, Language::En) => {
+                            format!("\n{counts} apps can restore without the app-lock password")
                         }
                     });
                 }
@@ -413,6 +451,63 @@ impl Tray for TrayState {
                         "\nThe restore ticket state is unconfirmed",
                     ));
                 }
+            }
+            // A concealed window can need the password while another
+            // protected app still holds a ticket. The ring shows the locked
+            // state, so the tooltip carries the password-free count.
+            if let Some(counts) = self.ticketed {
+                let others = counts.total.saturating_sub(counts.hidden);
+                if others > 0 {
+                    description.push_str(&match (others, self.language) {
+                        (1, Language::ZhCn) => {
+                            "\n另有 1 个应用可在宽限期内免密启动".to_string()
+                        }
+                        (others, Language::ZhCn) => {
+                            format!("\n另有 {others} 个应用可在宽限期内免密启动")
+                        }
+                        (1, Language::En) => {
+                            "\n1 more app can launch without the app-lock password in its grace period"
+                                .to_string()
+                        }
+                        (others, Language::En) => {
+                            format!(
+                                "\n{others} more apps can launch without the app-lock password in their grace period"
+                            )
+                        }
+                    });
+                }
+            }
+        } else {
+            match self.ticketed {
+                Some(counts) if counts.total > 0 => {
+                    description.push_str(&match (counts.total, self.language) {
+                        (1, Language::ZhCn) => {
+                            "\n1 个应用可在宽限期内免密启动".to_string()
+                        }
+                        (counts, Language::ZhCn) => {
+                            format!("\n{counts} 个应用可在宽限期内免密启动")
+                        }
+                        (1, Language::En) => {
+                            "\n1 app can launch without the app-lock password in its grace period"
+                                .to_string()
+                        }
+                        (counts, Language::En) => {
+                            format!(
+                                "\n{counts} apps can launch without the app-lock password in their grace period"
+                            )
+                        }
+                    });
+                }
+                // No concealed window and no confirmed read. The ring stays
+                // out of the safe state, and the tooltip says why.
+                None => {
+                    description.push_str(text(
+                        self.language,
+                        "\n免密状态未确认",
+                        "\nThe password-free state is unconfirmed",
+                    ));
+                }
+                Some(_) => {}
             }
         }
         ksni::ToolTip {
@@ -497,7 +592,7 @@ fn main() -> std::process::ExitCode {
     let tray = TrayState {
         protected_count: 0,
         hidden_windows: Default::default(),
-        hidden_ticketed: None,
+        ticketed: None,
         last_lock: None,
         offline: true,
         ticket_grants: Default::default(),
@@ -817,7 +912,7 @@ fn refresh(
             return;
         };
         let _ = handle.update(|tray| {
-            let ticketed = ticketed_hidden(&apps, &tray.hidden_windows.1);
+            let ticketed = ticketed_counts(&apps, &tray.hidden_windows.1);
             tray.protected_count = apps.len();
             publish_ticket_state(tray, Some(ticketed));
         });
@@ -895,6 +990,7 @@ fn action_loop(
             }
             Action::Unlock(app) => unlock(&app, gate),
             Action::RestoreIfTicketed(app) => restore_if_ticketed(&app, gate),
+            Action::AppWindowClosed(app) => hide_after_window_close(&app),
             Action::HiddenWindows(version, counts) => {
                 // Hold the ticket lock across the read and the update so a
                 // concurrent refresh cannot interleave a count taken from
@@ -919,6 +1015,27 @@ fn action_loop(
 fn lock(app: &str) -> zbus::Result<()> {
     let conn = Connection::system()?;
     ManagerProxyBlocking::new(&conn)?.lock(app)
+}
+
+/// The KWin script reported that the last window of a protected app closed.
+/// Drop the app's window permission while keeping its ticket, so a reopen
+/// within the grace period still asks no password and a later one goes
+/// through the restore panel. `Hide` is a no-op when the app has no
+/// permission. The daemon's `StateChanged` that follows makes the window
+/// layer apply the new state.
+fn hide_after_window_close(app: &str) {
+    let result = (|| -> zbus::Result<()> {
+        // Keep a hung shisad from holding the action thread, which also
+        // serves the tray menu and restores.
+        let conn = zbus::blocking::connection::Builder::system()?
+            .method_timeout(Duration::from_secs(2))
+            .build()?;
+        ManagerProxyBlocking::new(&conn)?.hide(app)
+    })();
+    match result {
+        Ok(()) => debug!(app, "last window closed, dropped window permission"),
+        Err(e) => warn!("hide after window close ({app}): {e}"),
+    }
 }
 
 fn verify_lock(
@@ -1507,7 +1624,7 @@ mod tests {
         let (actions, requests) = mpsc::channel();
         let mut tray = TrayState {
             hidden_windows: ((1, 1), HashMap::from([("org.kde.kate".into(), 2)])),
-            hidden_ticketed: None,
+            ticketed: None,
             protected_count: 2,
             last_lock: Some("已收起 2 个窗口".into()),
             offline: false,
@@ -1541,7 +1658,7 @@ mod tests {
         let (actions, _requests) = mpsc::channel();
         let tray = TrayState {
             hidden_windows: Default::default(),
-            hidden_ticketed: None,
+            ticketed: None,
             protected_count: 0,
             last_lock: None,
             offline: false,
@@ -1562,7 +1679,7 @@ mod tests {
         let (actions, _requests) = mpsc::channel();
         let tray = TrayState {
             hidden_windows: Default::default(),
-            hidden_ticketed: None,
+            ticketed: None,
             protected_count: 2,
             last_lock: None,
             offline: true,
@@ -1583,7 +1700,7 @@ mod tests {
         let (actions, _requests) = mpsc::channel();
         let mut tray = TrayState {
             hidden_windows: Default::default(),
-            hidden_ticketed: None,
+            ticketed: Some(TicketCounts::default()),
             protected_count: 1,
             last_lock: None,
             offline: false,
@@ -1592,12 +1709,28 @@ mod tests {
             actions,
         };
         assert_eq!(tray.icon_name(), "shisa-tray-symbolic");
+        // A ticket with no concealed window can still launch or reopen an
+        // app without the password, so the ring leaves the safe state.
+        tray.ticketed = Some(TicketCounts {
+            hidden: 0,
+            total: 1,
+        });
+        assert_eq!(tray.icon_name(), RESTORABLE_ICON);
+        // An unconfirmed read keeps the ring out of the safe state too.
+        tray.ticketed = None;
+        assert_eq!(tray.icon_name(), RESTORABLE_ICON);
         tray.hidden_windows = ((1, 1), HashMap::from([("org.kde.kate".into(), 2)]));
-        // An unconfirmed ticket state stays on the safe locked state.
+        // A concealed window with no daemon confirmation stays locked.
         assert_eq!(tray.icon_name(), LOCKED_ICON);
-        tray.hidden_ticketed = Some(0);
+        tray.ticketed = Some(TicketCounts {
+            hidden: 0,
+            total: 1,
+        });
         assert_eq!(tray.icon_name(), LOCKED_ICON);
-        tray.hidden_ticketed = Some(1);
+        tray.ticketed = Some(TicketCounts {
+            hidden: 1,
+            total: 1,
+        });
         assert_eq!(tray.icon_name(), RESTORABLE_ICON);
         tray.offline = true;
         assert_eq!(tray.icon_name(), OFFLINE_ICON);
@@ -1611,7 +1744,10 @@ mod tests {
                 (1, 1),
                 HashMap::from([("org.kde.kate".into(), 2), ("org.kde.okular".into(), 1)]),
             ),
-            hidden_ticketed: Some(1),
+            ticketed: Some(TicketCounts {
+                hidden: 1,
+                total: 2,
+            }),
             protected_count: 2,
             last_lock: None,
             offline: false,
@@ -1622,10 +1758,17 @@ mod tests {
         let description = tray.tool_tip().description;
         assert!(description.contains("已隐藏 3 个窗口"));
         assert!(description.contains("其中 1 个应用可免密还原"));
-        tray.hidden_ticketed = Some(0);
+        assert!(description.contains("另有 1 个应用可在宽限期内免密启动"));
+        tray.ticketed = Some(TicketCounts {
+            hidden: 0,
+            total: 0,
+        });
         assert!(tray.tool_tip().description.contains("恢复需要应用锁密码"));
         tray.language = Language::En;
-        tray.hidden_ticketed = Some(2);
+        tray.ticketed = Some(TicketCounts {
+            hidden: 2,
+            total: 2,
+        });
         assert!(
             tray.tool_tip()
                 .description
@@ -1634,11 +1777,37 @@ mod tests {
     }
 
     #[test]
+    fn the_tray_tooltip_explains_a_password_free_ticket_without_hidden_windows() {
+        let mut tray = tray_without_hidden();
+        tray.ticketed = Some(TicketCounts {
+            hidden: 0,
+            total: 1,
+        });
+        assert!(
+            tray.tool_tip()
+                .description
+                .contains("1 个应用可在宽限期内免密启动")
+        );
+        tray.language = Language::En;
+        assert!(
+            tray.tool_tip()
+                .description
+                .contains("1 app can launch without the app-lock password")
+        );
+        tray.ticketed = None;
+        assert!(
+            tray.tool_tip()
+                .description
+                .contains("The password-free state is unconfirmed")
+        );
+    }
+
+    #[test]
     fn the_tray_tooltip_does_not_claim_a_password_while_the_ticket_state_is_unknown() {
         let (actions, _requests) = mpsc::channel();
         let mut tray = TrayState {
             hidden_windows: ((1, 1), HashMap::from([("org.kde.kate".into(), 2)])),
-            hidden_ticketed: None,
+            ticketed: None,
             protected_count: 1,
             last_lock: None,
             offline: false,
@@ -1657,19 +1826,31 @@ mod tests {
     }
 
     #[test]
-    fn only_ticketed_hidden_apps_count_as_password_free() {
+    fn ticket_counts_separate_hidden_apps_from_all_ticketed_apps() {
         let apps: Vec<AppRow> = vec![
             ("org.kde.kate".into(), true, Vec::new(), Vec::new()),
             ("org.kde.okular".into(), true, Vec::new(), Vec::new()),
             ("org.kde.ark".into(), false, Vec::new(), Vec::new()),
         ];
         let hidden = HashMap::from([("org.kde.kate".into(), 2), ("org.kde.ark".into(), 1)]);
-        assert_eq!(ticketed_hidden(&apps, &hidden), 1);
-        assert_eq!(ticketed_hidden(&apps, &HashMap::new()), 0);
+        assert_eq!(
+            ticketed_counts(&apps, &hidden),
+            TicketCounts {
+                hidden: 1,
+                total: 2
+            }
+        );
+        assert_eq!(
+            ticketed_counts(&apps, &HashMap::new()),
+            TicketCounts {
+                hidden: 0,
+                total: 2
+            }
+        );
     }
 
     #[test]
-    fn a_ticket_poll_keeps_the_safe_state_when_the_daemon_is_unknown() {
+    fn a_ticket_poll_counts_hidden_and_total_tickets() {
         let hidden = HashMap::from([("org.kde.kate".into(), 2)]);
         let apps: Vec<AppRow> = vec![
             ("org.kde.kate".into(), true, Vec::new(), Vec::new()),
@@ -1677,15 +1858,22 @@ mod tests {
         ];
         // shisad offline: leave the last value alone.
         assert_eq!(ticket_poll(&hidden, true, None), TicketPoll::Skip);
-        // No hidden window needs no bus call.
+        // A read counts both the concealed and the total ticketed apps.
         assert_eq!(
-            ticket_poll(&HashMap::new(), false, None),
-            TicketPoll::Confirmed(0)
+            ticket_poll(&hidden, false, Some(Ok(apps.clone()))),
+            TicketPoll::Confirmed(TicketCounts {
+                hidden: 1,
+                total: 1
+            })
         );
-        // A successful read counts only ticketed hidden apps.
+        // With nothing concealed, a read still reports the ticket that keeps
+        // a launch password-free.
         assert_eq!(
-            ticket_poll(&hidden, false, Some(Ok(apps))),
-            TicketPoll::Confirmed(1)
+            ticket_poll(&HashMap::new(), false, Some(Ok(apps))),
+            TicketPoll::Confirmed(TicketCounts {
+                hidden: 0,
+                total: 1
+            })
         );
         // A failed or missing read must not claim the password is needed.
         assert_eq!(
@@ -1699,11 +1887,33 @@ mod tests {
         assert_eq!(ticket_poll(&hidden, false, None), TicketPoll::Unconfirmed);
     }
 
+    #[test]
+    fn the_ticket_poll_stops_only_after_a_confirmed_empty_state() {
+        let hidden = HashMap::from([("org.kde.kate".into(), 1)]);
+        // A concealed window always needs a read, even with no ticket.
+        assert!(needs_ticket_poll(&hidden, Some(TicketCounts::default())));
+        // An unconfirmed count is not zero.
+        assert!(needs_ticket_poll(&HashMap::new(), None));
+        // A valid ticket needs reads until it expires.
+        assert!(needs_ticket_poll(
+            &HashMap::new(),
+            Some(TicketCounts {
+                hidden: 0,
+                total: 1
+            })
+        ));
+        // Only a confirmed empty state lets the two-second read stop.
+        assert!(!needs_ticket_poll(
+            &HashMap::new(),
+            Some(TicketCounts::default())
+        ));
+    }
+
     fn tray_without_hidden() -> TrayState {
         let (actions, _requests) = mpsc::channel();
         TrayState {
             hidden_windows: Default::default(),
-            hidden_ticketed: None,
+            ticketed: Some(TicketCounts::default()),
             protected_count: 1,
             last_lock: None,
             offline: false,
@@ -1714,7 +1924,7 @@ mod tests {
     }
 
     #[test]
-    fn a_hidden_report_publishes_its_ticket_count_in_the_same_update() {
+    fn a_hidden_report_publishes_its_ticket_counts_in_the_same_update() {
         let mut tray = tray_without_hidden();
         let counts = HashMap::from([("org.kde.motrix".into(), 1)]);
         // The focus-loss hide kept the ticket, so the ring goes from green
@@ -1723,7 +1933,10 @@ mod tests {
             &mut tray,
             (1, 1),
             counts.clone(),
-            Some(1)
+            Some(TicketCounts {
+                hidden: 1,
+                total: 1,
+            })
         ));
         assert_eq!(tray.icon_name(), RESTORABLE_ICON);
         // A report that could not be matched to tickets keeps the fallback,
@@ -1735,7 +1948,15 @@ mod tests {
             None
         ));
         assert_eq!(tray.icon_name(), LOCKED_ICON);
-        assert!(!apply_hidden_windows(&mut tray, (1, 1), counts, Some(1)));
+        assert!(!apply_hidden_windows(
+            &mut tray,
+            (1, 1),
+            counts,
+            Some(TicketCounts {
+                hidden: 1,
+                total: 1,
+            })
+        ));
         assert_eq!(tray.icon_name(), LOCKED_ICON);
     }
 
@@ -1744,32 +1965,68 @@ mod tests {
         let mut tray = tray_without_hidden();
         let counts = HashMap::from([("org.kde.motrix".into(), 1)]);
         // The locked blue before the user authenticates the restore.
-        apply_hidden_windows(&mut tray, (1, 1), counts.clone(), Some(0));
+        apply_hidden_windows(
+            &mut tray,
+            (1, 1),
+            counts.clone(),
+            Some(TicketCounts {
+                hidden: 0,
+                total: 0,
+            }),
+        );
         assert_eq!(tray.icon_name(), LOCKED_ICON);
         hold_ticket_grant(&mut tray, "org.kde.motrix", Instant::now());
         // The grant's read would count the app as amber, but KWin still
         // reports its window hidden.
-        apply_ticket_poll(&mut tray, TicketPoll::Confirmed(1));
+        apply_ticket_poll(
+            &mut tray,
+            TicketPoll::Confirmed(TicketCounts {
+                hidden: 1,
+                total: 1,
+            }),
+        );
         assert_eq!(tray.icon_name(), LOCKED_ICON);
-        // The report that brings the window back ends the hold and publishes
-        // the new count.
-        apply_hidden_windows(&mut tray, (1, 2), HashMap::new(), Some(0));
+        // The report that brings the window back ends the hold. The ticket
+        // still covers a launch, so the ring stays amber until it expires.
+        apply_hidden_windows(
+            &mut tray,
+            (1, 2),
+            HashMap::new(),
+            Some(TicketCounts {
+                hidden: 0,
+                total: 1,
+            }),
+        );
         assert!(tray.ticket_grants.is_empty());
-        assert_eq!(tray.icon_name(), "shisa-tray-symbolic");
+        assert_eq!(tray.icon_name(), RESTORABLE_ICON);
     }
 
     #[test]
     fn an_expired_ticket_grant_stops_holding_the_color() {
         let mut tray = tray_without_hidden();
         let counts = HashMap::from([("org.kde.motrix".into(), 1)]);
-        apply_hidden_windows(&mut tray, (1, 1), counts, Some(0));
+        apply_hidden_windows(
+            &mut tray,
+            (1, 1),
+            counts,
+            Some(TicketCounts {
+                hidden: 0,
+                total: 0,
+            }),
+        );
         // The window never came back. The hold expires instead of freezing
         // the color forever.
         tray.ticket_grants.insert(
             "org.kde.motrix".into(),
             Instant::now() - Duration::from_secs(1),
         );
-        apply_ticket_poll(&mut tray, TicketPoll::Confirmed(1));
+        apply_ticket_poll(
+            &mut tray,
+            TicketPoll::Confirmed(TicketCounts {
+                hidden: 1,
+                total: 1,
+            }),
+        );
         assert_eq!(tray.icon_name(), RESTORABLE_ICON);
     }
 
@@ -1777,15 +2034,35 @@ mod tests {
     fn a_confirmed_drop_bypasses_a_pending_ticket_grant() {
         let mut tray = tray_without_hidden();
         let counts = HashMap::from([("org.kde.motrix".into(), 1), ("org.kde.okular".into(), 1)]);
-        apply_hidden_windows(&mut tray, (1, 1), counts, Some(1));
+        apply_hidden_windows(
+            &mut tray,
+            (1, 1),
+            counts,
+            Some(TicketCounts {
+                hidden: 1,
+                total: 2,
+            }),
+        );
         assert_eq!(tray.icon_name(), RESTORABLE_ICON);
         hold_ticket_grant(&mut tray, "org.kde.motrix", Instant::now());
         // The grant's own read is held back.
-        apply_ticket_poll(&mut tray, TicketPoll::Confirmed(2));
+        apply_ticket_poll(
+            &mut tray,
+            TicketPoll::Confirmed(TicketCounts {
+                hidden: 2,
+                total: 2,
+            }),
+        );
         assert_eq!(tray.icon_name(), RESTORABLE_ICON);
         // A lock revokes every ticket before the granted window returns. The
         // confirmed drop must reach the ring at once, not after the hold.
-        apply_ticket_poll(&mut tray, TicketPoll::Confirmed(0));
+        apply_ticket_poll(
+            &mut tray,
+            TicketPoll::Confirmed(TicketCounts {
+                hidden: 0,
+                total: 0,
+            }),
+        );
         assert_eq!(tray.icon_name(), LOCKED_ICON);
     }
 
@@ -1793,13 +2070,27 @@ mod tests {
     fn a_revoked_ticket_cancels_its_grant_hold() {
         let mut tray = tray_without_hidden();
         let counts = HashMap::from([("org.kde.motrix".into(), 1)]);
-        apply_hidden_windows(&mut tray, (1, 1), counts, Some(0));
+        apply_hidden_windows(
+            &mut tray,
+            (1, 1),
+            counts,
+            Some(TicketCounts {
+                hidden: 0,
+                total: 0,
+            }),
+        );
         apply_state_change(&mut tray, "org.kde.motrix", true, Instant::now());
         assert_eq!(tray.ticket_grants.len(), 1);
         apply_state_change(&mut tray, "org.kde.motrix", false, Instant::now());
         assert!(tray.ticket_grants.is_empty());
         // With the hold gone, the next read applies.
-        apply_ticket_poll(&mut tray, TicketPoll::Confirmed(1));
+        apply_ticket_poll(
+            &mut tray,
+            TicketPoll::Confirmed(TicketCounts {
+                hidden: 1,
+                total: 1,
+            }),
+        );
         assert_eq!(tray.icon_name(), RESTORABLE_ICON);
     }
 

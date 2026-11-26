@@ -90,6 +90,46 @@ let retryAt = 0;
 let requestedForeground = "";
 let inventorySequence = 0;
 let lastSnapshot;
+// The protected apps that had at least one window at the previous pass. A
+// generation starts with null so the first pass records what was already
+// open instead of reporting every window as closed.
+let presentApps = null;
+
+// A protected app that loses its last window can be reopened from its own
+// tray icon without an exec, so the launch gate never sees it. Report the
+// close once so the agent can drop the app's window permission and keep its
+// ticket: a reopen within the grace period still avoids the password, and a
+// later one goes through the restore panel. The report goes out even when
+// the app is not allowed at this instant, because the script's window state
+// can lag a grant, and `Hide` is a no-op without permission.
+function reportClosedApps() {
+  const now = new Set();
+  for (const window of workspace.windowList()) {
+    const app = appOf(window);
+    // A window KWin still lists but marks hidden is not one the user can
+    // see, so the app counts as closed for the same purpose.
+    if (app && PROTECTED.includes(app) && !window.hidden) now.add(app);
+  }
+  const before = presentApps;
+  presentApps = now;
+  if (before === null) return;
+  for (const app of before) {
+    if (now.has(app) || !PROTECTED.includes(app)) continue;
+    // The daemon rejects malformed ids, but they must not reach the bus or a
+    // log line in the first place. The line-based reports use the same guard.
+    if (/[\x00\r\n]/.test(app)) continue;
+    callDBus(
+      SERVICE,
+      PATH,
+      IFACE,
+      "WindowEvent",
+      app,
+      "",
+      "closed",
+      function () {},
+    );
+  }
+}
 
 function reportHiddenWindows() {
   const counts = new Map();
@@ -225,6 +265,7 @@ function save(next) {
 
 function reconcile(foreground) {
   if (foreground) requestedForeground = foreground;
+  reportClosedApps();
   if (pendingSave) {
     // Retry the same snapshot even if a window closed during the call: the
     // previous write might already have reached disk and lost its reply.
@@ -348,12 +389,14 @@ function watchIdentity(w) {
   // A dialog can acquire its parent or app id after windowAdded. Its own
   // children inherit that change as well. KWin exposes these as properties
   // whose changed signal may be absent or not connectable, so check the
-  // signal before using it.
+  // signal before using it. `hiddenChanged` also covers a window that the
+  // app hides without destroying it, which the close report needs to see.
   const changed = () => reconcile("");
   for (const name of [
     "transientChanged",
     "desktopFileNameChanged",
     "windowClassChanged",
+    "hiddenChanged",
   ]) {
     const signal = w[name];
     try {

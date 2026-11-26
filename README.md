@@ -46,14 +46,14 @@ Bind `shisa lock` to a KDE keyboard shortcut for the same manual lock from the k
 
 The Shisa tray icon is a keyhole inside a ring, and the ring carries the state:
 
-|                                   Icon                                    | Color | Meaning                                                           |
-| :-----------------------------------------------------------------------: | ----- | ----------------------------------------------------------------- |
-|   <img src="docs/images/tray-ready.svg" width="24" height="24" alt="">    | Green | No hidden windows reported                                        |
-|   <img src="docs/images/tray-locked.svg" width="24" height="24" alt="">   | Blue  | A hidden window needs the app-lock password to restore            |
-| <img src="docs/images/tray-restorable.svg" width="24" height="24" alt=""> | Amber | A hidden app can restore without the password in its grace period |
-|  <img src="docs/images/tray-offline.svg" width="24" height="24" alt="">   | Red   | shisad is offline                                                 |
+|                                   Icon                                    | Color | Meaning                                                                         |
+| :-----------------------------------------------------------------------: | ----- | ------------------------------------------------------------------------------- |
+|   <img src="docs/images/tray-ready.svg" width="24" height="24" alt="">    | Green | No hidden windows and no app in its grace period                                |
+|   <img src="docs/images/tray-locked.svg" width="24" height="24" alt="">   | Blue  | A hidden window needs the app-lock password to restore                          |
+| <img src="docs/images/tray-restorable.svg" width="24" height="24" alt=""> | Amber | A hidden app can restore, or another app can still launch, without the password |
+|  <img src="docs/images/tray-offline.svg" width="24" height="24" alt="">   | Red   | shisad is offline                                                               |
 
-The tooltip says how many hidden apps can restore without the password.
+Closing a protected app's last window drops its window permission. A reopen inside the grace period still asks no password, and a later one goes through Shisa's restore panel. The tooltip says how many hidden apps are password-free and how many apps can still launch without the password in their grace period.
 
 ## Protection scope
 
