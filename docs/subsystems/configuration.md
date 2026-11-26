@@ -43,7 +43,7 @@ The daemon keeps D-Bus error strings in English so the bus contract and the debu
 
 ### Settings interface
 
-The settings window keeps four text sizes as `--text-*` tokens at 11, 12, 13, and 14px, and control spacing on the 4px grid. Row copy adds only what the label does not already say, such as a focus-loss hide keeping the launch ticket valid. Both dictionaries use the same key set.
+The settings window keeps four text sizes as `--text-*` tokens at 11, 12, 13, and 14px, and control spacing on the 4px grid. The sidebar brand's keyhole fills its 16px grid so the mark matches the visual weight of the app icons in the list beside it. Row copy adds only what the label does not already say, such as a focus-loss hide keeping the launch ticket valid. Both dictionaries use the same key set.
 
 ## System D-Bus
 
