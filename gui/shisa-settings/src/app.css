@@ -26,12 +26,12 @@
   --code:
     ui-monospace, "SF Mono", Menlo, Consolas, "Noto Sans Mono CJK SC", monospace;
   /* Four text sizes and nothing between them: captions, secondary text,
-     body, and the row and page titles. Half-pixel steps between six or
-     seven values read as noise instead of as levels. */
+     body, and the page titles. Adjacent steps are far enough apart to read
+     as levels rather than as the half-pixel noise they replace. */
   --text-xs: 11px;
   --text-sm: 12px;
   --text-md: 13px;
-  --text-lg: 13.5px;
+  --text-lg: 14px;
   /* One motion language. Entrances settle, exits leave quickly, and presses
      answer within one frame. Every duration here has a matching helper in
      motion.js so script-driven transitions keep the same rhythm. */
@@ -370,6 +370,12 @@ input:focus-visible {
 .sidebar .row:hover:not(.on) {
   background: var(--pill);
   color: var(--fg);
+}
+
+/* A duplicate display name adds the app id under the name, and the two
+   lines do not fit the one-line 30px row. */
+.sidebar .row.subbed {
+  height: 38px;
 }
 
 .sidebar .row.on {

@@ -1070,6 +1070,7 @@
           >
             <button
               class="row"
+              class:subbed={(nameCounts.get(app.name) ?? 0) > 1}
               class:on={page === "app" && app.id === currentId}
               data-app={app.id}
               tabindex={app.id === focusableId ? 0 : -1}
