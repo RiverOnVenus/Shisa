@@ -5,8 +5,9 @@
 //! The Plasma lock screen sets `LockedHint` directly.
 //!
 //! logind announces every change with a signal, and each signal triggers one
-//! look at the sessions. A short timer does the same in case a signal is ever
-//! missed, including a lock and unlock that both fit between sweeps.
+//! look at the sessions. A short timer re-reads the current state in case a
+//! signal is ever missed. It narrows the window in which a complete lock and
+//! unlock can pass between two sweeps, but it cannot observe such a cycle.
 
 use crate::bus::{Msg, Shared};
 use std::collections::{HashMap, HashSet};
@@ -21,9 +22,10 @@ use zbus::blocking::{Connection, MessageIterator, Proxy};
 use zbus::message::Type;
 use zbus::zvariant::OwnedObjectPath;
 
-/// Signal-triggered sweeps handle the normal path. This short safety net also
-/// observes LockedHint directly, so a missed transient signal cannot hide a
-/// complete lock and unlock cycle.
+/// Signal-triggered sweeps handle the normal path. This short safety net
+/// re-reads LockedHint directly after a missed signal and narrows the time a
+/// lock can go unobserved. A lock and unlock that both happen between two
+/// sweeps still leave no visible trace.
 const POLL: Duration = Duration::from_secs(2);
 /// logind sends several signals for one change. Wait this long so they are
 /// handled by one sweep.
