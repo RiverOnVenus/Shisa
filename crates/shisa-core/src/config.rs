@@ -113,6 +113,12 @@ impl UserConfig {
                     p.display()
                 )));
             }
+            if app.paths.len() > MAX_PROTECTED_PATHS {
+                return Err(ConfigError(format!(
+                    "app {:?} has more than {MAX_PROTECTED_PATHS} protected paths",
+                    app.id
+                )));
+            }
         }
         Ok(cfg)
     }
@@ -196,6 +202,11 @@ mod tests {
         assert!(UserConfig::parse("[[apps]]\nid = \"a\"\ngrace = 3\n").is_err());
         assert!(UserConfig::parse("[global]\ngrace_seconds = -1\n").is_err());
         assert!(UserConfig::parse("[[apps]]\nid = \"a\"\nautostart = \"yes\"\n").is_err());
+        let paths = (0..=MAX_PROTECTED_PATHS)
+            .map(|index| format!("\"/usr/bin/app{index}\""))
+            .collect::<Vec<_>>()
+            .join(", ");
+        assert!(UserConfig::parse(&format!("[[apps]]\nid = \"a\"\npaths = [{paths}]\n")).is_err());
     }
 
     #[test]

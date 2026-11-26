@@ -90,6 +90,9 @@ pub trait Manager {
     /// Global grace period, whether the screen lock drops tickets, and the
     /// wait limit.
     fn global_config(&self) -> zbus::Result<(u64, bool, u64)>;
+    /// Generation that invalidates a settings window's retained polkit
+    /// authorization after a global or screen lock.
+    fn settings_generation(&self) -> zbus::Result<u64>;
     /// Protect or unprotect an app. Needs authentication first.
     fn set_protected(&self, app_id: &str, on: bool) -> zbus::Result<()>;
     /// Apps whose windows may show. This is not the ticket set: a ticket

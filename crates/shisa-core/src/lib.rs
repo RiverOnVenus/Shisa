@@ -3,6 +3,7 @@
 pub mod config;
 pub mod dbus;
 pub mod desktop;
+pub mod files;
 pub mod i18n;
 pub mod users;
 
