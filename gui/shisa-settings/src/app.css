@@ -254,7 +254,7 @@ input:focus-visible {
 .search {
   width: 100%;
   height: 26px;
-  padding: 0 9px;
+  padding: 0 8px;
   appearance: none;
   -webkit-appearance: none;
   border-radius: 0;
@@ -352,7 +352,7 @@ input:focus-visible {
 .sidebar .row {
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 8px;
   width: 100%;
   height: 30px;
   padding: 0 8px;
@@ -465,7 +465,7 @@ input:focus-visible {
   gap: 8px;
   height: 26px;
   margin-top: 2px;
-  padding: 0 9px;
+  padding: 0 8px;
   border-radius: 0;
   font-size: var(--text-sm);
   color: var(--muted);
@@ -966,7 +966,7 @@ button.prefrow {
 .num {
   width: 76px;
   height: 26px;
-  padding: 0 9px;
+  padding: 0 8px;
   border-radius: 0;
   border: 1px solid var(--line);
   background: var(--card);
@@ -1050,7 +1050,7 @@ button.prefrow {
 .text {
   font-size: var(--text-sm);
   color: var(--ctl-fg);
-  padding: 3px 7px;
+  padding: 4px 8px;
   border-radius: 0;
   transition:
     background-color var(--dur-fast) var(--ease-out),
@@ -1116,7 +1116,7 @@ button.prefrow {
   flex: 1;
   min-width: 0;
   height: 26px;
-  padding: 0 9px;
+  padding: 0 8px;
   border-radius: 0;
   border: 1px solid var(--line);
   background: var(--card);
