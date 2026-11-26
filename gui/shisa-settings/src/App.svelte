@@ -1522,8 +1522,6 @@
                   <div class="name">{t("app.protect.name")}</div>
                   {#if protectBlocked}
                     <div class="sub warn">{t("app.protect.nopath")}</div>
-                  {:else}
-                    <div class="sub">{t("app.protect.sub")}</div>
                   {/if}
                 </div>
                 <button
@@ -1686,11 +1684,6 @@
                     <path d="m4 6 4 4 4-4" />
                   </svg>
                 </summary>
-                <div class="prefrow">
-                  <div class="who">
-                    <div class="sub">{t("app.coverage.note")}</div>
-                  </div>
-                </div>
                 <div class="prefrow">
                   <div class="who">
                     <div class="sub">{t("app.windows.note")}</div>

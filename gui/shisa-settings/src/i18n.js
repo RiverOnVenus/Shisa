@@ -124,7 +124,6 @@ const zh = {
   "app.unlockNow": "现在认证",
   "app.failure": "最近一次启动失败",
   "app.protect.name": "启动前要求认证",
-  "app.protect.sub": "开启后，启动这个应用要输入应用锁密码。",
   "app.protect.nopath": "没有可拦截的启动入口，无法开启保护。",
   "app.inactive.count": "{count} 条保护路径未生效，启动拦截不完整。",
   "app.grace.name": "宽限期",
@@ -147,7 +146,6 @@ const zh = {
   "app.path.none": "还没有路径。",
   "app.path.placeholder": "/usr/bin/程序 或 /opt/游戏/启动器",
   "app.coverage.name": "保护范围",
-  "app.coverage.note": "保护范围列出启动会拦截的路径，以及窗口隐藏的实际边界。",
   "app.paths.name": "启动入口",
   "app.paths.potential": "开启保护后会拦截这些路径，并在锁屏或失焦时收起窗口。",
   "app.paths.noneEffective": "当前没有路径在生效。",
@@ -353,8 +351,6 @@ const en = {
   "app.unlockNow": "Authenticate now",
   "app.failure": "Last launch failed",
   "app.protect.name": "Require authentication before launch",
-  "app.protect.sub":
-    "When on, launching this app asks for the app-lock password.",
   "app.protect.nopath":
     "No launch entry can be gated, so protection cannot be turned on.",
   "app.inactive.count":
@@ -381,8 +377,6 @@ const en = {
   "app.path.none": "No paths yet.",
   "app.path.placeholder": "/usr/bin/program or /opt/game/launcher",
   "app.coverage.name": "Protection coverage",
-  "app.coverage.note":
-    "Protection coverage lists the paths that gate launches and the limits of window hiding.",
   "app.paths.name": "Launch paths",
   "app.paths.potential":
     "Turning on protection gates these paths and hides their windows on lock or focus loss.",
