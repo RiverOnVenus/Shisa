@@ -22,7 +22,7 @@ use std::collections::HashMap;
 use std::env;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -49,6 +49,22 @@ enum Action {
     HiddenWindows((u64, u64), HashMap<String, u32>),
     OpenSettings,
     OpenRestore,
+}
+
+/// Bound the work that session-bus clients can leave waiting behind a slow
+/// ticket read or authentication prompt. KWin reports and tray actions share
+/// the queue, so an untrusted same-user caller cannot grow it without bound.
+const ACTION_QUEUE_CAPACITY: usize = 64;
+
+pub(crate) fn enqueue_action(
+    actions: &SyncSender<Action>,
+    action: Action,
+) -> Result<(), &'static str> {
+    match actions.try_send(action) {
+        Ok(()) => Ok(()),
+        Err(TrySendError::Full(_)) => Err("too many pending window actions"),
+        Err(TrySendError::Disconnected(_)) => Err("window action loop stopped"),
+    }
 }
 
 const OFFLINE_ICON: &str = "shisa-tray-offline-symbolic";
@@ -102,7 +118,7 @@ struct TrayState {
     ticket_grants: HashMap<String, Instant>,
     /// The interface language, re-read while the tray runs.
     language: Language,
-    actions: Sender<Action>,
+    actions: SyncSender<Action>,
 }
 
 impl TrayState {
@@ -519,7 +535,7 @@ impl Tray for TrayState {
     }
 
     fn activate(&mut self, _x: i32, _y: i32) {
-        let _ = self.actions.send(Action::OpenRestore);
+        let _ = self.actions.try_send(Action::OpenRestore);
     }
 
     fn menu(&self) -> Vec<MenuItem<Self>> {
@@ -527,7 +543,7 @@ impl Tray for TrayState {
         let send = |action: fn() -> Action| -> Box<dyn Fn(&mut TrayState) + Send> {
             let actions = self.actions.clone();
             Box::new(move |_this: &mut TrayState| {
-                let _ = actions.send(action());
+                let _ = actions.try_send(action());
             })
         };
         // A disabled row that only says "Lock protected apps" leaves the
@@ -577,7 +593,7 @@ fn main() -> std::process::ExitCode {
         .without_time()
         .init();
 
-    let (actions_tx, actions_rx) = mpsc::channel();
+    let (actions_tx, actions_rx) = mpsc::sync_channel(ACTION_QUEUE_CAPACITY);
     // The gate is filled once the session connection is up. The action
     // thread uses it to bring windows back after an unlock and to bring an
     // already open settings window to the front. The tracker is shared with
@@ -690,7 +706,7 @@ fn main() -> std::process::ExitCode {
 fn window_service(
     tracker: Arc<Mutex<window::Tracker>>,
     ready: Arc<window::Ready>,
-    actions: Sender<Action>,
+    actions: SyncSender<Action>,
 ) -> Option<Connection> {
     let service = window::WindowService::new(tracker, ready, actions);
     match zbus::blocking::connection::Builder::session()
@@ -1620,8 +1636,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn action_queue_refuses_work_when_it_is_full() {
+        let (actions, requests) = mpsc::sync_channel(1);
+        assert!(enqueue_action(&actions, Action::OpenSettings).is_ok());
+        assert_eq!(
+            enqueue_action(&actions, Action::OpenRestore),
+            Err("too many pending window actions")
+        );
+        assert!(matches!(requests.recv(), Ok(Action::OpenSettings)));
+        assert!(enqueue_action(&actions, Action::OpenRestore).is_ok());
+    }
+
+    #[test]
     fn tray_menu_offers_restore_lock_and_settings() {
-        let (actions, requests) = mpsc::channel();
+        let (actions, requests) = mpsc::sync_channel(ACTION_QUEUE_CAPACITY);
         let mut tray = TrayState {
             hidden_windows: ((1, 1), HashMap::from([("org.kde.kate".into(), 2)])),
             ticketed: None,
@@ -1655,7 +1683,7 @@ mod tests {
 
     #[test]
     fn lock_all_is_disabled_without_protected_apps() {
-        let (actions, _requests) = mpsc::channel();
+        let (actions, _requests) = mpsc::sync_channel(ACTION_QUEUE_CAPACITY);
         let tray = TrayState {
             hidden_windows: Default::default(),
             ticketed: None,
@@ -1676,7 +1704,7 @@ mod tests {
 
     #[test]
     fn lock_all_names_an_offline_daemon_in_the_tray_menu() {
-        let (actions, _requests) = mpsc::channel();
+        let (actions, _requests) = mpsc::sync_channel(ACTION_QUEUE_CAPACITY);
         let tray = TrayState {
             hidden_windows: Default::default(),
             ticketed: None,
@@ -1697,7 +1725,7 @@ mod tests {
 
     #[test]
     fn the_tray_icon_shows_the_normal_locked_and_password_free_states() {
-        let (actions, _requests) = mpsc::channel();
+        let (actions, _requests) = mpsc::sync_channel(ACTION_QUEUE_CAPACITY);
         let mut tray = TrayState {
             hidden_windows: Default::default(),
             ticketed: Some(TicketCounts::default()),
@@ -1738,7 +1766,7 @@ mod tests {
 
     #[test]
     fn the_tray_tooltip_names_the_password_free_hidden_apps() {
-        let (actions, _requests) = mpsc::channel();
+        let (actions, _requests) = mpsc::sync_channel(ACTION_QUEUE_CAPACITY);
         let mut tray = TrayState {
             hidden_windows: (
                 (1, 1),
@@ -1804,7 +1832,7 @@ mod tests {
 
     #[test]
     fn the_tray_tooltip_does_not_claim_a_password_while_the_ticket_state_is_unknown() {
-        let (actions, _requests) = mpsc::channel();
+        let (actions, _requests) = mpsc::sync_channel(ACTION_QUEUE_CAPACITY);
         let mut tray = TrayState {
             hidden_windows: ((1, 1), HashMap::from([("org.kde.kate".into(), 2)])),
             ticketed: None,
@@ -1910,7 +1938,7 @@ mod tests {
     }
 
     fn tray_without_hidden() -> TrayState {
-        let (actions, _requests) = mpsc::channel();
+        let (actions, _requests) = mpsc::sync_channel(ACTION_QUEUE_CAPACITY);
         TrayState {
             hidden_windows: Default::default(),
             ticketed: Some(TicketCounts::default()),

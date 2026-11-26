@@ -155,8 +155,9 @@ function reportHiddenWindows() {
     String(generation),
     String(++inventorySequence),
     snapshot,
-    function () {
-      lastSnapshot = report;
+    function (accepted) {
+      if (accepted === true || (Array.isArray(accepted) && accepted[0] === true))
+        lastSnapshot = report;
     },
   );
 }
@@ -422,18 +423,35 @@ if (workspace.windowRemoved)
 // hidden is the tray's or a relaunch's job.
 let activeApp = "";
 let activePid = "";
+const pendingReports = new Map();
+let reportSequence = 0;
 function report(app, pid, event) {
-  if (app)
-    callDBus(
-      SERVICE,
-      PATH,
-      IFACE,
-      "WindowEvent",
-      app,
-      pid,
-      event,
-      function () {},
-    );
+  if (!app) return;
+  const key = app + "\t" + pid;
+  const sequence = ++reportSequence;
+  pendingReports.set(key, { app, pid, event, sequence });
+  sendReport(key);
+}
+function sendReport(key) {
+  const report = pendingReports.get(key);
+  if (!report) return;
+  callDBus(
+    SERVICE,
+    PATH,
+    IFACE,
+    "WindowEvent",
+    report.app,
+    report.pid,
+    report.event,
+    function (accepted) {
+      const current = pendingReports.get(key);
+      if (current && current.sequence === report.sequence && accepted !== false)
+        pendingReports.delete(key);
+    },
+  );
+}
+function flushReports() {
+  for (const key of pendingReports.keys()) sendReport(key);
 }
 function syncFocus(w) {
   const owner = appOf(w);
@@ -481,6 +499,7 @@ timer.timeout.connect(function () {
     if (revision <= generation) {
       if (pendingSave && Date.now() >= retryAt) reconcile("");
       if (restorePending && Date.now() >= restoreRetryAt) reconcile("");
+      flushReports();
       syncFocus(workspace.activeWindow);
       reportHiddenWindows();
       return;

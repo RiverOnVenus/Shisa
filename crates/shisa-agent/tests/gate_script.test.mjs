@@ -90,6 +90,12 @@ function boot(options = {}) {
       const payload = options.state ?? [owner, 1, [], [], [], ""];
       args[args.length - 1](JSON.stringify(payload));
     }
+    if (args[3] === "HiddenWindows") {
+      args[args.length - 1](!options.rejectHidden);
+    }
+    if (args[3] === "WindowEvent") {
+      args[args.length - 1](!options.rejectWindowEvent);
+    }
   }
 
   vm.runInContext(
@@ -133,6 +139,31 @@ test("a window the script could not conceal is named in the report", () => {
   const env = boot({ locked: ["org.kde.kate"], windows: [window] });
   const checked = methodCalls(env, "WindowsChecked");
   assert.deepEqual(checked[0].slice(4, 8), ["1", "1", "0", "1\torg.kde.kate"]);
+});
+
+test("a rejected hidden-window report is sent again", () => {
+  const window = makeWindow("org.kde.kate", "kate");
+  const env = boot({
+    locked: ["org.kde.kate"],
+    windows: [window],
+    rejectHidden: true,
+  });
+  assert.equal(methodCalls(env, "HiddenWindows").length, 1);
+  env.timers.at(-1).onTimeout();
+  assert.equal(methodCalls(env, "HiddenWindows").length, 2);
+});
+
+test("a rejected focus report is sent again", () => {
+  const window = makeWindow("org.kde.kate", "kate");
+  const env = boot({
+    locked: ["org.kde.kate"],
+    windows: [window],
+    active: window,
+    rejectWindowEvent: true,
+  });
+  assert.equal(methodCalls(env, "WindowEvent").length, 1);
+  env.timers.at(-1).onTimeout();
+  assert.equal(methodCalls(env, "WindowEvent").length, 2);
 });
 
 test("an app id that would split the report line is left out", () => {
