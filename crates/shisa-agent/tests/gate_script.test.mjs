@@ -252,3 +252,42 @@ test("a foreground app is raised and activated", () => {
   assert.equal(env.workspace.activeWindow, kate);
   assert.ok(env.calls.some((call) => call[0] === "raise" && call[1] === kate));
 });
+
+test("a transient follows its protected ancestor for concealment and inventory", () => {
+  const parent = makeWindow("app", "app");
+  const child = makeWindow("", "");
+  const dialog = makeWindow("", "");
+  dialog.transientFor = child;
+  child.transientFor = parent;
+  const env = boot({ locked: ["app"], windows: [parent, child, dialog] });
+  assert.ok(dialog.minimized);
+  assert.deepEqual(methodCalls(env, "WindowsChecked")[0].slice(5, 7), ["3", "3"]);
+  assert.equal(methodCalls(env, "HiddenWindows")[0][6], "3\tapp");
+  env.handlers.activated[0](dialog);
+  assert.equal(methodCalls(env, "RestoreIfTicketed").at(-1)[4], "app");
+});
+
+test("a separately identified application keeps its own window policy", () => {
+  const parent = makeWindow("app", "app");
+  const other = makeWindow("other.app", "other", 200);
+  other.transientFor = parent;
+  boot({ locked: ["app", "other.app"], allowed: ["other.app"], windows: [parent, other] });
+  assert.equal(other.minimized, false);
+  boot({ locked: ["app"], windows: [parent, other] });
+  assert.equal(other.minimized, false);
+});
+
+
+test("a newly assigned transient parent updates the window and its descendants", () => {
+  const parent = makeWindow("app", "app");
+  const child = makeWindow("", "");
+  let changed;
+  child.transientChanged = { connect(fn) { changed = fn; } };
+  const grandchild = makeWindow("", "");
+  grandchild.transientFor = child;
+  boot({ locked: ["app"], windows: [parent, child, grandchild] });
+  assert.equal(grandchild.minimized, false);
+  child.transientFor = parent;
+  changed();
+  assert.equal(grandchild.minimized, true);
+});

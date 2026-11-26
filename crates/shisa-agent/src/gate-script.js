@@ -43,22 +43,18 @@ function reportHiddenWindows() {
 }
 
 function appOf(w) {
-  if (!w) return "";
-  const known = function (id) {
-    return id && (PROTECTED.indexOf(id) >= 0 || RESTORE.indexOf(id) >= 0);
-  };
-  if (known(w.desktopFileName)) return w.desktopFileName;
-  if (known(w.resourceClass)) return w.resourceClass;
-  return "";
-}
-
-function focusedApp(window) {
+  const known = (id) => id && (PROTECTED.includes(id) || RESTORE.includes(id));
   const visited = new Set();
-  while (window && !visited.has(window)) {
-    visited.add(window);
-    const app = appOf(window);
-    if (app && PROTECTED.includes(app)) return app;
-    window = window.transientFor;
+  while (w && !visited.has(w)) {
+    visited.add(w);
+    if (known(w.desktopFileName)) return w.desktopFileName;
+    if (known(w.resourceClass)) return w.resourceClass;
+    const parent = w.transientFor;
+    // A separately identified process (for example a portal) can present a
+    // dialog for another app without belonging to that app.
+    if (parent && w.pid > 0 && parent.pid > 0 && w.pid !== parent.pid &&
+        (w.desktopFileName || w.resourceClass)) break;
+    w = parent;
   }
   return "";
 }
@@ -177,7 +173,17 @@ function reconcile(foreground) {
   );
   reportHiddenWindows();
 }
+function watchIdentity(w) {
+  // A dialog can acquire its parent or app id after windowAdded. Its own
+  // children inherit that change as well.
+  const changed = () => reconcile("");
+  for (const signal of [w.transientChanged, w.desktopFileNameChanged, w.windowClassChanged]) {
+    if (signal) signal.connect(changed);
+  }
+}
+for (const w of workspace.windowList()) watchIdentity(w);
 workspace.windowAdded.connect(function (w) {
+  watchIdentity(w);
   consider(w);
   if (hidden.indexOf(w) >= 0) reportHiddenWindows();
 });
@@ -211,7 +217,8 @@ function report(app, pid, event) {
     );
 }
 function syncFocus(w) {
-  const app = focusedApp(w);
+  const owner = appOf(w);
+  const app = PROTECTED.includes(owner) ? owner : "";
   if (app === activeApp) return;
   report(activeApp, activePid, "unfocused");
   report(app, app ? "" + w.pid : "", "focused");
