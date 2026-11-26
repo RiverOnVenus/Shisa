@@ -670,6 +670,29 @@ impl Harness {
             p.opacity == 1.0 && !p.minimized && d.opacity == 1.0 && !d.minimized
         })?;
         self.wait_journal_empty()?;
+
+        // A restart before the unlock loses the in-memory values. The valid
+        // empty journal has no entry for the concealed windows, so the new
+        // generation records them with the defaults.
+        fs::create_dir(&temp).map_err(|e| format!("{}: {e}", temp.display()))?;
+        self.lock()?;
+        self.wait_pair("the fallback conceal before the restart", |p, d| {
+            concealed(p) && concealed(d)
+        })?;
+        fs::remove_dir(&temp).map_err(|e| format!("{}: {e}", temp.display()))?;
+        self.stop_agent();
+        self.start_agent()?;
+        self.wait_pair("the recovered windows after the restart", |p, d| {
+            concealed(p) && concealed(d)
+        })?;
+        wait_until(Duration::from_secs(5), "the recovered journal", || {
+            self.journal().is_ok_and(|entries| !entries.is_empty())
+        })?;
+        self.allow("test.parent")?;
+        self.wait_pair("the recovered windows after the unlock", |p, d| {
+            p.opacity == 1.0 && !p.minimized && !p.skip_pager && d.opacity == 1.0 && !d.minimized
+        })?;
+        self.wait_journal_empty()?;
         self.wait_unrelated(&original.unrelated)?;
         Ok(())
     }

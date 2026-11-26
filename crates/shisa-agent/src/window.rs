@@ -487,11 +487,6 @@ pub struct Gate {
     /// after a fresh script has reported started: unloading one script right
     /// before loading another makes KWin ignore the new one.
     stale: Vec<String>,
-    legacy_snapshots: bool,
-    /// A previous script generation left its plugin name behind. With no
-    /// journal, a concealed window may have lost its original properties,
-    /// including when a save failed.
-    had_plugin_file: bool,
 }
 
 impl Gate {
@@ -516,8 +511,6 @@ impl Gate {
             plugin: String::new(),
             ready,
             stale: vec![LEGACY_PLUGIN.to_string()],
-            legacy_snapshots: false,
-            had_plugin_file: false,
             instance: 0,
             foreground: String::new(),
         };
@@ -527,14 +520,6 @@ impl Gate {
         if let Ok(previous) = fs::read_to_string(gate.plugin_file()) {
             let previous = previous.trim();
             if !previous.is_empty() {
-                gate.had_plugin_file = true;
-                let source = previous
-                    .rsplit('-')
-                    .next()
-                    .and_then(|n| n.parse::<u64>().ok())
-                    .map(|generation| gate.directory.join(format!("kwin-gate-{generation}.js")))
-                    .and_then(|path| fs::read_to_string(path).ok());
-                gate.legacy_snapshots = script_is_legacy(previous, source.as_deref());
                 gate.stale.push(previous.to_string());
             }
         }
@@ -784,7 +769,6 @@ impl Gate {
                 let _writer = self.ready.snapshot_version.lock().unwrap();
                 read_snapshots(&self.directory.join(SNAPSHOT_FILE))
             };
-            let legacy = snapshots.is_none() && (self.legacy_snapshots || self.had_plugin_file);
             let source = script_for_foreground(
                 protected,
                 allowed,
@@ -795,10 +779,6 @@ impl Gate {
             .replace(
                 "/* @SNAPSHOTS@ */ \"[]\"",
                 &js_string(snapshots.as_deref().unwrap_or("[]")),
-            )
-            .replace(
-                "/* @LEGACY@ */ false",
-                if legacy { "true" } else { "false" },
             );
             write_atomic(&path, &source).map_err(LoadError::Other)?;
             let plugin = format!(
@@ -826,7 +806,6 @@ impl Gate {
                     self.unload_named(&previous);
                 }
                 self.plugin = running;
-                self.legacy_snapshots = false;
                 let _ = fs::write(self.plugin_file(), &self.plugin);
                 self.remove_old_scripts(&path);
                 return Ok(());
@@ -1004,12 +983,6 @@ fn read_snapshots(path: &Path) -> Option<String> {
     Some(text)
 }
 
-/// An older per-generation script wrote no journal, and the fixed plugin
-/// always predates it.
-fn script_is_legacy(previous: &str, source: Option<&str>) -> bool {
-    previous == LEGACY_PLUGIN || source.is_some_and(|s| !s.contains("SaveWindowSnapshots"))
-}
-
 fn write_atomic(path: &Path, content: &str) -> Result<(), String> {
     let tmp = path.with_extension("tmp");
     let mut file = fs::OpenOptions::new()
@@ -1126,22 +1099,6 @@ mod tests {
         fs::write(&path, "[]").unwrap();
         assert_eq!(read_snapshots(&path).as_deref(), Some("[]"));
         fs::remove_dir_all(directory).unwrap();
-    }
-
-    #[test]
-    fn legacy_scripts_are_the_fixed_plugin_or_missing_the_save_method() {
-        assert!(script_is_legacy(LEGACY_PLUGIN, None));
-        assert!(script_is_legacy(
-            "shisa-window-gate-1-2",
-            Some("old script")
-        ));
-        assert!(!script_is_legacy(
-            "shisa-window-gate-1-3",
-            Some("SaveWindowSnapshots")
-        ));
-        // A per-generation name whose script file was removed is treated as
-        // new; the missing-journal fallback covers that at load time.
-        assert!(!script_is_legacy("shisa-window-gate-1-4", None));
     }
 
     #[test]

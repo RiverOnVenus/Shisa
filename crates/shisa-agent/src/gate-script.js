@@ -36,9 +36,7 @@ const RESTORE_RETRY_MS = 250;
 const RESTORE_MAX_MS = 5000;
 
 // The journal is user-writable, so a corrupt or partial file must not stop
-// the script. Keep only entries that match the captured state's shape. The
-// second value marks a damaged journal, which turns on the legacy migration
-// for concealed windows that lost their entry.
+// the script. Keep only entries that match the captured state's shape.
 //
 // KWin runs this script in QJSEngine, which rejects the optional catch
 // binding (`catch {`). Every catch here must name its binding.
@@ -46,18 +44,12 @@ function loadOriginals(text) {
   try {
     const parsed = JSON.parse(text);
     const map = new Map();
-    if (!Array.isArray(parsed)) return [map, false];
-    let valid = true;
+    if (!Array.isArray(parsed)) return map;
     for (const entry of parsed) {
-      if (!Array.isArray(entry) || entry.length !== 2) {
-        valid = false;
-        continue;
-      }
+      if (!Array.isArray(entry) || entry.length !== 2) continue;
       const [id, state] = entry;
-      if (typeof id !== "string" || !state || typeof state !== "object") {
-        valid = false;
+      if (typeof id !== "string" || !state || typeof state !== "object")
         continue;
-      }
       const original = {};
       let entryOk = true;
       for (const key of Object.keys(concealedState)) {
@@ -73,16 +65,19 @@ function loadOriginals(text) {
         original[key] = value;
       }
       if (entryOk) map.set(id, original);
-      else valid = false;
     }
-    return [map, valid];
+    return map;
   } catch (error) {
-    return [new Map(), false];
+    return new Map();
   }
 }
-const loaded = loadOriginals(/* @SNAPSHOTS@ */ "[]");
-let originals = loaded[0];
-let migrateLegacy = /* @LEGACY@ */ false || !loaded[1];
+let originals = loadOriginals(/* @SNAPSHOTS@ */ "[]");
+// A generation can start with a window this layer concealed before its
+// journal write failed, so an otherwise valid journal has no entry for it.
+// Recover known-app windows with the defaults until the journal matches, or
+// an unlock would never show them again. A window that appears later is left
+// alone.
+let recoverUnknown = true;
 let pendingSave;
 let saveStarted = 0;
 let saveAttempts = 0;
@@ -242,9 +237,9 @@ function reconcile(foreground) {
   for (const w of windows) {
     const id = String(w.internalId);
     if (captured.has(id)) continue;
-    // Previous versions kept no original properties. Limit their one-time
-    // migration to known apps with the complete old concealment signature.
-    if (migrateLegacy && appOf(w) && isConcealed(w)) {
+    // A window with the complete concealment signature and a known app but
+    // no journal entry may be ours from a write that never reached disk.
+    if (recoverUnknown && appOf(w) && isConcealed(w)) {
       captured.set(id, legacyOriginal);
     } else if (locked(w) && !isConcealed(w)) {
       captured.set(id, capture(w));
@@ -254,7 +249,7 @@ function reconcile(foreground) {
     save(captured);
     return;
   }
-  migrateLegacy = false;
+  recoverUnknown = false;
   const remaining = new Map();
   for (const w of windows) {
     const id = String(w.internalId);

@@ -9,11 +9,10 @@ import vm from "node:vm";
 // focus reporting.
 const template = readFileSync(new URL("../src/gate-script.js", import.meta.url), "utf8");
 
-function render({ locked = [], allowed = [], restore = [], generation = 1, foreground = "", journal = { value: "[]" }, legacy = false }) {
+function render({ locked = [], allowed = [], restore = [], generation = 1, foreground = "", journal = { value: "[]" } }) {
   const script = template
     .replace('"@SERVICE@"', JSON.stringify("svc"))
     .replace('/* @SNAPSHOTS@ */ "[]"', JSON.stringify(journal.value))
-    .replace('/* @LEGACY@ */ false', String(legacy))
     .replace('"@PATH@"', JSON.stringify("/window"))
     .replace('"@IFACE@"', JSON.stringify("iface"))
     .replace("/* @PROTECTED@ */ []", JSON.stringify(locked))
@@ -357,13 +356,13 @@ test("explicit restore activates a visible window and preserves its minimized si
   assert.equal(env.workspace.activeWindow, visible);
 });
 
-test("legacy migration restores only known windows with the old concealment signature", () => {
+test("a concealed known window missing from the journal is restored, an unrelated one is not", () => {
   const app = makeWindow("app", "app");
   const unrelated = makeWindow("unrelated", "unrelated");
   for (const w of [app, unrelated]) {
     Object.assign(w, { minimized: true, opacity: 0, skipTaskbar: true, skipPager: true, skipSwitcher: true });
   }
-  boot({ locked: ["app"], allowed: ["app"], windows: [app, unrelated], legacy: true });
+  boot({ locked: ["app"], allowed: ["app"], windows: [app, unrelated] });
   assert.equal(app.opacity, 1);
   assert.equal(unrelated.opacity, 0);
 });
@@ -442,10 +441,78 @@ test("a corrupt journal migrates a concealed known window back", () => {
     allowed: ["app"],
     windows: [window],
     journal,
-    legacy: false,
   });
   assert.equal(window.opacity, 1);
   assert.equal(window.minimized, false);
+});
+
+test("a concealed window missing from a valid journal is recovered when allowed", () => {
+  let now = 0;
+  class ClockDate extends Date {
+    static now() {
+      return now;
+    }
+  }
+  const window = makeWindow("app", "app");
+  window.opacity = 0.4;
+  const journal = { value: "[]" };
+  const env = boot({
+    locked: ["app"],
+    windows: [window],
+    journal,
+    failSave: true,
+    Date: ClockDate,
+  });
+  // The save cannot complete, so the fallback conceals with the values in
+  // memory while the older empty journal stays on disk.
+  for (let i = 0; i < 3; i++) {
+    now += 500;
+    env.timers[0].onTimeout();
+  }
+  assert.equal(window.opacity, 0);
+  assert.equal(window.minimized, true);
+  assert.equal(journal.value, "[]");
+
+  // A fresh generation reads the valid empty journal and finds a concealed
+  // known window. It recovers the window with the defaults.
+  boot({
+    locked: ["app"],
+    allowed: ["app"],
+    windows: [window],
+    journal,
+    generation: 2,
+  });
+  assert.equal(window.opacity, 1);
+  assert.equal(window.minimized, false);
+  assert.equal(journal.value, "[]");
+});
+
+test("a concealed window missing from a valid journal stays hidden while locked", () => {
+  const window = makeWindow("app", "app");
+  Object.assign(window, {
+    opacity: 0,
+    minimized: true,
+    skipTaskbar: true,
+    skipSwitcher: true,
+    skipPager: true,
+  });
+  const journal = { value: "[]" };
+  const env = boot({
+    locked: ["app"],
+    windows: [window],
+    journal,
+    generation: 2,
+  });
+  // The recovery records the defaults, but the app is still locked.
+  assert.equal(window.opacity, 0);
+  assert.equal(window.minimized, true);
+  assert.notEqual(journal.value, "[]");
+
+  env.options.state = [2, 3, ["app"], ["app"], [], ""];
+  env.timers[0].onTimeout();
+  assert.equal(window.opacity, 1);
+  assert.equal(window.minimized, false);
+  assert.equal(journal.value, "[]");
 });
 
 test("a restore that KWin delays is retried", () => {
