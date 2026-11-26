@@ -270,7 +270,8 @@ fn parse_counts(text: &str) -> HashMap<String, u32> {
 /// authenticates on its own.
 #[derive(Clone)]
 pub struct WindowService {
-    actions: std::sync::mpsc::SyncSender<super::Action>,
+    actions: super::ActionSender,
+    trusted_actions: super::ActionSender,
     tracker: Arc<Mutex<Tracker>>,
     ready: Arc<Ready>,
 }
@@ -279,12 +280,14 @@ impl WindowService {
     pub(super) fn new(
         tracker: Arc<Mutex<Tracker>>,
         ready: Arc<Ready>,
-        actions: std::sync::mpsc::SyncSender<super::Action>,
+        actions: super::ActionSender,
+        trusted_actions: super::ActionSender,
     ) -> Self {
         WindowService {
             tracker,
             ready,
             actions,
+            trusted_actions,
         }
     }
 
@@ -321,11 +324,10 @@ impl WindowService {
             // reopen follows the grace period and then the restore panel.
             // `Hide` is a no-op when the app has no permission.
             "closed" => {
-                return super::enqueue_action(
-                    &self.actions,
-                    super::Action::AppWindowClosed(app_id.to_string()),
-                )
-                .is_ok();
+                return self
+                    .trusted_actions
+                    .send(super::Action::AppWindowClosed(app_id.to_string()))
+                    .is_ok();
             }
             _ => {}
         }
@@ -344,7 +346,8 @@ impl WindowService {
     }
 
     fn restore_window(&self, app: String) -> zbus::fdo::Result<()> {
-        super::enqueue_action(&self.actions, super::Action::Unlock(app))
+        self.actions
+            .send(super::Action::Unlock(app))
             .map_err(|error| zbus::fdo::Error::Failed(error.to_string()))
     }
 
@@ -363,7 +366,8 @@ impl WindowService {
                 "only KWin may restore a hidden window".into(),
             ));
         }
-        super::enqueue_action(&self.actions, super::Action::RestoreIfTicketed(app))
+        self.trusted_actions
+            .send(super::Action::RestoreIfTicketed(app))
             .map_err(|error| zbus::fdo::Error::Failed(error.to_string()))
     }
 
@@ -443,10 +447,10 @@ impl WindowService {
             };
             previous
         };
-        if let Err(error) = super::enqueue_action(
-            &self.actions,
-            super::Action::HiddenWindows((generation, sequence), counts),
-        ) {
+        if let Err(error) = self
+            .trusted_actions
+            .send(super::Action::HiddenWindows((generation, sequence), counts))
+        {
             let mut current = self.ready.inventory.lock().unwrap();
             if current.version == (generation, sequence) {
                 *current = previous;
@@ -458,7 +462,8 @@ impl WindowService {
     }
 
     fn verify_lock(&self) -> zbus::fdo::Result<()> {
-        super::enqueue_action(&self.actions, super::Action::VerifyLock)
+        self.actions
+            .send(super::Action::VerifyLock)
             .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
     }
 
@@ -467,7 +472,8 @@ impl WindowService {
     /// KWin was silent or has no scripting interface on this desktop.
     async fn verify_lock_report(&self) -> zbus::fdo::Result<LockReport> {
         let (reply, wait) = oneshot::channel();
-        super::enqueue_action(&self.actions, super::Action::VerifyLockReport(reply))
+        self.actions
+            .send(super::Action::VerifyLockReport(reply))
             .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
         wait.await
             .map_err(|_| zbus::fdo::Error::Failed("window check dropped".into()))
@@ -1066,6 +1072,25 @@ mod tests {
     use super::*;
     use std::thread;
 
+    fn service_with_actions(
+        tracker: Arc<Mutex<Tracker>>,
+    ) -> (WindowService, std::sync::mpsc::Receiver<crate::Action>) {
+        let (actions, requests) =
+            std::sync::mpsc::sync_channel(super::super::ACTION_QUEUE_CAPACITY);
+        let queued = Arc::new(Mutex::new(0));
+        let bus = super::super::ActionSender::new(
+            actions.clone(),
+            queued.clone(),
+            super::super::ACTION_QUEUE_CAPACITY - super::super::TRUSTED_ACTION_RESERVE,
+        );
+        let trusted =
+            super::super::ActionSender::new(actions, queued, super::super::ACTION_QUEUE_CAPACITY);
+        (
+            WindowService::new(tracker, Arc::new(Ready::new()), bus, trusted),
+            requests,
+        )
+    }
+
     // These two compare the generated script's text. They catch a list or an
     // event name being dropped, not whether the script does the right thing:
     // running it needs a KWin session.
@@ -1247,11 +1272,7 @@ mod tests {
     fn regaining_focus_cancels_the_pending_hide() {
         let tracker = Arc::new(Mutex::new(Tracker::default()));
         tracker.lock().unwrap().relock.insert("app".into(), 5);
-        let service = WindowService::new(
-            tracker.clone(),
-            Arc::new(Ready::new()),
-            std::sync::mpsc::sync_channel(super::super::ACTION_QUEUE_CAPACITY).0,
-        );
+        let (service, _requests) = service_with_actions(tracker.clone());
         assert!(service.apply_window_event("app", "unfocused"));
         assert!(tracker.lock().unwrap().unfocused.contains_key("app"));
         assert!(service.apply_window_event("app", "focused"));
@@ -1271,11 +1292,7 @@ mod tests {
     fn only_an_unfocused_event_starts_the_clock() {
         let tracker = Arc::new(Mutex::new(Tracker::default()));
         tracker.lock().unwrap().relock.insert("app".into(), 5);
-        let service = WindowService::new(
-            tracker.clone(),
-            Arc::new(Ready::new()),
-            std::sync::mpsc::sync_channel(super::super::ACTION_QUEUE_CAPACITY).0,
-        );
+        let (service, _requests) = service_with_actions(tracker.clone());
         assert!(service.apply_window_event("app", "unfocused"));
         assert!(tracker.lock().unwrap().unfocused.contains_key("app"));
         // An app without the feature is not tracked at all.
@@ -1290,9 +1307,7 @@ mod tests {
     #[test]
     fn a_closed_window_event_asks_the_agent_to_drop_window_permission() {
         let tracker = Arc::new(Mutex::new(Tracker::default()));
-        let (actions, requests) =
-            std::sync::mpsc::sync_channel(super::super::ACTION_QUEUE_CAPACITY);
-        let service = WindowService::new(tracker, Arc::new(Ready::new()), actions);
+        let (service, requests) = service_with_actions(tracker);
         assert!(service.apply_window_event("app", "closed"));
         assert!(matches!(
             requests.try_recv(),

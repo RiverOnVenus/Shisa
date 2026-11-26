@@ -52,18 +52,51 @@ enum Action {
 }
 
 /// Bound the work that session-bus clients can leave waiting behind a slow
-/// ticket read or authentication prompt. KWin reports and tray actions share
-/// the queue, so an untrusted same-user caller cannot grow it without bound.
+/// ticket read or authentication prompt. KWin reports, tray actions, and the
+/// session-bus methods share one queue, and the untrusted methods may not
+/// take the slots reserved for the other two.
 const ACTION_QUEUE_CAPACITY: usize = 64;
+/// Slots the untrusted session-bus methods cannot occupy, so a tray click or
+/// a KWin close report still reaches the action loop during a flood.
+const TRUSTED_ACTION_RESERVE: usize = 8;
 
-pub(crate) fn enqueue_action(
-    actions: &SyncSender<Action>,
-    action: Action,
-) -> Result<(), &'static str> {
-    match actions.try_send(action) {
-        Ok(()) => Ok(()),
-        Err(TrySendError::Full(_)) => Err("too many pending window actions"),
-        Err(TrySendError::Disconnected(_)) => Err("window action loop stopped"),
+/// A sender that admits work against a shared queued-action count. The
+/// channel's own bound is the hard cap, and the count is released when the
+/// action loop takes an action.
+#[derive(Clone)]
+pub(crate) struct ActionSender {
+    tx: SyncSender<Action>,
+    queued: Arc<Mutex<usize>>,
+    limit: usize,
+}
+
+impl ActionSender {
+    pub(crate) fn new(tx: SyncSender<Action>, queued: Arc<Mutex<usize>>, limit: usize) -> Self {
+        Self { tx, queued, limit }
+    }
+
+    pub(crate) fn send(&self, action: Action) -> Result<(), &'static str> {
+        // The check and the claim happen under one lock, so an untrusted
+        // flood cannot race past its limit and take a reserved slot. The
+        // channel's own bound is the hard cap.
+        {
+            let mut queued = self.queued.lock().unwrap();
+            if *queued >= self.limit {
+                return Err("too many pending window actions");
+            }
+            *queued += 1;
+        }
+        match self.tx.try_send(action) {
+            Ok(()) => Ok(()),
+            Err(TrySendError::Full(_)) => {
+                *self.queued.lock().unwrap() -= 1;
+                Err("too many pending window actions")
+            }
+            Err(TrySendError::Disconnected(_)) => {
+                *self.queued.lock().unwrap() -= 1;
+                Err("window action loop stopped")
+            }
+        }
     }
 }
 
@@ -118,7 +151,7 @@ struct TrayState {
     ticket_grants: HashMap<String, Instant>,
     /// The interface language, re-read while the tray runs.
     language: Language,
-    actions: SyncSender<Action>,
+    actions: ActionSender,
 }
 
 impl TrayState {
@@ -535,7 +568,9 @@ impl Tray for TrayState {
     }
 
     fn activate(&mut self, _x: i32, _y: i32) {
-        let _ = self.actions.try_send(Action::OpenRestore);
+        if let Err(error) = self.actions.send(Action::OpenRestore) {
+            warn!("tray: {error}");
+        }
     }
 
     fn menu(&self) -> Vec<MenuItem<Self>> {
@@ -543,7 +578,9 @@ impl Tray for TrayState {
         let send = |action: fn() -> Action| -> Box<dyn Fn(&mut TrayState) + Send> {
             let actions = self.actions.clone();
             Box::new(move |_this: &mut TrayState| {
-                let _ = actions.try_send(action());
+                if let Err(error) = actions.send(action()) {
+                    warn!("tray: {error}");
+                }
             })
         };
         // A disabled row that only says "Lock protected apps" leaves the
@@ -594,6 +631,15 @@ fn main() -> std::process::ExitCode {
         .init();
 
     let (actions_tx, actions_rx) = mpsc::sync_channel(ACTION_QUEUE_CAPACITY);
+    let queued = Arc::new(Mutex::new(0));
+    let bus_actions = ActionSender::new(
+        actions_tx.clone(),
+        queued.clone(),
+        ACTION_QUEUE_CAPACITY - TRUSTED_ACTION_RESERVE,
+    );
+    let trusted_actions =
+        ActionSender::new(actions_tx.clone(), queued.clone(), ACTION_QUEUE_CAPACITY);
+    let tray_actions = ActionSender::new(actions_tx, queued.clone(), ACTION_QUEUE_CAPACITY);
     // The gate is filled once the session connection is up. The action
     // thread uses it to bring windows back after an unlock and to bring an
     // already open settings window to the front. The tracker is shared with
@@ -613,7 +659,7 @@ fn main() -> std::process::ExitCode {
         offline: true,
         ticket_grants: Default::default(),
         language: i18n::current(),
-        actions: actions_tx.clone(),
+        actions: tray_actions,
     };
     // The user unit starts with the graphical session, which can precede
     // plasmashell registering the StatusNotifierWatcher. Treat a missing
@@ -646,9 +692,19 @@ fn main() -> std::process::ExitCode {
         let handle = handle.clone();
         let dnd_hinted = Arc::new(AtomicBool::new(false));
         let ticket_sync = ticket_sync.clone();
+        let queued = queued.clone();
         thread::Builder::new()
             .name("actions".into())
-            .spawn(move || action_loop(actions_rx, &gate, &handle, &dnd_hinted, &ticket_sync))
+            .spawn(move || {
+                action_loop(
+                    actions_rx,
+                    queued,
+                    &gate,
+                    &handle,
+                    &dnd_hinted,
+                    &ticket_sync,
+                )
+            })
             .expect("actions thread");
     }
 
@@ -665,7 +721,7 @@ fn main() -> std::process::ExitCode {
     // blocking script call and the object server on one connection leaves a
     // freshly loaded script's signal handlers unconnected.
     let ready = Arc::new(window::Ready::new());
-    let service = window_service(tracker.clone(), ready.clone(), actions_tx);
+    let service = window_service(tracker.clone(), ready.clone(), bus_actions, trusted_actions);
     if service.is_some()
         && let Ok(kwin) = Connection::session()
     {
@@ -706,9 +762,10 @@ fn main() -> std::process::ExitCode {
 fn window_service(
     tracker: Arc<Mutex<window::Tracker>>,
     ready: Arc<window::Ready>,
-    actions: SyncSender<Action>,
+    actions: ActionSender,
+    trusted_actions: ActionSender,
 ) -> Option<Connection> {
-    let service = window::WindowService::new(tracker, ready, actions);
+    let service = window::WindowService::new(tracker, ready, actions, trusted_actions);
     match zbus::blocking::connection::Builder::session()
         .and_then(|builder| builder.name(WINDOW_BUS_NAME))
         .and_then(|builder| builder.serve_at(WINDOW_PATH, service))
@@ -972,6 +1029,7 @@ fn refresh(
 
 fn action_loop(
     rx: Receiver<Action>,
+    queued: Arc<Mutex<usize>>,
     gate: &Arc<Mutex<Option<window::Gate>>>,
     handle: &Handle<TrayState>,
     dnd_hinted: &AtomicBool,
@@ -979,6 +1037,7 @@ fn action_loop(
 ) {
     let mut tickets = TicketReader::default();
     for action in rx {
+        *queued.lock().unwrap() -= 1;
         match action {
             Action::LockAll => match lock("") {
                 Ok(()) => {
@@ -1635,21 +1694,56 @@ fn open_settings(gate: &Arc<Mutex<Option<window::Gate>>>, restore: bool) {
 mod tests {
     use super::*;
 
+    fn tray_action_channel() -> (ActionSender, Receiver<Action>) {
+        let (tx, rx) = mpsc::sync_channel(ACTION_QUEUE_CAPACITY);
+        (
+            ActionSender::new(tx, Arc::new(Mutex::new(0)), ACTION_QUEUE_CAPACITY),
+            rx,
+        )
+    }
+
     #[test]
-    fn action_queue_refuses_work_when_it_is_full() {
-        let (actions, requests) = mpsc::sync_channel(1);
-        assert!(enqueue_action(&actions, Action::OpenSettings).is_ok());
+    fn the_action_queue_refuses_work_when_it_is_full() {
+        let (tx, requests) = mpsc::sync_channel(1);
+        let queued = Arc::new(Mutex::new(0));
+        let actions = ActionSender::new(tx, queued.clone(), 1);
+        assert!(actions.send(Action::OpenSettings).is_ok());
         assert_eq!(
-            enqueue_action(&actions, Action::OpenRestore),
+            actions.send(Action::OpenRestore),
             Err("too many pending window actions")
         );
         assert!(matches!(requests.recv(), Ok(Action::OpenSettings)));
-        assert!(enqueue_action(&actions, Action::OpenRestore).is_ok());
+        *queued.lock().unwrap() -= 1;
+        assert!(actions.send(Action::OpenRestore).is_ok());
+    }
+
+    #[test]
+    fn the_tray_keeps_a_reserve_when_bus_callers_fill_the_queue() {
+        let (tx, requests) = mpsc::sync_channel(ACTION_QUEUE_CAPACITY);
+        let queued = Arc::new(Mutex::new(0));
+        let bus = ActionSender::new(
+            tx.clone(),
+            queued.clone(),
+            ACTION_QUEUE_CAPACITY - TRUSTED_ACTION_RESERVE,
+        );
+        let tray = ActionSender::new(tx, queued.clone(), ACTION_QUEUE_CAPACITY);
+        for _ in 0..(ACTION_QUEUE_CAPACITY - TRUSTED_ACTION_RESERVE) {
+            assert!(bus.send(Action::VerifyLock).is_ok());
+        }
+        assert_eq!(
+            bus.send(Action::VerifyLock),
+            Err("too many pending window actions")
+        );
+        assert!(tray.send(Action::LockAll).is_ok());
+        for _ in 0..(ACTION_QUEUE_CAPACITY - TRUSTED_ACTION_RESERVE + 1) {
+            assert!(requests.try_recv().is_ok());
+            *queued.lock().unwrap() -= 1;
+        }
     }
 
     #[test]
     fn tray_menu_offers_restore_lock_and_settings() {
-        let (actions, requests) = mpsc::sync_channel(ACTION_QUEUE_CAPACITY);
+        let (actions, requests) = tray_action_channel();
         let mut tray = TrayState {
             hidden_windows: ((1, 1), HashMap::from([("org.kde.kate".into(), 2)])),
             ticketed: None,
@@ -1683,7 +1777,7 @@ mod tests {
 
     #[test]
     fn lock_all_is_disabled_without_protected_apps() {
-        let (actions, _requests) = mpsc::sync_channel(ACTION_QUEUE_CAPACITY);
+        let (actions, _requests) = tray_action_channel();
         let tray = TrayState {
             hidden_windows: Default::default(),
             ticketed: None,
@@ -1704,7 +1798,7 @@ mod tests {
 
     #[test]
     fn lock_all_names_an_offline_daemon_in_the_tray_menu() {
-        let (actions, _requests) = mpsc::sync_channel(ACTION_QUEUE_CAPACITY);
+        let (actions, _requests) = tray_action_channel();
         let tray = TrayState {
             hidden_windows: Default::default(),
             ticketed: None,
@@ -1725,7 +1819,7 @@ mod tests {
 
     #[test]
     fn the_tray_icon_shows_the_normal_locked_and_password_free_states() {
-        let (actions, _requests) = mpsc::sync_channel(ACTION_QUEUE_CAPACITY);
+        let (actions, _requests) = tray_action_channel();
         let mut tray = TrayState {
             hidden_windows: Default::default(),
             ticketed: Some(TicketCounts::default()),
@@ -1766,7 +1860,7 @@ mod tests {
 
     #[test]
     fn the_tray_tooltip_names_the_password_free_hidden_apps() {
-        let (actions, _requests) = mpsc::sync_channel(ACTION_QUEUE_CAPACITY);
+        let (actions, _requests) = tray_action_channel();
         let mut tray = TrayState {
             hidden_windows: (
                 (1, 1),
@@ -1832,7 +1926,7 @@ mod tests {
 
     #[test]
     fn the_tray_tooltip_does_not_claim_a_password_while_the_ticket_state_is_unknown() {
-        let (actions, _requests) = mpsc::sync_channel(ACTION_QUEUE_CAPACITY);
+        let (actions, _requests) = tray_action_channel();
         let mut tray = TrayState {
             hidden_windows: ((1, 1), HashMap::from([("org.kde.kate".into(), 2)])),
             ticketed: None,
@@ -1938,7 +2032,7 @@ mod tests {
     }
 
     fn tray_without_hidden() -> TrayState {
-        let (actions, _requests) = mpsc::sync_channel(ACTION_QUEUE_CAPACITY);
+        let (actions, _requests) = tray_action_channel();
         TrayState {
             hidden_windows: Default::default(),
             ticketed: Some(TicketCounts::default()),
