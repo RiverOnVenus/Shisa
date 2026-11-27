@@ -73,7 +73,7 @@ enum Command {
 /// One argument, or `None` when the command took a different number.
 fn one_arg(args: &[std::ffi::OsString]) -> Option<String> {
     match args {
-        [one] => Some(one.to_string_lossy().into_owned()),
+        [one] if !one.is_empty() => one.to_str().map(str::to_owned),
         _ => None,
     }
 }
@@ -88,7 +88,7 @@ fn parse_command(args: &[std::ffi::OsString]) -> Option<Command> {
         "status" if rest.is_empty() => Command::Status,
         "lock" => match rest {
             [] => Command::Lock(String::new()),
-            [one] => Command::Lock(one.to_string_lossy().into_owned()),
+            [_] => Command::Lock(one_arg(rest)?),
             _ => return None,
         },
         "resolve" => Command::Resolve(one_arg(rest)?),
@@ -170,15 +170,40 @@ impl PtyAgent {
         // The absolute path keeps a user-writable directory earlier in PATH
         // from supplying the authentication helper. Arch, Fedora, and Debian
         // install polkit's helper at this path.
-        let child = process::Command::new("/usr/bin/pkttyagent")
+        use std::io::Read;
+        use std::os::fd::AsRawFd;
+        use std::os::unix::{net::UnixStream, process::CommandExt};
+
+        let Ok((mut ready, notify)) = UnixStream::pair() else {
+            return PtyAgent(None);
+        };
+        if ready
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .is_err()
+        {
+            return PtyAgent(None);
+        }
+        let fd = notify.as_raw_fd();
+        let mut command = process::Command::new("/usr/bin/pkttyagent");
+        command
             .arg("--process")
             .arg(process::id().to_string())
-            .spawn()
-            .ok();
-        // Give it a moment to register before the first check. A desktop
-        // agent is the fallback when this fails.
+            .arg("--notify-fd")
+            .arg(fd.to_string());
+        // SAFETY: fcntl is async-signal-safe and notify owns fd through spawn.
+        unsafe {
+            command.pre_exec(move || {
+                if libc::fcntl(fd, libc::F_SETFD, 0) == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let child = command.spawn().ok();
+        drop(notify);
+        // pkttyagent closes the descriptor after registering or on exit.
         if child.is_some() {
-            std::thread::sleep(Duration::from_millis(200));
+            let _ = ready.read(&mut [0]);
         }
         PtyAgent(child)
     }
@@ -641,6 +666,18 @@ mod tests {
 
     fn args(items: &[&str]) -> Vec<OsString> {
         items.iter().map(OsString::from).collect()
+    }
+
+    #[test]
+    fn invalid_ids_do_not_select_an_app_or_global_lock() {
+        use std::os::unix::ffi::OsStringExt;
+        for command in ["lock", "unlock", "protect", "unprotect", "resolve"] {
+            assert_eq!(parse_command(&args(&[command, ""])), None);
+            assert_eq!(
+                parse_command(&[command.into(), OsString::from_vec(vec![0xff])]),
+                None
+            );
+        }
     }
 
     #[test]
