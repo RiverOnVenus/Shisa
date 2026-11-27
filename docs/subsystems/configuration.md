@@ -43,7 +43,7 @@ The daemon keeps D-Bus error strings in English so the bus contract and the debu
 
 ### Settings interface
 
-The settings window keeps four text sizes as `--text-*` tokens at 11, 12, 13, and 14px, and control spacing on the 4px grid. The sidebar brand's keyhole fills its 16px grid so the mark matches the visual weight of the app icons in the list beside it. Row copy adds only what the label does not already say, such as a focus-loss hide keeping the launch ticket valid. Both dictionaries use the same key set. The restore panel's empty state ranks opening settings above locking with a bordered chip and a plain button, keeps its heading on the 14px title token, and keeps the lock label the same length as the open label so the bordered button stays the wider element.
+The settings window keeps four text sizes as `--text-*` tokens at 11, 12, 13, and 14px, and control spacing on the 4px grid. The sidebar brand's keyhole fills its 16px grid so the mark matches the visual weight of the app icons in the list beside it. Row copy adds only what the label does not already say, such as a focus-loss hide keeping the launch ticket valid. Both dictionaries use the same key set. The restore panel's empty state ranks opening settings above locking with a bordered chip and a plain button, keeps its heading on the 14px title token, and keeps the lock label the same length as the open label so the bordered button stays the wider element. Both windows' title bars draw every control as the same bare 26px button, and the close keeps only the 8px separation that marks it as the window control.
 
 ## System D-Bus
 
