@@ -1025,9 +1025,9 @@
     <div class="side-top" data-tauri-drag-region>
       <span class="brand" data-tauri-drag-region>
         <svg class="logo" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
-          <ellipse cx="8" cy="8" rx="4.65" ry="5.3" fill="none" stroke="currentColor" stroke-width="1.5"/>
-          <circle cx="8" cy="7.15" r="1.65" fill="currentColor"/>
-          <path d="M7.5 8.239L8.5 8.239L8.775 11.55L7.225 11.55Z" fill="currentColor"/>
+          <ellipse cx="8" cy="8" rx="6" ry="6.5" fill="none" stroke="currentColor" stroke-width="1.5"/>
+          <circle cx="8" cy="6.93" r="2.08" fill="currentColor"/>
+          <path d="M7.37 8.3L8.63 8.3L8.98 12.47L7.02 12.47Z" fill="currentColor"/>
         </svg>
         <span>Shisa</span>
       </span>
@@ -1070,6 +1070,7 @@
           >
             <button
               class="row"
+              class:subbed={(nameCounts.get(app.name) ?? 0) > 1}
               class:on={page === "app" && app.id === currentId}
               data-app={app.id}
               tabindex={app.id === focusableId ? 0 : -1}
@@ -1183,7 +1184,7 @@
           <svg viewBox="0 0 16 16" width="14" height="14"><path d="M3.5 8h9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
         </button>
         <button class="icon winclose" aria-label={t("top.close")} title={t("top.close")} onclick={() => win.close()}>
-          <svg viewBox="0 0 16 16" width="10" height="10"><path d="M4 4l8 8M12 4l-8 8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+          <svg viewBox="0 0 16 16" width="16" height="16"><path d="M3 3l10 10M13 3l-10 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
         </button>
       </div>
     </div>
@@ -1522,8 +1523,6 @@
                   <div class="name">{t("app.protect.name")}</div>
                   {#if protectBlocked}
                     <div class="sub warn">{t("app.protect.nopath")}</div>
-                  {:else}
-                    <div class="sub">{t("app.protect.sub")}</div>
                   {/if}
                 </div>
                 <button
@@ -1641,12 +1640,8 @@
 
         {#if config.ready}
           <section class="set" in:fade={{ duration: motionMs(160) }}>
+            <div class="label">{t("app.coverage.name")}</div>
             <div class="list">
-              <div class="prefrow">
-                <div class="who">
-                  <div class="name">{t("app.coverage.name")}</div>
-                </div>
-              </div>
               <div class="prefrow">
                 <div class="who">
                   <div class="name">{t("app.paths.name")}</div>
@@ -1686,11 +1681,6 @@
                     <path d="m4 6 4 4 4-4" />
                   </svg>
                 </summary>
-                <div class="prefrow">
-                  <div class="who">
-                    <div class="sub">{t("app.coverage.note")}</div>
-                  </div>
-                </div>
                 <div class="prefrow">
                   <div class="who">
                     <div class="sub">{t("app.windows.note")}</div>

@@ -130,7 +130,7 @@ test("the empty panel explains that only protected apps appear", async () => {
   const buttons = [...document.querySelectorAll(".blank-actions button")];
   expect(buttons.map((button) => button.textContent.trim())).toEqual([
     "Open settings",
-    "Lock protected apps",
+    "Lock now",
   ]);
   expect(buttons[1].getAttribute("title")).toBe(
     "Only protected apps are locked. Unprotected apps are unaffected.",

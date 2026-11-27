@@ -124,12 +124,11 @@ const zh = {
   "app.unlockNow": "现在认证",
   "app.failure": "最近一次启动失败",
   "app.protect.name": "启动前要求认证",
-  "app.protect.sub": "开启后，启动这个应用要输入应用锁密码。",
   "app.protect.nopath": "没有可拦截的启动入口，无法开启保护。",
   "app.inactive.count": "{count} 条保护路径未生效，启动拦截不完整。",
   "app.grace.name": "宽限期",
   "app.relock.name": "失焦后隐藏",
-  "app.relock.sub": "失焦这么久后隐藏窗口。宽限期内恢复不再询问。",
+  "app.relock.sub": "宽限期内恢复不再询问。",
   "app.relock.warn":
     "失焦隐藏保留启动凭证，宽限期内从恢复面板或应用自己的托盘图标都能免密还原。借出桌面前请先「锁定受保护应用」。",
   "app.advanced": "高级设置",
@@ -147,7 +146,6 @@ const zh = {
   "app.path.none": "还没有路径。",
   "app.path.placeholder": "/usr/bin/程序 或 /opt/游戏/启动器",
   "app.coverage.name": "保护范围",
-  "app.coverage.note": "保护范围列出启动会拦截的路径，以及窗口隐藏的实际边界。",
   "app.paths.name": "启动入口",
   "app.paths.potential": "开启保护后会拦截这些路径，并在锁屏或失焦时收起窗口。",
   "app.paths.noneEffective": "当前没有路径在生效。",
@@ -175,7 +173,7 @@ const zh = {
   "restore.retry": "重试",
   "restore.openSettings": "打开设置",
   "restore.settings": "设置",
-  "restore.lockAll": "锁定受保护应用",
+  "restore.lockAll": "立即锁定",
   "restore.lockAllHint": "只锁定受保护的应用，未受保护的应用不受影响。",
   "lock.notice.none": "启动已上锁，当前桌面没有匹配的受保护窗口。",
   "lock.notice.confirmed":
@@ -353,16 +351,13 @@ const en = {
   "app.unlockNow": "Authenticate now",
   "app.failure": "Last launch failed",
   "app.protect.name": "Require authentication before launch",
-  "app.protect.sub":
-    "When on, launching this app asks for the app-lock password.",
   "app.protect.nopath":
     "No launch entry can be gated, so protection cannot be turned on.",
   "app.inactive.count":
     "{count} protected path does not take effect, so launch gating is incomplete.|{count} protected paths do not take effect, so launch gating is incomplete.",
   "app.grace.name": "Grace period",
   "app.relock.name": "Hide when focus is lost",
-  "app.relock.sub":
-    "Hides the window after this long without focus. Restoring in the grace period does not ask again.",
+  "app.relock.sub": "Restoring in the grace period does not ask again.",
   "app.relock.warn":
     "A focus-loss hide keeps the launch ticket, so the restore panel and the app's own tray icon can restore the window without a password until the grace period ends. Use Lock protected apps before lending the desktop.",
   "app.advanced": "Advanced settings",
@@ -381,8 +376,6 @@ const en = {
   "app.path.none": "No paths yet.",
   "app.path.placeholder": "/usr/bin/program or /opt/game/launcher",
   "app.coverage.name": "Protection coverage",
-  "app.coverage.note":
-    "Protection coverage lists the paths that gate launches and the limits of window hiding.",
   "app.paths.name": "Launch paths",
   "app.paths.potential":
     "Turning on protection gates these paths and hides their windows on lock or focus loss.",
@@ -417,7 +410,7 @@ const en = {
   "restore.retry": "Retry",
   "restore.openSettings": "Open settings",
   "restore.settings": "Settings",
-  "restore.lockAll": "Lock protected apps",
+  "restore.lockAll": "Lock now",
   "restore.lockAllHint":
     "Only protected apps are locked. Unprotected apps are unaffected.",
   "lock.notice.none":

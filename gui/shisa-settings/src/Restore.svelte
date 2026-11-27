@@ -28,6 +28,10 @@
   let loadingShown = $state(false);
   let closeTimer = 0;
   let opening = $state("");
+  // The panel focuses its first control when it opens so Enter works at
+  // once, but a pointer open should not paint the keyboard ring. The ring
+  // waits for the first key press.
+  let keyboard = $state(false);
 
   $effect(() => {
     if (loading) {
@@ -339,6 +343,7 @@
   }
 
   function keydown(event) {
+    keyboard = true;
     if (event.key === "Escape" && !opening && !busyLock) {
       panel.close();
     }
@@ -354,7 +359,7 @@
 
 <svelte:window onkeydown={keydown} />
 
-<main>
+<main class:kbd={keyboard}>
   <div class="top" role="presentation" onmousedown={startDrag}>
     <div class="crumb"><b>{t("restore.title")}</b></div>
     <div class="actions">
@@ -376,7 +381,7 @@
         bind:this={closeButton}
         onclick={() => panel.close()}
       >
-        <svg viewBox="0 0 16 16" width="10" height="10"><path d="M4 4l8 8M12 4l-8 8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+        <svg viewBox="0 0 16 16" width="16" height="16"><path d="M3 3l10 10M13 3l-10 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
       </button>
     </div>
   </div>
@@ -403,7 +408,7 @@
         <div class="blank-sub">{t("restore.agentMissing.sub")}</div>
         <div class="blank-actions">
           <button class="text action" onclick={retry}>{t("restore.retry")}</button>
-          <button class="text action" onclick={openSettings}>{t("restore.openSettings")}</button>
+          <button class="text" onclick={openSettings}>{t("restore.openSettings")}</button>
         </div>
       </div>
     {:else if !rows.length}
@@ -419,7 +424,7 @@
           <button class="text action" onclick={openSettings}>{t("restore.openSettings")}</button>
           {#if hasProtected !== false}
             <button
-              class="text action"
+              class="text"
               disabled={busyLock || hasProtected !== true}
               title={hasProtected === true ? t("restore.lockAllHint") : t("daemon.offline")}
               onclick={lockAll}
@@ -492,6 +497,11 @@
     color: var(--fg);
   }
 
+  /* The auto-focus on open is for Enter, not for showing a ring. */
+  main:not(.kbd) button:focus-visible {
+    outline: none;
+  }
+
   .scroll {
     flex: 1;
     min-height: 0;
@@ -515,15 +525,16 @@
   }
 
   .blank-name {
-    color: var(--fg-2);
-    font-size: 13px;
+    color: var(--fg);
+    font-size: var(--text-lg);
+    font-weight: 600;
   }
 
   .blank-sub {
-    margin-top: 6px;
+    margin-top: 8px;
     color: var(--muted);
-    font-size: 12px;
-    line-height: 1.5;
+    font-size: var(--text-sm);
+    line-height: 1.55;
     overflow-wrap: anywhere;
   }
 
@@ -531,7 +542,24 @@
     display: flex;
     gap: 8px;
     justify-content: center;
-    margin-top: 16px;
+    margin-top: 20px;
+  }
+
+  /* The empty state's two actions are not equal. Opening settings is the step
+     forward, locking is a guarded side action, so one is a bordered chip and
+     the other stays plain. Filling one would add the only solid control in an
+     app that otherwise keeps controls flat on the page. */
+  .blank-actions .text {
+    height: 30px;
+    padding: 0 10px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .blank-actions .action {
+    padding: 0 12px;
+    color: var(--fg);
   }
 
   /* the row is the settings window's .prefrow, kept as a button */
@@ -575,7 +603,7 @@
   /* the app id, shown only when two apps share a display name */
   .row .id {
     font-family: var(--code);
-    font-size: 11px;
+    font-size: var(--text-xs);
     color: var(--muted);
   }
 
