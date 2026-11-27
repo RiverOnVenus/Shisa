@@ -15,6 +15,9 @@ const { calls, languageWrites, state } = vi.hoisted(() => ({
     pendingDiagnostics: null,
     agentReads: [],
     listReads: [],
+    configReads: [],
+    schemeRead: null,
+    listeners: [],
     diagnostics: [
       "0.1.1",
       1,
@@ -56,6 +59,7 @@ vi.mock("@tauri-apps/api/core", () => ({
         if (state.listReads.length) return state.listReads.shift();
         return [["org.kde.kate", true, ["/usr/bin/kate"], ["/usr/bin/kate"]]];
       case "app_config":
+        if (state.configReads.length) return state.configReads.shift();
         return args.appId === "org.kde.dolphin"
           ? [300, false, false, 0]
           : [300, false, true, 0];
@@ -74,6 +78,8 @@ vi.mock("@tauri-apps/api/core", () => ({
       case "agent_status":
         if (state.agentReads.length) return state.agentReads.shift();
         return state.agentOnline;
+      case "color_scheme":
+        return state.schemeRead;
       case "set_ui_language":
         languageWrites.push(args.language);
         return null;
@@ -84,7 +90,10 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 
 vi.mock("@tauri-apps/api/event", () => ({
-  listen: vi.fn(async () => () => {}),
+  listen: vi.fn(async (name, handler) => {
+    state.listeners.push({ name, handler });
+    return () => {};
+  }),
 }));
 
 vi.mock("@tauri-apps/api/window", () => ({
@@ -109,6 +118,9 @@ beforeEach(() => {
   state.pendingDiagnostics = null;
   state.agentReads = [];
   state.listReads = [];
+  state.configReads = [];
+  state.schemeRead = null;
+  state.listeners = [];
   state.diagnostics = [
     "0.1.1",
     1,
@@ -122,6 +134,7 @@ beforeEach(() => {
   ];
   document.body.innerHTML = "";
   document.documentElement.lang = "";
+  document.documentElement.dataset.theme = "";
   localStorage.clear();
 });
 
@@ -208,32 +221,91 @@ test("selecting an app loads its settings", async () => {
   expect(document.querySelector(".crumb b").textContent).toBe("Dolphin");
 });
 
+test("an older read of the same app cannot replace a newer selection", async () => {
+  let answer;
+  state.configReads.push(
+    new Promise((resolve) => {
+      answer = resolve;
+    }),
+  );
+  await render();
+  const rows = [...document.querySelectorAll("ul.list .row")];
+  rows.find((row) => row.textContent.includes("Dolphin")).click();
+  await vi.waitFor(() =>
+    expect(document.querySelector(".crumb b").textContent).toBe("Dolphin"),
+  );
+  rows.find((row) => row.textContent.includes("Kate")).click();
+  const protectSwitch = () =>
+    document.querySelector(
+      '[aria-label="Require authentication before launch"]',
+    );
+  await vi.waitFor(() =>
+    expect(protectSwitch()?.getAttribute("aria-checked")).toBe("true"),
+  );
+  // The first Kate read predates both switches and says unprotected.
+  answer([300, false, false, 0]);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(protectSwitch().getAttribute("aria-checked")).toBe("true");
+});
+
+test("a colour signal that beats the first read is not overwritten", async () => {
+  let answer;
+  state.schemeRead = new Promise((resolve) => {
+    answer = resolve;
+  });
+  await render();
+  await vi.waitFor(() =>
+    expect(state.listeners.some((entry) => entry.name === "color_scheme")).toBe(
+      true,
+    ),
+  );
+  const listener = state.listeners.find(
+    (entry) => entry.name === "color_scheme",
+  );
+  listener.handler({ payload: true });
+  answer(false);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(document.documentElement.dataset.theme).toBe("dark");
+});
+
 test("finishing startup keeps the page the user opened", async () => {
   let finish;
-  state.pendingDiagnostics = new Promise((resolve) => { finish = resolve; });
+  state.pendingDiagnostics = new Promise((resolve) => {
+    finish = resolve;
+  });
   await render();
   document.querySelector(".side-foot button.row").click();
   finish(state.diagnostics);
-  await vi.waitFor(() => expect(document.body.textContent).toContain("Default grace period"));
+  await vi.waitFor(() =>
+    expect(document.body.textContent).toContain("Default grace period"),
+  );
   expect(calls.filter(([command]) => command === "app_config")).toEqual([]);
 });
 
 test("an older failed ticket poll cannot mark a responsive daemon offline", async () => {
   await render();
   let failFirst;
-  state.listReads.push(new Promise((_, reject) => { failFirst = reject; }));
+  state.listReads.push(
+    new Promise((_, reject) => {
+      failFirst = reject;
+    }),
+  );
   window.dispatchEvent(new Event("focus"));
   window.dispatchEvent(new Event("focus"));
   await new Promise((resolve) => setTimeout(resolve, 0));
   failFirst("old read failed");
   await new Promise((resolve) => setTimeout(resolve, 0));
-  expect(document.querySelector(".side-foot .gw").textContent).toContain("Running normally");
+  expect(document.querySelector(".side-foot .gw").textContent).toContain(
+    "Running normally",
+  );
 });
 
 test("an older failed agent check cannot mark a running agent offline", async () => {
   await render();
   await vi.waitFor(() =>
-    expect(document.querySelector(".side-foot .gw").textContent).toContain("Running normally"),
+    expect(document.querySelector(".side-foot .gw").textContent).toContain(
+      "Running normally",
+    ),
   );
   let failFirst;
   state.agentReads.push(
@@ -246,7 +318,9 @@ test("an older failed agent check cannot mark a running agent offline", async ()
   await new Promise((resolve) => setTimeout(resolve, 0));
   failFirst("old agent check failed");
   await new Promise((resolve) => setTimeout(resolve, 0));
-  expect(document.querySelector(".side-foot .gw").textContent).toContain("Running normally");
+  expect(document.querySelector(".side-foot .gw").textContent).toContain(
+    "Running normally",
+  );
 });
 
 test("the settings search is case-insensitive and covers the language card", async () => {
