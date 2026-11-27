@@ -426,7 +426,8 @@ let activeApp = "";
 let activePid = "";
 function report(app, pid, event) {
   if (!app) return;
-  const key = app + "\t" + pid;
+  // The receiver tracks focus per app. A close is an independent action.
+  const key = (event === "closed" ? "close:" : "focus:") + app;
   const sequence = ++reportSequence;
   pendingReports.set(key, { app, pid, event, sequence });
   sendReport(key);
@@ -444,7 +445,8 @@ function sendReport(key) {
     report.event,
     function (accepted) {
       const current = pendingReports.get(key);
-      if (current && current.sequence === report.sequence && accepted !== false)
+      const ok = accepted === true || (Array.isArray(accepted) && accepted[0] === true);
+      if (current && current.sequence === report.sequence && ok)
         pendingReports.delete(key);
     },
   );
