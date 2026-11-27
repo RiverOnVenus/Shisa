@@ -12,7 +12,7 @@ Symlinks and hard links to the same inode are covered. A copied binary has a dif
 
 shisa-core derives protected paths from an app's desktop entry. Settings lists the result and lets the user edit it.
 
-- Native apps use the executable from each `Exec` line, including desktop actions. Resolve it through `PATH` and then resolve the filesystem path.
+- Native apps use the executable from each `Exec` line, including desktop actions. Resolve it through `PATH` and then resolve the filesystem path. A `PATH` entry with no execute bit at all is skipped, so an ordinary data file cannot shadow the program actually started.
 - Wrapper scripts are marked at the script inode. Executing the wrapper triggers the event. Passing it as a file argument to an interpreter does not.
 - Shared runtimes such as Electron are left unmarked to avoid locking unrelated apps. The resolver marks app-specific wrappers and settings reports the coverage gap for direct runtime invocation.
 - Flatpak resolution reads the app command from deployment metadata and marks the entry executable. The shared `flatpak` executable stays unmarked. Global options such as `--user` and `--installation` can precede `run`. Stored paths preserve the `current/active` symlinks across updates. Inode marks also apply inside the sandbox's mount namespace.
