@@ -381,7 +381,7 @@
         bind:this={closeButton}
         onclick={() => panel.close()}
       >
-        <svg viewBox="0 0 16 16" width="10" height="10"><path d="M4 4l8 8M12 4l-8 8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+        <svg viewBox="0 0 16 16" width="16" height="16"><path d="M3 3l10 10M13 3l-10 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
       </button>
     </div>
   </div>

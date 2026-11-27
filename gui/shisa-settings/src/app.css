@@ -601,19 +601,10 @@ input:focus-visible {
   color: var(--muted);
 }
 
+/* The window control sits apart from the toolbar icons but is drawn like
+   them, so the title bar reads as one set of controls. */
 .icon.winclose {
-  align-self: center;
-  width: 22px;
-  height: 22px;
   margin-left: 8px;
-  border-radius: 50%;
-  background: var(--pill);
-  color: var(--fg-2);
-}
-
-.icon.winclose:hover {
-  background: color-mix(in srgb, var(--fg) 12%, transparent);
-  color: var(--fg);
 }
 
 .view {
