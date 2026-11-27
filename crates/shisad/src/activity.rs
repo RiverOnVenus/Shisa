@@ -35,7 +35,6 @@ pub const SELF_EXEC: &str = "selfexec";
 pub type Row = shisa_core::dbus::LaunchRow;
 
 struct Launch {
-    uid: u32,
     id: u64,
     at: i64,
     app: String,
@@ -54,7 +53,7 @@ struct Counts {
 
 #[derive(Default)]
 struct Inner {
-    entries: VecDeque<Launch>,
+    entries: HashMap<u32, VecDeque<Launch>>,
     counts: HashMap<u32, Counts>,
     // A pending group can outlive its display row. Keep its owner until the
     // first answer so the lifetime totals survive eviction and duplicate replies.
@@ -92,8 +91,11 @@ impl Log {
             GRANTED | TICKET | INSTANCE | AUTOSTART | SELF_EXEC => counts.allowed += 1,
             _ => counts.denied += 1,
         }
-        inner.entries.push_back(Launch {
-            uid,
+        let entries = inner.entries.entry(uid).or_default();
+        if entries.len() == KEEP {
+            entries.pop_front();
+        }
+        entries.push_back(Launch {
             id,
             at: now_ms(),
             app: app.to_string(),
@@ -102,21 +104,6 @@ impl Log {
             until,
             resolved_at: if kind == ASKED { 0 } else { now_ms() },
         });
-        // Keep KEEP rows per user. A single global cap would let one account
-        // push another's rows out of the caller's own list.
-        let mut mine = inner
-            .entries
-            .iter()
-            .filter(|entry| entry.uid == uid)
-            .count();
-        while mine > KEEP {
-            if let Some(pos) = inner.entries.iter().position(|entry| entry.uid == uid) {
-                inner.entries.remove(pos);
-                mine -= 1;
-            } else {
-                break;
-            }
-        }
     }
 
     /// The box answered or gave up: set the final kind on the record that
@@ -127,7 +114,11 @@ impl Log {
         let Some(uid) = inner.pending.remove(&id) else {
             return;
         };
-        if let Some(entry) = inner.entries.iter_mut().find(|e| e.id == id) {
+        if let Some(entry) = inner
+            .entries
+            .get_mut(&uid)
+            .and_then(|entries| entries.iter_mut().find(|e| e.id == id))
+        {
             entry.kind = kind;
             entry.until = 0;
             entry.resolved_at = now_ms();
@@ -146,8 +137,9 @@ impl Log {
         let inner = self.inner.lock().unwrap();
         let rows = inner
             .entries
-            .iter()
-            .filter(|e| e.uid == uid)
+            .get(&uid)
+            .into_iter()
+            .flatten()
             .map(|e| {
                 (
                     e.id,
@@ -246,12 +238,15 @@ mod tests {
         log.record(1000, 1, "waiting", 42, ASKED, 0);
         for id in 2..=KEEP as u64 + 1 {
             log.record(1000, id, "busy", 43, TICKET, 0);
+            log.record(2000, id + KEEP as u64, "other", 44, TICKET, 0);
         }
         log.resolve(1, DENIED);
         log.resolve(1, GRANTED);
         let (rows, requests, allowed, denied) = log.recent(1000);
         assert_eq!(rows.len(), KEEP);
         assert_eq!(rows[0].0, 2);
+        assert_eq!(log.recent(2000).0.len(), KEEP);
+        assert_eq!(log.recent(2000).3, 0);
         assert_eq!(
             (requests, allowed, denied),
             (KEEP as u64 + 1, KEEP as u64, 1)
