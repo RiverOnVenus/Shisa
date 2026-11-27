@@ -408,7 +408,7 @@
         <div class="blank-sub">{t("restore.agentMissing.sub")}</div>
         <div class="blank-actions">
           <button class="text action" onclick={retry}>{t("restore.retry")}</button>
-          <button class="text action" onclick={openSettings}>{t("restore.openSettings")}</button>
+          <button class="text" onclick={openSettings}>{t("restore.openSettings")}</button>
         </div>
       </div>
     {:else if !rows.length}
@@ -424,7 +424,7 @@
           <button class="text action" onclick={openSettings}>{t("restore.openSettings")}</button>
           {#if hasProtected !== false}
             <button
-              class="text action"
+              class="text"
               disabled={busyLock || hasProtected !== true}
               title={hasProtected === true ? t("restore.lockAllHint") : t("daemon.offline")}
               onclick={lockAll}
@@ -525,15 +525,16 @@
   }
 
   .blank-name {
-    color: var(--fg-2);
-    font-size: var(--text-md);
+    color: var(--fg);
+    font-size: var(--text-lg);
+    font-weight: 600;
   }
 
   .blank-sub {
-    margin-top: 6px;
+    margin-top: 8px;
     color: var(--muted);
     font-size: var(--text-sm);
-    line-height: 1.5;
+    line-height: 1.55;
     overflow-wrap: anywhere;
   }
 
@@ -541,7 +542,24 @@
     display: flex;
     gap: 8px;
     justify-content: center;
-    margin-top: 16px;
+    margin-top: 20px;
+  }
+
+  /* The empty state's two actions are not equal. Opening settings is the step
+     forward, locking is a guarded side action, so one is a bordered chip and
+     the other stays plain. Filling one would add the only solid control in an
+     app that otherwise keeps controls flat on the page. */
+  .blank-actions .text {
+    height: 30px;
+    padding: 0 10px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .blank-actions .action {
+    padding: 0 12px;
+    color: var(--fg);
   }
 
   /* the row is the settings window's .prefrow, kept as a button */
