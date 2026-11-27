@@ -173,7 +173,7 @@ const zh = {
   "restore.retry": "重试",
   "restore.openSettings": "打开设置",
   "restore.settings": "设置",
-  "restore.lockAll": "锁定受保护应用",
+  "restore.lockAll": "立即锁定",
   "restore.lockAllHint": "只锁定受保护的应用，未受保护的应用不受影响。",
   "lock.notice.none": "启动已上锁，当前桌面没有匹配的受保护窗口。",
   "lock.notice.confirmed":
@@ -410,7 +410,7 @@ const en = {
   "restore.retry": "Retry",
   "restore.openSettings": "Open settings",
   "restore.settings": "Settings",
-  "restore.lockAll": "Lock protected apps",
+  "restore.lockAll": "Lock now",
   "restore.lockAllHint":
     "Only protected apps are locked. Unprotected apps are unaffected.",
   "lock.notice.none":
