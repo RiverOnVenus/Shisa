@@ -1,6 +1,6 @@
 # Maintainer: RiverOnVenus <aur@zhui.dev>
 pkgname=shisa
-pkgver=0.1.7
+pkgver=0.1.8
 pkgrel=1
 pkgdesc="App lock for KDE Plasma 6 on Wayland: hides private windows and gates launches via fanotify."
 arch=('x86_64')
