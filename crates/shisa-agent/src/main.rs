@@ -146,8 +146,8 @@ struct TrayState {
     /// Ticket grants expected to bring a concealed window back, with the
     /// deadline for its hidden report. The daemon allows the window at the
     /// same time as the ticket, but KWin reports it hidden until it applies
-    /// the change, so ticket reads keep the previous ring color while one is
-    /// pending instead of flashing amber before the restored green.
+    /// the change, so ticket reads keep the previous ring color while the
+    /// window is still coming back.
     ticket_grants: HashMap<String, Instant>,
     /// The interface language, re-read while the tray runs.
     language: Language,
@@ -419,19 +419,13 @@ impl Tray for TrayState {
 
     fn icon_name(&self) -> String {
         if self.offline {
-            OFFLINE_ICON
-        } else if self.hidden_count() == 0 {
-            // Nothing is concealed, but a protected app with a valid ticket
-            // can still be launched, or reopened from its own tray icon,
-            // without the app-lock password in its grace period.
-            match self.ticketed {
-                Some(counts) if counts.total == 0 => "shisa-tray-symbolic",
-                _ => RESTORABLE_ICON,
-            }
-        } else if self.ticketed.is_some_and(|counts| counts.hidden > 0) {
-            RESTORABLE_ICON
-        } else {
-            LOCKED_ICON
+            return OFFLINE_ICON.into();
+        }
+        match self.ticketed {
+            Some(counts) if counts.total > 0 => RESTORABLE_ICON,
+            _ if self.hidden_count() > 0 => LOCKED_ICON,
+            Some(_) => "shisa-tray-symbolic",
+            None => RESTORABLE_ICON,
         }
         .into()
     }
@@ -501,9 +495,6 @@ impl Tray for TrayState {
                     ));
                 }
             }
-            // A concealed window can need the password while another
-            // protected app still holds a ticket. The ring shows the locked
-            // state, so the tooltip carries the password-free count.
             if let Some(counts) = self.ticketed {
                 let others = counts.total.saturating_sub(counts.hidden);
                 if others > 0 {
@@ -939,9 +930,7 @@ fn signal_loop(
         {
             // A grant that brings a concealed window back shows it within a
             // script poll and at most one revision load. Hold the ring's
-            // previous color until the hidden report arrives, so the grant
-            // does not flash amber between the locked blue and the restored
-            // green.
+            // previous color until the hidden report confirms the restore.
             if let Ok((app, unlocked)) = message.body().deserialize::<(String, bool)>() {
                 let _ =
                     handle.update(|tray| apply_state_change(tray, &app, unlocked, Instant::now()));
@@ -1779,11 +1768,13 @@ mod tests {
         tray.hidden_windows = ((1, 1), HashMap::from([("org.kde.kate".into(), 2)]));
         // A concealed window with no daemon confirmation stays locked.
         assert_eq!(tray.icon_name(), LOCKED_ICON);
+        tray.ticketed = Some(TicketCounts::default());
+        assert_eq!(tray.icon_name(), LOCKED_ICON);
         tray.ticketed = Some(TicketCounts {
             hidden: 0,
             total: 1,
         });
-        assert_eq!(tray.icon_name(), LOCKED_ICON);
+        assert_eq!(tray.icon_name(), RESTORABLE_ICON);
         tray.ticketed = Some(TicketCounts {
             hidden: 1,
             total: 1,
@@ -2020,7 +2011,7 @@ mod tests {
     #[test]
     fn a_ticket_grant_holds_the_previous_color_until_its_window_returns() {
         let mut tray = tray_without_hidden();
-        let counts = HashMap::from([("org.kde.motrix".into(), 1)]);
+        let counts = HashMap::from([("org.kde.motrix".into(), 1), ("org.kde.okular".into(), 1)]);
         // The locked blue before the user authenticates the restore.
         apply_hidden_windows(
             &mut tray,
@@ -2043,12 +2034,12 @@ mod tests {
             }),
         );
         assert_eq!(tray.icon_name(), LOCKED_ICON);
-        // The report that brings the window back ends the hold. The ticket
-        // still covers a launch, so the ring stays amber until it expires.
+        // Once Motrix returns, its ticket keeps the ring amber while Okular
+        // stays hidden and requires authentication.
         apply_hidden_windows(
             &mut tray,
             (1, 2),
-            HashMap::new(),
+            HashMap::from([("org.kde.okular".into(), 1)]),
             Some(TicketCounts {
                 hidden: 0,
                 total: 1,
@@ -2056,6 +2047,8 @@ mod tests {
         );
         assert!(tray.ticket_grants.is_empty());
         assert_eq!(tray.icon_name(), RESTORABLE_ICON);
+        apply_ticket_poll(&mut tray, TicketPoll::Confirmed(TicketCounts::default()));
+        assert_eq!(tray.icon_name(), LOCKED_ICON);
     }
 
     #[test]
