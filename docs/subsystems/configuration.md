@@ -26,6 +26,8 @@ A reload is fail-closed. If the config directory or one of its entries cannot be
 
 A settings write is fail-closed too. shisad refuses a config directory that is not root's or that group or others can write, removes a stale temp file, and creates the new one without following a symlink. The directory is kept at 0700, the result is written as 0600, and it is renamed into place. The package's install script tightens the directory and files of an earlier installation, because the files list the apps and paths each user protects.
 
+The daemon's reload thread serializes policy changes. It uses [`shisa_core::files::write_atomic`](../../crates/shisa-core/src/files.rs) with `SyncFile` so a published policy has synced data and metadata. An empty policy would otherwise parse as no protection. A failed write preserves the destination and attempts to clean up its temporary file. The rename is atomic during normal operation. The parent directory is not synced, so the rename itself is not guaranteed to survive power loss.
+
 ### Interface language
 
 The settings window, restore window, tray menu and notifications, and `shisa` commands share one per-user choice. It lives in a user-writable file, apart from the root-owned policy file, because changing it must not need polkit authorization:
@@ -38,6 +40,8 @@ language = "zh-CN"   # or "en"
 Without a saved choice, the programs read `LC_ALL`, then `LC_MESSAGES`, then `LANG`. A `zh` locale selects Simplified Chinese and every other locale English. A missing, unreadable or malformed file falls back to the locale rather than failing. The daemon reads this user-writable file while it represents the account, so the read accepts only a small regular file, opens it without blocking on a FIFO, caps it at 64 KiB, and requires the opened file to belong to the account.
 
 The settings window writes the file from the General page's language selector. The tray re-reads it every two seconds, so its menu, tooltip and notifications follow a change without a restart. The restore window reads it when it opens. Desktop files' `Name[locale]` still follow the session locale: the choice changes Shisa's own text, not application names.
+
+Language saves use the same `SyncFile` replacement with a 0600 file. Each save has its own temporary name, so concurrent saves publish complete values and the last successful rename determines the saved language.
 
 The daemon keeps D-Bus error strings in English so the bus contract and the debug log stay stable. The settings shell and the CLI translate the known ones for the Chinese interface (`shisa_core::i18n::error_text`). Resolution notes from `ResolveApp` are formatted in the caller's saved language because they are content rather than error codes. The `.policy` file carries both languages through `xml:lang`, and polkit selects the action text by the session locale. The detail that names the target of a global settings change uses the saved choice instead.
 
@@ -81,11 +85,15 @@ Diagnostics() -> (sxxxttsbx)
 
 `StateChanged` is sent to the user's registered agent after settings changes, ticket issue, `Lock`, `Hide`, a ticket- or autostart-covered launch that restores window allowance, screen-lock revocation, consumption of a one-use ticket, or ticket expiry. `Unhide` does not send it: the caller applies the restored window state itself or asks the session agent to do so. `SessionUnlocked` signals the agent to refresh window handling on session unlock. `SettingsLocked` is sent to registered settings windows after a global `Lock` or when every graphical session of the user locks. It asks them to exit so polkit's process-keyed settings authorization cannot outlive the lock. `WindowStates` reports window allowance independently from launch tickets. `RelockSeconds` reports the configured focus-loss delays.
 
+The CLI and settings shell use [`shisa_core::dbus::method_unavailable`](../../crates/shisa-core/src/dbus.rs) to recognize an absent service or an older service without the requested method. The four compatibility names are `UnknownMethod`, `UnknownInterface`, `ServiceUnknown`, and `NameHasNoOwner` in the `org.freedesktop.DBus.Error` namespace. This enables the CLI's local `ResolveApp` scan, the `VerifyLock` fallback in both clients, and settings registration with a daemon that lacks `SettingsGeneration`. Timeouts and permission errors follow the usual error paths. In particular a lock timeout must avoid a second window check and notification.
+
 ### Diagnostics
 
 `RecentLaunches` returns the caller's most recent 64 events in chronological order and counts accumulated since daemon startup. Each event contains an ID, Unix timestamp in milliseconds, app ID, PID, outcome, wait deadline, and answer time. A zero deadline means there is no wait. A zero answer time means the request is waiting. The direct-allow outcomes are `ticket`, `instance`, `autostart`, and `selfexec`. A pending `asked` entry changes to `granted`, `timeout`, `cancelled`, `failed`, `revoked`, or `denied` when the check ends. `revoked` means a lock started after the request and the held launch was denied. See [Authentication](authentication.md#completion-and-cancellation) for outcome semantics. Restart clears the records and counts.
 
 `Diagnostics` returns the version, start time, last reload, last incomplete mark operation, app count, mark count, config path, password readiness, and the last configuration read or parse failure. Times are Unix milliseconds and zero means the event has not occurred. A complete reload resets the mark-failure timestamp, and a load that reads every configuration file resets the configuration-failure timestamp. Counts and the config path are for the caller, even if the config has yet to be created.
+
+Launch activity and diagnostics read wall-clock Unix milliseconds from the daemon's [`clock::now_ms`](../../crates/shisad/src/clock.rs). It truncates fractions of a millisecond and returns zero if the clock is before the epoch. Authorization timeouts still use a monotonic deadline. The private-bus `interface_and_settings_changes` test checks the timestamp units and zero sentinels exposed by both methods.
 
 The password readiness flag reads `/etc/shadow` and returns only whether the `shisa-lock` entry is set. The file's contents never reach the caller. It reports ready if the file cannot be read. Settings uses the flag to show a setup hint, and the hint's Check again button re-reads diagnostics so setting the password does not require reopening the window. Both diagnostic methods are read-only and require no polkit prompt.
 

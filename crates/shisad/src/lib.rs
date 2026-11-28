@@ -3,6 +3,7 @@
 
 pub mod activity;
 pub mod bus;
+mod clock;
 pub mod diag;
 pub mod events;
 pub mod gate;

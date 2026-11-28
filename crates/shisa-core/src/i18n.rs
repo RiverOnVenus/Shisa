@@ -6,11 +6,15 @@
 //! it and every other user-side program reads it, so the tray, the CLI, the
 //! restore window and the authentication detail all agree.
 
+use crate::dbus::{LOCK_CONFIRMED, LOCK_NO_LAYER, LOCK_PARTIAL, LockReport, lock_status};
+use crate::desktop::{Env, display_name};
+use crate::files::{WriteDurability, write_atomic};
 use serde::Deserialize;
 use std::fs;
-use std::io::{self, Write};
+use std::io;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// The interface languages Shisa ships with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -149,8 +153,7 @@ pub fn current() -> Language {
     }
 }
 
-/// Save this process's choice. Written to a temporary file and renamed, so a
-/// crash cannot leave a half-written preference behind.
+/// Save this process's choice by syncing the new file before an atomic rename.
 pub fn save(language: Language) -> io::Result<()> {
     let config_home = config_home()
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no home directory"))?;
@@ -167,18 +170,11 @@ pub fn save_to(config_home: &Path, language: Language) -> io::Result<()> {
         ));
     };
     fs::create_dir_all(dir)?;
-    let temp = dir.join(".ui.toml.new");
+    static NEXT_SAVE: AtomicU64 = AtomicU64::new(0);
+    let sequence = NEXT_SAVE.fetch_add(1, Ordering::Relaxed);
+    let temp = dir.join(format!(".ui.toml.new.{}.{sequence}", std::process::id()));
     let text = format!("language = \"{}\"\n", language.tag());
-    let written = fs::File::create(&temp)
-        .and_then(|mut file| {
-            file.write_all(text.as_bytes())?;
-            file.sync_all()
-        })
-        .and_then(|()| fs::rename(&temp, &path));
-    if written.is_err() {
-        let _ = fs::remove_file(&temp);
-    }
-    written
+    write_atomic(&path, &temp, text.as_bytes(), WriteDurability::SyncFile)
 }
 
 /// Rewrites a known English error from shisad, zbus or polkit for the
@@ -285,9 +281,88 @@ const ERROR_TEXT: &[(&str, &str)] = &[
     ("connection refused", "应用锁没有响应，稍后再试。"),
 ];
 
+/// Format the window result for the CLI, tray and settings windows.
+pub fn lock_report_text(report: &LockReport, language: Language) -> String {
+    let (_, _, matched, hidden, missed) = report;
+    match (lock_status(report), language) {
+        (LOCK_NO_LAYER, Language::ZhCn) => "启动已上锁，本桌面没有窗口层，未能收起窗口".into(),
+        (LOCK_NO_LAYER, Language::En) => {
+            "Lock applied. This desktop has no window layer, so windows were not hidden".into()
+        }
+        (LOCK_CONFIRMED, Language::ZhCn) if *matched == 0 => {
+            "启动已上锁，当前桌面没有匹配的受保护窗口".into()
+        }
+        (LOCK_CONFIRMED, Language::En) if *matched == 0 => {
+            "Lock applied. No protected window matched on this desktop".into()
+        }
+        (status @ (LOCK_CONFIRMED | LOCK_PARTIAL), Language::ZhCn) => {
+            let mut summary = format!("启动已上锁，已收起 {hidden}/{matched} 个受保护窗口");
+            if status == LOCK_PARTIAL {
+                summary.push_str("，未确认：");
+                summary.push_str(&missed_names(missed, language, &Env::current()));
+            }
+            summary
+        }
+        (status @ (LOCK_CONFIRMED | LOCK_PARTIAL), Language::En) => {
+            let noun = if *matched == 1 { "window" } else { "windows" };
+            let mut summary = format!("Lock applied. Hid {hidden} of {matched} protected {noun}");
+            if status == LOCK_PARTIAL {
+                summary.push_str(". Not confirmed: ");
+                summary.push_str(&missed_names(missed, language, &Env::current()));
+            }
+            summary
+        }
+        (_, Language::ZhCn) => "启动已上锁，窗口状态未确认".into(),
+        (_, Language::En) => "Lock applied, but the window state was not confirmed".into(),
+    }
+}
+
+fn missed_names(missed: &[(String, u32)], language: Language, env: &Env) -> String {
+    let mut names: Vec<String> = missed
+        .iter()
+        .map(|(app, _)| display_name(app, env))
+        .collect();
+    names.sort();
+    names.dedup();
+    let (shown, remaining) = names.split_at(names.len().min(3));
+    let mut text = shown.join(match language {
+        Language::ZhCn => "、",
+        Language::En => ", ",
+    });
+    if !remaining.is_empty() {
+        let count = remaining.len();
+        text.push_str(&match language {
+            Language::ZhCn => format!(" 等 {count} 个应用"),
+            Language::En => format!(" and {count} more"),
+        });
+    }
+    text
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missed_window_names_are_sorted_deduplicated_and_limited() {
+        let env = Env {
+            data_dirs: Vec::new(),
+            path: Vec::new(),
+            flatpak_roots: Vec::new(),
+            owner: None,
+            config_home: PathBuf::new(),
+            locale: None,
+        };
+        let missed = ["D", "C", "B", "A", "D"].map(|name| (name.to_string(), 1));
+        assert_eq!(
+            missed_names(&missed, Language::En, &env),
+            "A, B, C and 1 more"
+        );
+        assert_eq!(
+            missed_names(&missed, Language::ZhCn, &env),
+            "A、B、C 等 1 个应用"
+        );
+    }
 
     #[test]
     fn locales_and_tags_map_to_the_two_languages() {
@@ -333,6 +408,31 @@ mod tests {
         assert_eq!(for_account(&dir, Some("zh_CN.UTF-8")), Language::ZhCn);
 
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_failed_preference_rename_cleans_up_and_can_be_retried() {
+        let dir = std::env::temp_dir().join(format!("shisa-i18n-rename-{}", std::process::id()));
+        let path = config_path(&dir);
+        fs::create_dir_all(&path).unwrap();
+        fs::write(path.join("marker"), "untouched").unwrap();
+
+        assert!(save_to(&dir, Language::En).is_err());
+        assert_eq!(
+            fs::read_to_string(path.join("marker")).unwrap(),
+            "untouched"
+        );
+        assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 1);
+
+        fs::remove_dir_all(&path).unwrap();
+        let sibling = dir.join("sibling");
+        fs::write(&sibling, "untouched").unwrap();
+        std::os::unix::fs::symlink(&sibling, path.with_file_name(".ui.toml.new")).unwrap();
+        save_to(&dir, Language::En).unwrap();
+        assert_eq!(saved(&dir), Some(Language::En));
+        assert_eq!(fs::read_to_string(sibling).unwrap(), "untouched");
+        assert_eq!(fs::symlink_metadata(path).unwrap().mode() & 0o777, 0o600);
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

@@ -6,11 +6,8 @@
 //! `unprotect` authenticate the same way. `status` and `lock` go through the
 //! system bus without authentication (docs/subsystems/configuration.md).
 
-use shisa_core::dbus::{
-    AppRow, LOCK_CONFIRMED, LOCK_NO_LAYER, LOCK_PARTIAL, LOCK_UNCONFIRMED, LockReport,
-    ManagerProxyBlocking,
-};
-use shisa_core::i18n::{self, Language};
+use shisa_core::dbus::{AppRow, LockReport, ManagerProxyBlocking, method_unavailable};
+use shisa_core::i18n::{self, Language, lock_report_text};
 use std::time::Duration;
 use std::{env, process};
 
@@ -461,7 +458,7 @@ fn resolve(app: String, language: Language) -> i32 {
             }
             // An older daemon without the method, or no daemon at all: the
             // local scan is the best answer left.
-            Err(e) if unavailable(&e) => {}
+            Err(e) if method_unavailable(&e) => {}
             Err(e) => {
                 eprintln!("shisa: {app}: {}", shown(e, language));
                 return 1;
@@ -491,25 +488,6 @@ fn resolve(app: String, language: Language) -> i32 {
     }
 }
 
-/// The daemon could not answer this method: it is not running, or it is too
-/// old to know it. Either way the local scan can stand in.
-fn unavailable(e: &zbus::Error) -> bool {
-    match e {
-        zbus::Error::MethodError(name, _, _) => unavailable_name(name.as_str()),
-        _ => false,
-    }
-}
-
-fn unavailable_name(name: &str) -> bool {
-    matches!(
-        name,
-        "org.freedesktop.DBus.Error.UnknownMethod"
-            | "org.freedesktop.DBus.Error.UnknownInterface"
-            | "org.freedesktop.DBus.Error.ServiceUnknown"
-            | "org.freedesktop.DBus.Error.NameHasNoOwner"
-    )
-}
-
 fn lock(app: String, language: Language) -> i32 {
     let manager = match manager(language) {
         Ok(m) => m,
@@ -533,7 +511,7 @@ fn lock(app: String, language: Language) -> i32 {
                             // call. A timeout means the agent is busy or
                             // stuck, and a second check would add another
                             // notification and delay.
-                            if unavailable(&e) {
+                            if method_unavailable(&e) {
                                 let _ = verify_lock_legacy();
                             }
                             eprintln!(
@@ -577,55 +555,6 @@ fn verify_lock_legacy() -> zbus::Result<()> {
         .build()?;
     let proxy = zbus::blocking::Proxy::new(&conn, WINDOW_BUS_NAME, WINDOW_PATH, WINDOW_INTERFACE)?;
     proxy.call("VerifyLock", &())
-}
-
-/// The window result of a lock, in the terminal's language. A partial report
-/// names the apps whose windows stayed visible, and an unknown status is
-/// never shown as a confirmation.
-fn lock_report_text(report: &LockReport, language: Language) -> String {
-    let (status, _generation, matched, hidden, missed) = report;
-    let env = shisa_core::desktop::Env::current();
-    let names = missed
-        .iter()
-        .map(|(app, _)| shisa_core::desktop::display_name(app, &env))
-        .collect::<Vec<_>>()
-        .join(text(language, "、", ", "));
-    match (*status, language) {
-        (LOCK_NO_LAYER, Language::ZhCn) => "启动已上锁，本桌面没有窗口层，未能收起窗口".into(),
-        (LOCK_NO_LAYER, Language::En) => {
-            "Lock applied. This desktop has no window layer, so windows were not hidden".into()
-        }
-        (LOCK_UNCONFIRMED, Language::ZhCn) => "启动已上锁，窗口状态未确认".into(),
-        (LOCK_UNCONFIRMED, Language::En) => {
-            "Lock applied, but the window state was not confirmed".into()
-        }
-        (LOCK_CONFIRMED, Language::ZhCn) if *matched == 0 => {
-            "启动已上锁，当前桌面没有匹配的受保护窗口".into()
-        }
-        (LOCK_CONFIRMED, Language::En) if *matched == 0 => {
-            "Lock applied. No protected window matched on this desktop".into()
-        }
-        (LOCK_CONFIRMED, Language::ZhCn) => {
-            format!("启动已上锁，已收起 {hidden}/{matched} 个受保护窗口")
-        }
-        (LOCK_CONFIRMED, Language::En) if *matched == 1 => {
-            format!("Lock applied. Hid {hidden} of 1 protected window")
-        }
-        (LOCK_CONFIRMED, Language::En) => {
-            format!("Lock applied. Hid {hidden} of {matched} protected windows")
-        }
-        (LOCK_PARTIAL, Language::ZhCn) if !missed.is_empty() => {
-            format!("启动已上锁，已收起 {hidden}/{matched} 个受保护窗口，未确认：{names}")
-        }
-        (LOCK_PARTIAL, Language::En) if !missed.is_empty() => {
-            let noun = if *matched == 1 { "window" } else { "windows" };
-            format!(
-                "Lock applied. Hid {hidden} of {matched} protected {noun}. Not confirmed: {names}"
-            )
-        }
-        (_, Language::ZhCn) => "启动已上锁，窗口状态未确认".into(),
-        (_, Language::En) => "Lock applied, but the window state was not confirmed".into(),
-    }
 }
 
 fn unlock_command(app: String, language: Language) -> i32 {
@@ -815,6 +744,8 @@ mod tests {
 
     #[test]
     fn a_lock_report_names_the_window_result() {
+        use shisa_core::dbus::{LOCK_CONFIRMED, LOCK_NO_LAYER, LOCK_PARTIAL, LOCK_UNCONFIRMED};
+
         let report =
             |status: u8, matched: u64, hidden: u64, missed: Vec<(&str, u32)>| -> LockReport {
                 (
@@ -858,19 +789,9 @@ mod tests {
             lock_report_text(&report(LOCK_PARTIAL, 2, 1, vec![]), Language::ZhCn),
             "启动已上锁，窗口状态未确认"
         );
-    }
-
-    #[test]
-    fn only_a_missing_method_or_service_falls_back_to_the_local_scan() {
-        for name in [
-            "org.freedesktop.DBus.Error.UnknownMethod",
-            "org.freedesktop.DBus.Error.UnknownInterface",
-            "org.freedesktop.DBus.Error.ServiceUnknown",
-            "org.freedesktop.DBus.Error.NameHasNoOwner",
-        ] {
-            assert!(unavailable_name(name), "{name}");
-        }
-        assert!(!unavailable_name("org.freedesktop.DBus.Error.AccessDenied"));
-        assert!(!unavailable_name(""));
+        assert_eq!(
+            lock_report_text(&report(LOCK_CONFIRMED, 2, 1, vec![]), Language::ZhCn),
+            "启动已上锁，窗口状态未确认"
+        );
     }
 }

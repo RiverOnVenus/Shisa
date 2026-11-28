@@ -11,11 +11,10 @@
 
 use futures_channel::oneshot;
 use shisa_core::dbus::{LockReport, WINDOW_BUS_NAME, WINDOW_INTERFACE, WINDOW_PATH};
+use shisa_core::files::{WriteDurability, write_atomic};
 use std::collections::HashMap;
 use std::env;
 use std::fs;
-use std::io::Write;
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
@@ -164,8 +163,13 @@ impl Ready {
         if version == *stored {
             return true;
         }
-        if let Err(error) = write_atomic(path, snapshots) {
-            warn!("window snapshots: {error}");
+        if let Err(error) = write_atomic(
+            path,
+            &path.with_extension("tmp"),
+            snapshots.as_bytes(),
+            WriteDurability::RenameOnly,
+        ) {
+            warn!("window snapshots: {}: {error}", path.display());
             return false;
         }
         *stored = version;
@@ -808,7 +812,13 @@ impl Gate {
                 "/* @SNAPSHOTS@ */ \"[]\"",
                 &js_string(snapshots.as_deref().unwrap_or("[]")),
             );
-            write_atomic(&path, &source).map_err(LoadError::Other)?;
+            write_atomic(
+                &path,
+                &path.with_extension("tmp"),
+                source.as_bytes(),
+                WriteDurability::RenameOnly,
+            )
+            .map_err(|error| LoadError::Other(format!("{}: {error}", path.display())))?;
             let plugin = format!(
                 "shisa-window-gate-{}-{}",
                 std::process::id(),
@@ -991,20 +1001,6 @@ fn read_snapshots(path: &Path) -> Option<String> {
     }
 }
 
-fn write_atomic(path: &Path, content: &str) -> Result<(), String> {
-    let tmp = path.with_extension("tmp");
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(&tmp)
-        .map_err(|e| format!("{}: {e}", tmp.display()))?;
-    file.write_all(content.as_bytes())
-        .map_err(|e| format!("{}: {e}", tmp.display()))?;
-    fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
-}
-
 /// The script the agent writes for KWin. The arrays and the generation are
 /// the only values that change between loads. `restore` holds apps that were
 /// protected at the previous load and whose windows may still be hidden.
@@ -1104,7 +1100,16 @@ mod tests {
         assert!(!ready.save_snapshots(&path, 1, 1, "first"));
         fs::create_dir(&directory).unwrap();
         assert!(ready.save_snapshots(&path, 1, 1, "first"));
+        let temporary = path.with_extension("tmp");
+        fs::create_dir(&temporary).unwrap();
+        assert!(!ready.save_snapshots(&path, 1, 3, "blocked"));
+        assert_eq!(fs::read_to_string(&path).unwrap(), "first");
+        fs::remove_dir(&temporary).unwrap();
+        let sibling = directory.join("sibling");
+        fs::write(&sibling, "untouched").unwrap();
+        std::os::unix::fs::symlink(&sibling, &temporary).unwrap();
         assert!(ready.save_snapshots(&path, 1, 3, "latest"));
+        assert_eq!(fs::read_to_string(sibling).unwrap(), "untouched");
         assert!(!ready.save_snapshots(&path, 1, 2, "delayed"));
         ready.expect(2);
         assert!(!ready.save_snapshots(&path, 1, 4, "retired"));

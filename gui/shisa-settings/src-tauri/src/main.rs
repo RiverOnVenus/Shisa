@@ -12,8 +12,8 @@
 use base64::Engine;
 use futures_util::StreamExt;
 use shisa_core::dbus::{
-    AppRow, BUS_NAME, DiagRow, LOCK_CONFIRMED, LOCK_NO_LAYER, LOCK_PARTIAL, LaunchRow, LockReport,
-    ManagerProxy,
+    AppRow, BUS_NAME, DiagRow, LOCK_UNCONFIRMED, LaunchRow, LockReport, ManagerProxy, lock_status,
+    method_unavailable,
 };
 use shisa_core::i18n::{self, Language};
 use std::collections::HashMap;
@@ -344,86 +344,44 @@ async fn set_prompt_timeout(bus: State<'_, Bus>, seconds: u64) -> R<()> {
         .map_err(err)
 }
 
+/// Feedback for a global lock and whether the restore panel should wait
+/// for the separate hidden-window inventory to catch up.
 #[derive(serde::Serialize)]
-struct MissedWindow {
-    app: String,
-    count: u32,
-}
-
-/// The window layer's answer for this lock. The panel shows the status and
-/// counts instead of claiming a success that KWin did not confirm.
-#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 struct LockResult {
-    /// `confirmed`, `partial`, `unconfirmed`, or `no-window-layer`.
-    status: &'static str,
-    generation: u64,
-    matched: u64,
-    hidden: u64,
-    missed: Vec<MissedWindow>,
+    summary: String,
+    wait_for_inventory: bool,
 }
 
 impl LockResult {
-    fn from_reply((status, generation, matched, hidden, missed): LockReport) -> Self {
-        let status = match status {
-            LOCK_CONFIRMED => "confirmed",
-            LOCK_PARTIAL => "partial",
-            LOCK_NO_LAYER => "no-window-layer",
-            _ => "unconfirmed",
-        };
+    fn from_reply(report: &LockReport, language: Language) -> Self {
         Self {
-            status,
-            generation,
-            matched,
-            hidden,
-            missed: missed
-                .into_iter()
-                .map(|(app, count)| MissedWindow { app, count })
-                .collect(),
-        }
-    }
-
-    fn unconfirmed() -> Self {
-        Self {
-            status: "unconfirmed",
-            generation: 0,
-            matched: 0,
-            hidden: 0,
-            missed: Vec::new(),
+            summary: i18n::lock_report_text(report, language),
+            wait_for_inventory: report.3 > 0 || lock_status(report) == LOCK_UNCONFIRMED,
         }
     }
 }
 
 #[tauri::command]
-async fn lock(app_id: String) -> R<Option<LockResult>> {
+async fn lock(app_id: String, language: Option<String>) -> R<Option<LockResult>> {
     let conn = zbus::Connection::system().await.map_err(err)?;
     let manager = ManagerProxy::new(&conn).await.map_err(err)?;
     manager.lock(&app_id).await.map_err(err)?;
     if !app_id.is_empty() {
         return Ok(None);
     }
-    Ok(Some(check_lock_windows().await))
-}
-
-/// The bus error names that mean the agent is absent or too old for the new
-/// method. Other errors, including a timeout, must not trigger a second
-/// check and a second notification.
-fn unavailable(error: &zbus::Error) -> bool {
-    matches!(
-        error,
-        zbus::Error::MethodError(name, _, _) if matches!(
-            name.as_str(),
-            "org.freedesktop.DBus.Error.UnknownMethod"
-                | "org.freedesktop.DBus.Error.UnknownInterface"
-                | "org.freedesktop.DBus.Error.ServiceUnknown"
-                | "org.freedesktop.DBus.Error.NameHasNoOwner"
-        )
-    )
+    let language = language
+        .as_deref()
+        .and_then(Language::from_tag)
+        .unwrap_or_else(i18n::current);
+    let report = check_lock_windows().await;
+    Ok(Some(LockResult::from_reply(&report, language)))
 }
 
 /// Ask the session agent for this lock's window report. A failed or older
 /// agent call leaves the lock in force but the window state unconfirmed. The
 /// method timeout bounds a check that is waiting on a hung KWin.
-async fn check_lock_windows() -> LockResult {
+async fn check_lock_windows() -> LockReport {
     use shisa_core::dbus::{WINDOW_BUS_NAME, WINDOW_INTERFACE, WINDOW_PATH};
     let checked = async {
         let session = zbus::connection::Builder::session()?
@@ -438,14 +396,14 @@ async fn check_lock_windows() -> LockResult {
     }
     .await;
     match checked {
-        Ok(reply) => LockResult::from_reply(reply),
+        Ok(reply) => reply,
         Err(e) => {
             // An older agent only has VerifyLock. It still shows its own
             // notification, but this window has no report for the operation.
-            if unavailable(&e) {
+            if method_unavailable(&e) {
                 let _ = verify_lock_legacy().await;
             }
-            LockResult::unconfirmed()
+            (LOCK_UNCONFIRMED, 0, 0, 0, Vec::new())
         }
     }
 }
@@ -574,7 +532,7 @@ async fn watch_lock(app: &tauri::AppHandle, bus: &Bus) -> Result<bool, String> {
     // behavior instead of making the settings window unusable after upgrade.
     let generation = match manager.settings_generation().await {
         Ok(generation) => Some(generation),
-        Err(error) if unavailable(&error) => None,
+        Err(error) if method_unavailable(&error) => None,
         Err(error) => return Err(err(error)),
     };
     let mut locked = manager.receive_settings_locked().await.map_err(err)?;
@@ -1129,28 +1087,32 @@ mod tests {
     }
 
     #[test]
-    fn a_lock_report_maps_the_status_and_counts() {
-        let full = LockResult::from_reply((LOCK_CONFIRMED, 7, 2, 2, Vec::new()));
-        assert_eq!(full.status, "confirmed");
-        assert_eq!((full.generation, full.matched, full.hidden), (7, 2, 2));
-        assert!(full.missed.is_empty());
+    fn a_lock_report_carries_the_summary_and_when_to_wait_for_inventory() {
+        use shisa_core::dbus::{LOCK_CONFIRMED, LOCK_NO_LAYER, LOCK_PARTIAL};
 
-        let partial =
-            LockResult::from_reply((LOCK_PARTIAL, 8, 3, 2, vec![("org.kde.kate".into(), 1)]));
-        assert_eq!(partial.status, "partial");
-        assert_eq!(partial.missed[0].app, "org.kde.kate");
-        assert_eq!(partial.missed[0].count, 1);
+        let full = LockResult::from_reply(&(LOCK_CONFIRMED, 7, 2, 2, Vec::new()), Language::ZhCn);
+        assert_eq!(full.summary, "启动已上锁，已收起 2/2 个受保护窗口");
+        assert!(full.wait_for_inventory);
 
+        for report in [
+            (LOCK_CONFIRMED, 7, 0, 0, Vec::new()),
+            (LOCK_NO_LAYER, 0, 0, 0, Vec::new()),
+            (
+                LOCK_PARTIAL,
+                8,
+                1,
+                0,
+                vec![("shisa.test.missing".into(), 1)],
+            ),
+        ] {
+            assert!(!LockResult::from_reply(&report, Language::En).wait_for_inventory);
+        }
+        let unknown = LockResult::from_reply(&(99, 0, 0, 0, Vec::new()), Language::En);
+        assert!(unknown.wait_for_inventory);
         assert_eq!(
-            LockResult::from_reply((LOCK_NO_LAYER, 0, 0, 0, Vec::new())).status,
-            "no-window-layer"
+            unknown.summary,
+            "Lock applied, but the window state was not confirmed"
         );
-        // A status from a newer agent is not read as a confirmation.
-        assert_eq!(
-            LockResult::from_reply((99, 0, 0, 0, Vec::new())).status,
-            "unconfirmed"
-        );
-        assert_eq!(LockResult::unconfirmed().status, "unconfirmed");
     }
 
     #[test]

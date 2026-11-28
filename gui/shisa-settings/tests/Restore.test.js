@@ -13,6 +13,11 @@ const { state, close } = vi.hoisted(() => ({
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (command, args) => {
     switch (command) {
+      case "lock":
+        return {
+          summary: "Lock applied. No protected window matched on this desktop",
+          waitForInventory: false,
+        };
       case "hidden_apps":
         return { ...state.hidden };
       case "restore_hidden":
@@ -177,6 +182,20 @@ test("the empty panel hides the lock action when nothing is protected", async ()
   ).toEqual(["Open settings"]);
   await vi.waitFor(() =>
     expect(document.activeElement?.textContent.trim()).toBe("Open settings"),
+  );
+});
+
+test("the restore panel shows the shell's lock summary", async () => {
+  state.installed = [["org.example.editor", "Text Editor", ""]];
+  state.hidden = {};
+  await render();
+  const lockButton = () => document.querySelector(".blank-actions button:last-child");
+  await vi.waitFor(() => expect(lockButton()?.textContent.trim()).toBe("Lock now"));
+  lockButton().click();
+  await vi.waitFor(() =>
+    expect(document.body.textContent).toContain(
+      "Lock applied. No protected window matched on this desktop",
+    ),
   );
 });
 

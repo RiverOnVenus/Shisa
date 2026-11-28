@@ -83,6 +83,11 @@ vi.mock("@tauri-apps/api/core", () => ({
       case "set_ui_language":
         languageWrites.push(args.language);
         return null;
+      case "lock":
+        return {
+          summary: "启动已上锁，已收起 2/2 个受保护窗口",
+          waitForInventory: true,
+        };
       default:
         return null;
     }
@@ -149,8 +154,8 @@ function rowNames() {
   );
 }
 
-async function render() {
-  app = mount(App, { target: document.body, props: { language: "en" } });
+async function render(language = "en") {
+  app = mount(App, { target: document.body, props: { language } });
   await vi.waitFor(() => expect(rowNames().length).toBe(2));
   return app;
 }
@@ -165,6 +170,17 @@ test("renders the installed apps and the daemon state", async () => {
   );
   // The protected row is selected on mount, so its settings are loaded.
   expect(calls).toContainEqual(["app_config", { appId: "org.kde.kate" }]);
+});
+
+test("a global lock shows the shell's summary in the window language", async () => {
+  await render("zh-CN");
+  const lockButton = () => document.querySelector('button[aria-label="锁定受保护应用"]');
+  await vi.waitFor(() => expect(lockButton()?.disabled).toBe(false));
+  lockButton().click();
+  await vi.waitFor(() =>
+    expect(document.body.textContent).toContain("启动已上锁，已收起 2/2 个受保护窗口"),
+  );
+  expect(calls).toContainEqual(["lock", { appId: "", language: "zh-CN" }]);
 });
 
 test("the health line names a missing session agent", async () => {
