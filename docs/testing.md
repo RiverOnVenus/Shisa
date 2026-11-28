@@ -52,6 +52,12 @@ These are the checks the matrix does not cover. A green cell is not a full verif
 
 The log keeps the results that the matrix cannot show, grouped by the build that produced them. The subsystem references linked at the end carry the full detail.
 
+### 2026-11-28 — Shared D-Bus compatibility predicate
+
+- Focused tests passed against the original CLI and Tauri predicates. The migrated core test decodes synthetic D-Bus error replies, accepts the four missing-method or service names, and rejects access denial, no reply, timeout, and an invalid reply. The four callers use the shared predicate.
+- The workspace, Tauri and fuzz formatting checks and workspace Clippy with `--all-targets --locked -- -D warnings` passed. Workspace tests reported 220 passed, 90 filtered, and 22 results including the namespace child runs. The KWin script passed 37, frontend passed 10 Node and 31 vitest, and Tauri passed 8.
+- Not run: a live older-agent or older-daemon fallback, `tests/gate.sh`, `tests/auth.sh`, `tests/settings.sh`, installed-package verification, and live Wayland clicks.
+
 ### 2026-11-28 — Atomic file replacement
 
 - Focused tests passed before migration for a failed preference rename, a blocked journal write and retry, a failed policy rename, and stale policy symlink removal. `strace -f -yy -e trace=openat,fsync,rename` on the preference, journal and policy tests showed file `fsync` before rename for the preference and policy, with no journal `fsync`. After migration the same traces showed `O_EXCL` and mode 0600 for all three, and the same file-sync split. The preference and journal tests now also check that a stale temporary symlink leaves its target untouched.

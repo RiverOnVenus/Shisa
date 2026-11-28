@@ -6,7 +6,7 @@
 //! `unprotect` authenticate the same way. `status` and `lock` go through the
 //! system bus without authentication (docs/subsystems/configuration.md).
 
-use shisa_core::dbus::{AppRow, LockReport, ManagerProxyBlocking};
+use shisa_core::dbus::{AppRow, LockReport, ManagerProxyBlocking, method_unavailable};
 use shisa_core::i18n::{self, Language, lock_report_text};
 use std::time::Duration;
 use std::{env, process};
@@ -458,7 +458,7 @@ fn resolve(app: String, language: Language) -> i32 {
             }
             // An older daemon without the method, or no daemon at all: the
             // local scan is the best answer left.
-            Err(e) if unavailable(&e) => {}
+            Err(e) if method_unavailable(&e) => {}
             Err(e) => {
                 eprintln!("shisa: {app}: {}", shown(e, language));
                 return 1;
@@ -488,25 +488,6 @@ fn resolve(app: String, language: Language) -> i32 {
     }
 }
 
-/// The daemon could not answer this method: it is not running, or it is too
-/// old to know it. Either way the local scan can stand in.
-fn unavailable(e: &zbus::Error) -> bool {
-    match e {
-        zbus::Error::MethodError(name, _, _) => unavailable_name(name.as_str()),
-        _ => false,
-    }
-}
-
-fn unavailable_name(name: &str) -> bool {
-    matches!(
-        name,
-        "org.freedesktop.DBus.Error.UnknownMethod"
-            | "org.freedesktop.DBus.Error.UnknownInterface"
-            | "org.freedesktop.DBus.Error.ServiceUnknown"
-            | "org.freedesktop.DBus.Error.NameHasNoOwner"
-    )
-}
-
 fn lock(app: String, language: Language) -> i32 {
     let manager = match manager(language) {
         Ok(m) => m,
@@ -530,7 +511,7 @@ fn lock(app: String, language: Language) -> i32 {
                             // call. A timeout means the agent is busy or
                             // stuck, and a second check would add another
                             // notification and delay.
-                            if unavailable(&e) {
+                            if method_unavailable(&e) {
                                 let _ = verify_lock_legacy();
                             }
                             eprintln!(
@@ -812,19 +793,5 @@ mod tests {
             lock_report_text(&report(LOCK_CONFIRMED, 2, 1, vec![]), Language::ZhCn),
             "启动已上锁，窗口状态未确认"
         );
-    }
-
-    #[test]
-    fn only_a_missing_method_or_service_falls_back_to_the_local_scan() {
-        for name in [
-            "org.freedesktop.DBus.Error.UnknownMethod",
-            "org.freedesktop.DBus.Error.UnknownInterface",
-            "org.freedesktop.DBus.Error.ServiceUnknown",
-            "org.freedesktop.DBus.Error.NameHasNoOwner",
-        ] {
-            assert!(unavailable_name(name), "{name}");
-        }
-        assert!(!unavailable_name("org.freedesktop.DBus.Error.AccessDenied"));
-        assert!(!unavailable_name(""));
     }
 }

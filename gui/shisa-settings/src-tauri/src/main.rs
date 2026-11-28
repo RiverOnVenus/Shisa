@@ -13,6 +13,7 @@ use base64::Engine;
 use futures_util::StreamExt;
 use shisa_core::dbus::{
     AppRow, BUS_NAME, DiagRow, LOCK_UNCONFIRMED, LaunchRow, LockReport, ManagerProxy, lock_status,
+    method_unavailable,
 };
 use shisa_core::i18n::{self, Language};
 use std::collections::HashMap;
@@ -377,22 +378,6 @@ async fn lock(app_id: String, language: Option<String>) -> R<Option<LockResult>>
     Ok(Some(LockResult::from_reply(&report, language)))
 }
 
-/// The bus error names that mean the agent is absent or too old for the new
-/// method. Other errors, including a timeout, must not trigger a second
-/// check and a second notification.
-fn unavailable(error: &zbus::Error) -> bool {
-    matches!(
-        error,
-        zbus::Error::MethodError(name, _, _) if matches!(
-            name.as_str(),
-            "org.freedesktop.DBus.Error.UnknownMethod"
-                | "org.freedesktop.DBus.Error.UnknownInterface"
-                | "org.freedesktop.DBus.Error.ServiceUnknown"
-                | "org.freedesktop.DBus.Error.NameHasNoOwner"
-        )
-    )
-}
-
 /// Ask the session agent for this lock's window report. A failed or older
 /// agent call leaves the lock in force but the window state unconfirmed. The
 /// method timeout bounds a check that is waiting on a hung KWin.
@@ -415,7 +400,7 @@ async fn check_lock_windows() -> LockReport {
         Err(e) => {
             // An older agent only has VerifyLock. It still shows its own
             // notification, but this window has no report for the operation.
-            if unavailable(&e) {
+            if method_unavailable(&e) {
                 let _ = verify_lock_legacy().await;
             }
             (LOCK_UNCONFIRMED, 0, 0, 0, Vec::new())
@@ -547,7 +532,7 @@ async fn watch_lock(app: &tauri::AppHandle, bus: &Bus) -> Result<bool, String> {
     // behavior instead of making the settings window unusable after upgrade.
     let generation = match manager.settings_generation().await {
         Ok(generation) => Some(generation),
-        Err(error) if unavailable(&error) => None,
+        Err(error) if method_unavailable(&error) => None,
         Err(error) => return Err(err(error)),
     };
     let mut locked = manager.receive_settings_locked().await.map_err(err)?;
