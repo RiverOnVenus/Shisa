@@ -49,8 +49,8 @@ The Shisa tray icon is a keyhole inside a ring, and the ring carries the state:
 |                                   Icon                                    | Color | Meaning                                                                         |
 | :-----------------------------------------------------------------------: | ----- | ------------------------------------------------------------------------------- |
 |   <img src="docs/images/tray-ready.svg" width="24" height="24" alt="">    | Green | No hidden windows and no app in its grace period                                |
-|   <img src="docs/images/tray-locked.svg" width="24" height="24" alt="">   | Blue  | A hidden window needs the app-lock password to restore                          |
-| <img src="docs/images/tray-restorable.svg" width="24" height="24" alt=""> | Amber | A hidden app can restore, or another app can still launch, without the password |
+|   <img src="docs/images/tray-locked.svg" width="24" height="24" alt="">   | Blue  | There are hidden windows and no app in its grace period                        |
+| <img src="docs/images/tray-restorable.svg" width="24" height="24" alt=""> | Amber | At least one protected app can launch or restore without the password           |
 |  <img src="docs/images/tray-offline.svg" width="24" height="24" alt="">   | Red   | shisad is offline                                                               |
 
 Closing a protected app's last window drops its window permission. A reopen inside the grace period still asks no password, and a later one goes through Shisa's restore panel. The tooltip says how many hidden apps are password-free and how many apps can still launch without the password in their grace period.

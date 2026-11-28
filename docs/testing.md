@@ -83,6 +83,12 @@ The log keeps the results that the matrix cannot show, grouped by the build that
 - Before migration, focused CLI, agent, and frontend assertions passed with the three original lock summaries. After migration, all eight checks passed again: three formatting checks, workspace Clippy, workspace tests (219 passed, 90 filtered, 22 reported results including the child runs), KWin script tests (37), frontend tests (10 Node and 31 vitest), and Tauri tests (8). Both webviews have a component test for the summary returned by the shell. The notification and CLI assertions cover the same report in both languages, and the agent's hint test checks the notification-only advice.
 - Not run: `tests/gate.sh`, `tests/auth.sh`, `tests/settings.sh`, installed-package verification, and live Wayland clicks.
 
+### 2026-11-28 — mixed tray state
+
+- The agent regression test reproduced a blue ring after restoring one of two hidden apps with a valid ticket. After the fix it checks amber while the other app stays hidden and blue again after the ticket expires. `cargo fmt --all -- --check`, `cargo test --workspace --locked` (211 distinct tests plus 10 namespace child runs, 221 passed), and `cargo clippy --workspace --all-targets --locked` passed. The user confirmed the installed Plasma Wayland tray behavior.
+- Before the shared-behavior rebase, an offline `makepkg` run in bubblewrap built the Arch worktree package `0.1.8-1.1`. Its `check()` passed the release workspace tests, the settings frontend (11 Node and 29 vitest tests), the Tauri shell (8 tests), and the KWin script (37 tests). `pacman -Qp` and the package file list confirmed the version and the four binaries. The package then replaced `0.1.8-1`, and both services restarted active. `pacman -Qkk` reported 0 altered files out of 55. The privileged daemon scripts were not run.
+- After rebasing onto the shared-behavior refactor, a fresh offline worktree package passed `check()` with the same 221 workspace tests, 10 Node and 31 vitest tests, 8 Tauri tests, and 37 KWin script tests. `pacman -Qp` confirmed `0.1.8-1.1`. The rebased package was not installed.
+
 ### 2026-11-28 — 0.1.8
 
 - The packages workflow built v0.1.8 (run 46098974473) and all five jobs passed. The tag `v0.1.8` points to `353692f`. The release attached `shisa-0.1.8-1-x86_64.pkg.tar.zst`, `shisa-0.1.8-1.x86_64.rpm`, `shisa_0.1.8-1_amd64.deb`, `SHA256SUMS` and `shisa-0.1.8.tar.gz`. The three packages matched `SHA256SUMS`. The Arch metadata reports version 0.1.8-1 from `Shisa GitHub Actions`, the DEB control reports 0.1.8-1, and the RPM payload carries the four binaries and both units. The source archive's sha256 `b16555ef3fb6cb72a48779455935e416b7d3166d23a5a34b03b9eb56c55868af` matches the PKGBUILD. The Fedora and Debian live KDE checks are still pending.
@@ -224,6 +230,7 @@ After changing `shisad`, also run `tests/gate.sh`, `tests/auth.sh`, and `tests/s
 5. For live desktop checks, follow the [Arch packaging guide](packaging.md). Verify tray interaction, authentication cancellation, restoration of the original window and unsaved content, foreground activation, taskbar, and Overview as relevant. Real Wayland window clicks require manual input because xdotool cannot inject them.
 6. When checking another settings-app build, close the window, clear its WebKit cache at `$XDG_RUNTIME_DIR/shisa-settings`, and reopen it.
 7. After replacing a tray icon under the same name, restart `plasma-plasmashell.service` so Plasma drops its cached pixmaps. The agent does not need a restart unless its binary changed.
+8. Lock two protected apps with open windows, then restore one with a nonzero grace period. Check that the ring turns amber while the other app stays hidden and asks for the password. When the restored app's ticket expires, check that the ring returns to blue.
 
 ### Distribution packages
 

@@ -49,8 +49,8 @@ systemctl --user enable --now shisa-agent.service
 |                                   图标                                    | 颜色   | 状态                                       |
 | :-----------------------------------------------------------------------: | ------ | ------------------------------------------ |
 |   <img src="docs/images/tray-ready.svg" width="24" height="24" alt="">    | 绿色   | 没有隐藏窗口，也没有宽限期内的应用         |
-|   <img src="docs/images/tray-locked.svg" width="24" height="24" alt="">   | 蓝色   | 有隐藏窗口，恢复需要应用锁密码             |
-| <img src="docs/images/tray-restorable.svg" width="24" height="24" alt=""> | 琥珀色 | 有隐藏应用可免密还原，或仍有应用可免密启动 |
+|   <img src="docs/images/tray-locked.svg" width="24" height="24" alt="">   | 蓝色   | 有隐藏窗口，且没有宽限期内的应用           |
+| <img src="docs/images/tray-restorable.svg" width="24" height="24" alt=""> | 琥珀色 | 至少有一个受保护应用可免密启动或还原       |
 |  <img src="docs/images/tray-offline.svg" width="24" height="24" alt="">   | 红色   | shisad 离线                                |
 
 受保护应用关掉最后一个窗口后会失去窗口权限。宽限期内重新打开仍然免密，宽限期过后要通过 Shisa 的恢复面板认证。tooltip 会说明有几个隐藏应用可免密还原，以及还有几个应用可在宽限期内免密启动。
