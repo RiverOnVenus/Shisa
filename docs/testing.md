@@ -52,6 +52,13 @@ These are the checks the matrix does not cover. A green cell is not a full verif
 
 The log keeps the results that the matrix cannot show, grouped by the build that produced them. The subsystem references linked at the end carry the full detail.
 
+### 2026-11-28 — Refactor package verification
+
+- Staged `f5781fb` with `packaging/arch/prepare-build.sh --worktree` and built `shisa-0.1.8-1.1-x86_64.pkg.tar.zst` offline in Bubblewrap with `makepkg --config /etc/makepkg.conf --nodeps --nosign --log`. Source checksum, frontend build, both Rust release builds, and `check()` passed. The release workspace reported 221 passed, 90 filtered, and 22 results including 10 namespace child runs. The KWin journal test ran for 12.13 seconds. Frontend passed 10 Node and 31 vitest tests, Tauri passed 8, and the KWin script passed 37. The archive held 58 entries including metadata and all four x86-64 executables.
+- Private-bus smoke tests used the extracted CLI and agent. An absent window layer produced the same summary in the CLI and notification in both languages. A synthetic `UnknownMethod` invoked `VerifyLock` once, and a synthetic `NoReply` left that call count unchanged.
+- On virtual KWin 6.8.3, a global lock from the extracted CLI hid both protected windows and left the unrelated window unchanged. The CLI and notification matched exactly on the two-of-two summary in English and Chinese. The notification carried the Do Not Disturb advice on a separate line and had no actions.
+- Not run: package installation, real Wayland clicks, the privileged `tests/gate.sh`, `tests/auth.sh`, and `tests/settings.sh` scripts, a live older daemon or agent, and power-loss recovery.
+
 ### 2026-11-28 — Daemon activity and diagnostics clock
 
 - `cargo test -p shisad --locked --test bus interface_and_settings_changes` passed before the migration (1 passed, 7 filtered). It verifies Unix milliseconds at the two D-Bus interfaces and checks the zero sentinels. After migration, the shared clock's unit test also covers submillisecond truncation, the epoch, and a time before the epoch.
