@@ -17,7 +17,7 @@ use shisa_core::dbus::{
     AppRow, BUS_NAME, INTERFACE, LOCK_CONFIRMED, LOCK_NO_LAYER, LOCK_PARTIAL, LOCK_UNCONFIRMED,
     LockReport, ManagerProxyBlocking, WINDOW_BUS_NAME, WINDOW_PATH,
 };
-use shisa_core::i18n::{self, Language};
+use shisa_core::i18n::{self, Language, lock_report_text};
 use std::collections::HashMap;
 use std::env;
 use std::process::Command;
@@ -1068,7 +1068,7 @@ fn action_loop(
         match action {
             Action::LockAll => match lock("") {
                 Ok(()) => {
-                    let _ = verify_lock(gate, handle, dnd_hinted);
+                    notify_lock_result(handle, dnd_hinted, &check_lock(gate));
                 }
                 Err(e) => {
                     let language = i18n::current();
@@ -1080,15 +1080,15 @@ fn action_loop(
                 }
             },
             Action::VerifyLock => {
-                let _ = verify_lock(gate, handle, dnd_hinted);
+                notify_lock_result(handle, dnd_hinted, &check_lock(gate));
             }
             Action::VerifyLockReport(reply) => {
-                let result = check_lock(gate);
+                let report = check_lock(gate);
                 // The caller gets its report before the notification, which
                 // can wait on a desktop notification service that stopped
                 // answering.
-                let _ = reply.send(lock_report(result.0, &result.1));
-                notify_lock_result(handle, dnd_hinted, &result);
+                let _ = reply.send(report.clone());
+                notify_lock_result(handle, dnd_hinted, &report);
             }
             Action::Unlock(app) => unlock(&app, gate),
             Action::RestoreIfTicketed(app) => restore_if_ticketed(&app, gate),
@@ -1140,22 +1140,12 @@ fn hide_after_window_close(app: &str) {
     }
 }
 
-fn verify_lock(
-    gate: &Mutex<Option<window::Gate>>,
-    handle: &Handle<TrayState>,
-    dnd_hinted: &AtomicBool,
-) -> (u64, Result<WindowReport, NoReport>) {
-    let result = check_lock(gate);
-    notify_lock_result(handle, dnd_hinted, &result);
-    result
-}
-
 /// Run the window check. `None` from the closure means the check could not
 /// run: the system bus or the daemon failed, or an unlock raced the check.
 /// Only a completed sync can tell a desktop without KWin from a KWin that
 /// did not answer.
-fn check_lock(gate: &Mutex<Option<window::Gate>>) -> (u64, Result<WindowReport, NoReport>) {
-    (|| -> Option<(u64, Result<WindowReport, NoReport>)> {
+fn check_lock(gate: &Mutex<Option<window::Gate>>) -> LockReport {
+    let (generation, check) = (|| -> Option<(u64, Result<WindowReport, NoReport>)> {
         let mut gate = gate.lock().unwrap();
         // No gate means the agent has no window layer at all, for example
         // because the session has no runtime directory. Say so instead of
@@ -1189,37 +1179,28 @@ fn check_lock(gate: &Mutex<Option<window::Gate>>) -> (u64, Result<WindowReport, 
         }
         Some((generation, report))
     })()
-    .unwrap_or((0, Err(NoReport::Unconfirmed)))
+    .unwrap_or((0, Err(NoReport::Unconfirmed)));
+    lock_report(generation, check)
 }
 
 /// Put a check's result in the tray and a notification. The report caller
 /// sends the result over the bus before this runs.
-fn notify_lock_result(
-    handle: &Handle<TrayState>,
-    dnd_hinted: &AtomicBool,
-    result: &(u64, Result<WindowReport, NoReport>),
-) {
-    let check = &result.1;
+fn notify_lock_result(handle: &Handle<TrayState>, dnd_hinted: &AtomicBool, report: &LockReport) {
     let language = i18n::current();
-    let names = match check {
-        Ok(report) => missed_names(&report.missed, language),
-        Err(_) => String::new(),
-    };
-    let concealed = matches!(check, Ok(report) if report.hidden > 0);
+    let concealed = report.3 > 0;
     let hint = concealed && should_hint_dnd(dnd_hinted);
-    let text = lock_summary(check, language, hint, &names);
-    let timeout = match check {
-        Ok(report) if report.missed.is_empty() && report.matched == report.hidden => {
-            NOTIFY_TIMEOUT_MS
-        }
-        _ => NOTIFY_PROBLEM_TIMEOUT_MS,
+    let text = lock_notification(report, language, hint);
+    let timeout = if report.0 == LOCK_CONFIRMED {
+        NOTIFY_TIMEOUT_MS
+    } else {
+        NOTIFY_PROBLEM_TIMEOUT_MS
     };
     notify_lock(handle, &text.summary, text.hint, concealed, timeout);
 }
 
 /// The D-Bus shape of one check: status, script generation, matched and
 /// concealed windows, and the apps with a window that stayed visible.
-fn lock_report(generation: u64, check: &Result<WindowReport, NoReport>) -> LockReport {
+fn lock_report(generation: u64, check: Result<WindowReport, NoReport>) -> LockReport {
     match check {
         Ok(report) => {
             // A report that matched more windows than it concealed is not a
@@ -1237,7 +1218,7 @@ fn lock_report(generation: u64, check: &Result<WindowReport, NoReport>) -> LockR
                 generation,
                 report.matched as u64,
                 report.hidden as u64,
-                report.missed.clone(),
+                report.missed,
             )
         }
         Err(NoReport::Unconfirmed) => (LOCK_UNCONFIRMED, generation, 0, 0, Vec::new()),
@@ -1245,95 +1226,19 @@ fn lock_report(generation: u64, check: &Result<WindowReport, NoReport>) -> LockR
     }
 }
 
-/// The display names of the apps that could not be concealed. A malformed or
-/// unknown desktop file falls back to the app id, which is still useful.
-fn missed_names(missed: &[(String, u32)], language: Language) -> String {
-    if missed.is_empty() {
-        return String::new();
-    }
-    let env = shisa_core::desktop::Env::current();
-    let mut names: Vec<String> = missed
-        .iter()
-        .map(|(app, _)| shisa_core::desktop::display_name(app, &env))
-        .collect();
-    names.sort();
-    names.dedup();
-    let shown = names.len().min(3);
-    let mut text = names[..shown].join(match language {
-        Language::ZhCn => "、",
-        Language::En => ", ",
-    });
-    if names.len() > shown {
-        let rest = names.len() - shown;
-        text.push_str(&match language {
-            Language::ZhCn => format!(" 等 {rest} 个应用"),
-            Language::En => format!(" and {rest} more"),
-        });
-    }
-    text
-}
-
 /// One lock result. `hint` is advice for the notification popup only: the
 /// tray tooltip keeps `summary`, because it stays on screen long after the
 /// popup that the hint explains has expired.
-struct LockSummary {
+struct LockNotification {
     summary: String,
     hint: Option<&'static str>,
 }
 
-fn lock_summary(
-    check: &Result<WindowReport, NoReport>,
-    language: Language,
-    hint: bool,
-    names: &str,
-) -> LockSummary {
-    let summary = match (check, language) {
-        (Err(NoReport::NoWindowLayer), Language::ZhCn) => {
-            "启动已上锁，本桌面没有窗口层，未能收起窗口".into()
-        }
-        (Err(NoReport::NoWindowLayer), Language::En) => {
-            "Lock applied. This desktop has no window layer, so windows were not hidden".into()
-        }
-        (Err(NoReport::Unconfirmed), Language::ZhCn) => "已执行启动上锁，窗口状态未确认".into(),
-        (Err(NoReport::Unconfirmed), Language::En) => {
-            "Lock applied, but the window state was not confirmed".into()
-        }
-        (Ok(report), Language::ZhCn) => {
-            if report.matched == 0 {
-                "启动已上锁，当前桌面未匹配到受保护窗口".into()
-            } else if !report.missed.is_empty() && !names.is_empty() {
-                format!(
-                    "启动已上锁，已收起 {}/{} 个受保护窗口，未确认：{names}",
-                    report.hidden, report.matched
-                )
-            } else if report.missed.is_empty() && report.matched == report.hidden {
-                format!("启动已上锁，已收起 {} 个受保护窗口", report.hidden)
-            } else {
-                "已执行启动上锁，窗口状态未确认".into()
-            }
-        }
-        (Ok(report), Language::En) => {
-            if report.matched == 0 {
-                "Locked, but no protected window was found on this desktop".into()
-            } else if !report.missed.is_empty() && !names.is_empty() {
-                format!(
-                    "Locked and hid {} of {} protected windows. Not confirmed: {names}",
-                    report.hidden, report.matched
-                )
-            } else if report.missed.is_empty() && report.matched == report.hidden {
-                match report.hidden {
-                    1 => "Locked and hid 1 protected window".into(),
-                    hidden => format!("Locked and hid {hidden} protected windows"),
-                }
-            } else {
-                "Lock applied, but the window state was not confirmed".into()
-            }
-        }
-    };
+fn lock_notification(report: &LockReport, language: Language, hint: bool) -> LockNotification {
     // Only a lock that actually concealed something raises the notification
     // concern. The hint tells the owner what the lock does not cover, so it
     // belongs next to the result rather than only in the documentation.
-    let hint = if hint && matches!(check, Ok(report) if report.hidden > 0) {
+    let hint = if hint && report.3 > 0 {
         Some(match language {
             Language::ZhCn => "建议开启勿扰：受保护应用的通知仍会弹出，通知历史也能打开。",
             Language::En => {
@@ -1343,7 +1248,10 @@ fn lock_summary(
     } else {
         None
     };
-    LockSummary { summary, hint }
+    LockNotification {
+        summary: lock_report_text(report, language),
+        hint,
+    }
 }
 
 fn notify_lock(
@@ -2255,139 +2163,77 @@ mod tests {
     }
 
     #[test]
-    fn lock_feedback_requires_all_matched_windows_to_be_concealed() {
-        let none: Result<WindowReport, NoReport> = Ok(report(0, 0, &[]));
-        let full: Result<WindowReport, NoReport> = Ok(report(2, 2, &[]));
-        let partial: Result<WindowReport, NoReport> = Ok(report(3, 2, &[("org.kde.kate", 1)]));
-        let unconfirmed: Result<WindowReport, NoReport> = Err(NoReport::Unconfirmed);
-        let no_layer: Result<WindowReport, NoReport> = Err(NoReport::NoWindowLayer);
-        assert!(
-            lock_summary(&none, Language::ZhCn, false, "")
-                .summary
-                .contains("未匹配")
-        );
-        assert!(
-            lock_summary(&full, Language::ZhCn, false, "")
-                .summary
-                .contains("已收起 2")
-        );
-        assert!(
-            lock_summary(&partial, Language::ZhCn, false, "app.one")
-                .summary
-                .contains("未确认：app.one")
+    fn the_notification_summary_matches_the_cli_for_the_same_lock_report() {
+        let reports = [
+            lock_report(1, Ok(report(0, 0, &[]))),
+            lock_report(2, Ok(report(2, 2, &[]))),
+            lock_report(3, Ok(report(3, 2, &[("shisa.test.missing", 1)]))),
+            lock_report(4, Ok(report(2, 1, &[]))),
+            lock_report(5, Err(NoReport::Unconfirmed)),
+            lock_report(0, Err(NoReport::NoWindowLayer)),
+        ];
+        for report in &reports {
+            for language in [Language::ZhCn, Language::En] {
+                let notification = lock_notification(report, language, true);
+                assert_eq!(notification.summary, lock_report_text(report, language));
+            }
+        }
+        assert_eq!(
+            lock_notification(&reports[1], Language::ZhCn, false).summary,
+            "启动已上锁，已收起 2/2 个受保护窗口"
         );
         assert_eq!(
-            lock_summary(
-                &Ok::<_, NoReport>(report(2, 1, &[])),
-                Language::ZhCn,
-                false,
-                ""
-            )
-            .summary,
-            lock_summary(&unconfirmed, Language::ZhCn, false, "").summary
-        );
-        assert!(
-            lock_summary(&unconfirmed, Language::ZhCn, false, "")
-                .summary
-                .contains("未确认")
-        );
-        // A desktop without KWin is a different result from a check that did
-        // not come back. The previous message called both unconfirmed.
-        assert!(
-            lock_summary(&no_layer, Language::ZhCn, false, "")
-                .summary
-                .contains("没有窗口层")
-        );
-        assert!(
-            !lock_summary(&no_layer, Language::ZhCn, false, "")
-                .summary
-                .contains("未确认")
-        );
-
-        assert!(
-            lock_summary(&none, Language::En, false, "")
-                .summary
-                .contains("no protected window")
-        );
-        assert!(
-            lock_summary(&full, Language::En, false, "")
-                .summary
-                .contains("hid 2")
-        );
-        assert!(
-            lock_summary(&partial, Language::En, false, "app.one")
-                .summary
-                .contains("Not confirmed: app.one")
-        );
-        assert_eq!(
-            lock_summary(
-                &Ok::<_, NoReport>(report(2, 1, &[])),
-                Language::En,
-                false,
-                ""
-            )
-            .summary,
-            lock_summary(&unconfirmed, Language::En, false, "").summary
-        );
-        assert!(
-            lock_summary(&unconfirmed, Language::En, false, "")
-                .summary
-                .contains("not confirmed")
-        );
-        assert!(
-            lock_summary(&no_layer, Language::En, false, "")
-                .summary
-                .contains("no window layer")
-        );
-        assert!(
-            !lock_summary(&no_layer, Language::En, false, "")
-                .summary
-                .contains("not confirmed")
+            lock_notification(&reports[1], Language::En, false).summary,
+            "Lock applied. Hid 2 of 2 protected windows"
         );
     }
 
     #[test]
     fn a_lock_report_carries_the_status_and_counts() {
         let full = Ok(report(2, 2, &[]));
-        assert_eq!(lock_report(7, &full), (LOCK_CONFIRMED, 7, 2, 2, Vec::new()));
+        assert_eq!(lock_report(7, full), (LOCK_CONFIRMED, 7, 2, 2, Vec::new()));
 
         let partial = Ok(report(3, 2, &[("org.kde.kate", 1)]));
         assert_eq!(
-            lock_report(8, &partial),
+            lock_report(8, partial),
             (LOCK_PARTIAL, 8, 3, 2, vec![("org.kde.kate".to_string(), 1)])
         );
 
         assert_eq!(
-            lock_report(9, &Err(NoReport::Unconfirmed)),
+            lock_report(9, Err(NoReport::Unconfirmed)),
             (LOCK_UNCONFIRMED, 9, 0, 0, Vec::new())
         );
         assert_eq!(
-            lock_report(10, &Ok::<_, NoReport>(report(2, 1, &[]))),
+            lock_report(10, Ok(report(2, 1, &[]))),
             (LOCK_UNCONFIRMED, 10, 2, 1, Vec::new())
         );
         assert_eq!(
-            lock_report(0, &Err(NoReport::NoWindowLayer)),
+            lock_report(0, Err(NoReport::NoWindowLayer)),
             (LOCK_NO_LAYER, 0, 0, 0, Vec::new())
         );
     }
 
     #[test]
     fn the_dnd_hint_follows_a_lock_that_hid_something() {
-        let full: Result<WindowReport, NoReport> = Ok(report(2, 2, &[]));
-        let hinted = lock_summary(&full, Language::ZhCn, true, "");
+        let full = lock_report(1, Ok(report(2, 2, &[])));
+        let hinted = lock_notification(&full, Language::ZhCn, true);
         // The hint rides on the notification only. The tooltip keeps the
         // summary, which is what `notify_lock` stores in `last_lock`.
         assert!(hinted.summary.contains("已收起 2"));
         assert!(hinted.hint.is_some_and(|hint| hint.contains("勿扰")));
         assert!(
-            lock_summary(&full, Language::ZhCn, false, "")
+            lock_notification(&full, Language::ZhCn, false)
                 .hint
                 .is_none()
         );
         // Nothing was hidden, so notifications from hidden apps are not the
         // concern this hint addresses.
-        let none: Result<WindowReport, NoReport> = Ok(report(0, 0, &[]));
-        assert!(lock_summary(&none, Language::ZhCn, true, "").hint.is_none());
+        let none = lock_report(2, Ok(report(0, 0, &[])));
+        assert!(
+            lock_notification(&none, Language::ZhCn, true)
+                .hint
+                .is_none()
+        );
     }
 
     #[test]

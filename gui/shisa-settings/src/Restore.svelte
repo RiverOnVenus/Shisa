@@ -7,7 +7,7 @@
   import { onMount, tick, untrack } from "svelte";
   import { fade, fly } from "svelte/transition";
   import { createTranslator, languageFromTag } from "./i18n.js";
-  import { iconPixels, lockNotice } from "./format.js";
+  import { iconPixels } from "./format.js";
   import { motionMs, paintTheme } from "./motion.js";
 
   let { language: initialLanguage = "en" } = $props();
@@ -284,13 +284,6 @@
     }
   }
 
-  /// A display name for an app the lock report names. The installed index
-  /// covers every application; the hidden rows cover an app whose desktop
-  /// file is missing from it.
-  function nameOf(id) {
-    return installed?.get(id)?.name ?? rows.find((row) => row.id === id)?.name ?? id;
-  }
-
   /// Lock revokes the daemon's state before the agent has applied it in
   /// KWin. The report carries this check's counts, but the panel's list
   /// comes from the inventory message that follows. Wait for a concealed
@@ -311,14 +304,10 @@
     notice = "";
     error = "";
     try {
-      const report = await invoke("lock", { appId: "" });
-      // A confirmed empty result needs no wait. An unconfirmed or missing
-      // result may still be followed by the inventory message.
-      if (!report || report.status === "unconfirmed" || report.hidden > 0) {
-        await waitLocked();
-      }
+      const report = await invoke("lock", { appId: "", language: lang });
+      if (report.waitForInventory) await waitLocked();
       await load(false);
-      if (!error) notice = lockNotice(report, t, nameOf);
+      if (!error) notice = report.summary;
     } catch (reason) {
       const message = typeof reason === "string" ? reason : t("restore.error.lock");
       await load(false);

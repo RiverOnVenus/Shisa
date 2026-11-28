@@ -50,6 +50,18 @@ pub const LOCK_UNCONFIRMED: u8 = 2;
 /// KWin's scripting interface is not available on this desktop.
 pub const LOCK_NO_LAYER: u8 = 3;
 
+/// Interpret a report from any agent version. Unknown or inconsistent
+/// confirmations must be shown as unconfirmed.
+pub fn lock_status(report: &LockReport) -> u8 {
+    let (status, _, matched, hidden, missed) = report;
+    match *status {
+        LOCK_CONFIRMED if matched == hidden && missed.is_empty() => LOCK_CONFIRMED,
+        LOCK_PARTIAL if !missed.is_empty() => LOCK_PARTIAL,
+        LOCK_NO_LAYER => LOCK_NO_LAYER,
+        _ => LOCK_UNCONFIRMED,
+    }
+}
+
 #[zbus::proxy(
     interface = "io.github.RiverOnVenus.Shisa.Manager",
     default_service = "io.github.RiverOnVenus.Shisa",
