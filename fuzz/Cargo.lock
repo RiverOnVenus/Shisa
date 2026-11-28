@@ -605,7 +605,7 @@ dependencies = [
 
 [[package]]
 name = "shisa-core"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "libc",
  "serde",
@@ -624,7 +624,7 @@ dependencies = [
 
 [[package]]
 name = "shisad"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "futures-channel",
  "libc",
