@@ -52,6 +52,12 @@ These are the checks the matrix does not cover. A green cell is not a full verif
 
 The log keeps the results that the matrix cannot show, grouped by the build that produced them. The subsystem references linked at the end carry the full detail.
 
+### 2026-11-28 — 0.1.9
+
+- The packages workflow built v0.1.9 (run 46132648853) and all five jobs passed. The tag `v0.1.9` points to `052a11d`. The release attached `shisa-0.1.9-1-x86_64.pkg.tar.zst`, `shisa-0.1.9-1.x86_64.rpm`, `shisa_0.1.9-1_amd64.deb`, `SHA256SUMS`, and `shisa-0.1.9.tar.gz`. The package checksums are `c27f83c2897ff831147192ac80b82143db2e187adbf491432b87f6f7a4dfa7df` for Arch, `08d92f53a1ca6b3de7a5c23e854d513076e5dfeaee2685176ccfca146c27896d` for RPM, and `ae42c427b2263ee67b28e2de2feed42fc21e9ebc62f5d873eacea0918fe3e51f` for DEB, all matching `SHA256SUMS`. The source archive's sha256 `8b2fa4cf31ef05c2b47d738861a41dbce2a6c814519bcd2a5a1429fffe9d071f` matches the PKGBUILD.
+- The Arch archive held 58 entries and its metadata reports 0.1.9-1 from `Shisa GitHub Actions`. The DEB control reports 0.1.9-1. The RPM payload carries the four binaries and both units. The generated release notes name PRs #43 and #44, and the release PR was omitted by `skip-changelog`.
+- The release PR's `rust` and `frontend` checks passed. Local pre-release checks passed with 221 workspace tests, 37 KWin script tests, 10 Node and 31 vitest frontend tests, 8 Tauri tests, three formatting checks, and workspace Clippy. The Fedora and Debian live KDE checks are still pending.
+
 ### 2026-11-28 — Refactor package verification
 
 - Staged `f5781fb` with `packaging/arch/prepare-build.sh --worktree` and built `shisa-0.1.8-1.1-x86_64.pkg.tar.zst` offline in Bubblewrap with `makepkg --config /etc/makepkg.conf --nodeps --nosign --log`. Source checksum, frontend build, both Rust release builds, and `check()` passed. The release workspace reported 221 passed, 90 filtered, and 22 results including 10 namespace child runs. The KWin journal test ran for 12.13 seconds. Frontend passed 10 Node and 31 vitest tests, Tauri passed 8, and the KWin script passed 37. The archive held 58 entries including metadata and all four x86-64 executables.
