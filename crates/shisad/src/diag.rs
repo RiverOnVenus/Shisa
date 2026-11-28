@@ -5,9 +5,9 @@
 //! works. The bus only reads. Nothing in this module touches the fanotify
 //! loop.
 
+use crate::clock::now_ms;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 /// The account that holds the app-lock password. It is created by
 /// `data/shisa-lock.sysusers` and named by
@@ -17,13 +17,6 @@ const ADMIN_USER: &str = "shisa-lock";
 /// Where a system without a readable shadow file stands. Reporting "no
 /// password" would send a working installation to the terminal.
 const UNKNOWN_READY: bool = true;
-
-fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
 
 #[derive(Debug)]
 pub struct Diag {

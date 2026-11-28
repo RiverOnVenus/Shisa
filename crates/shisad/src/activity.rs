@@ -4,9 +4,10 @@
 //! I/O, so a launch never waits on the window. Every entry belongs to one
 //! user and `recent` returns only the caller's own.
 
+use crate::clock::now_ms;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 /// Decisions kept per user for the window. Older ones fall off the front.
 const KEEP: usize = 64;
@@ -63,13 +64,6 @@ struct Inner {
 #[derive(Default)]
 pub struct Log {
     inner: Mutex<Inner>,
-}
-
-fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
 }
 
 /// A deadline `d` from now, in the unix milliseconds the row carries.

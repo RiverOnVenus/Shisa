@@ -52,6 +52,12 @@ These are the checks the matrix does not cover. A green cell is not a full verif
 
 The log keeps the results that the matrix cannot show, grouped by the build that produced them. The subsystem references linked at the end carry the full detail.
 
+### 2026-11-28 — Daemon activity and diagnostics clock
+
+- `cargo test -p shisad --locked --test bus interface_and_settings_changes` passed before the migration (1 passed, 7 filtered). It verifies Unix milliseconds at the two D-Bus interfaces and checks the zero sentinels. After migration, the shared clock's unit test also covers submillisecond truncation, the epoch, and a time before the epoch.
+- The workspace, Tauri and fuzz formatting checks and workspace Clippy with `--all-targets --locked -- -D warnings` passed. Workspace tests reported 221 passed, 90 filtered, and 22 results including the namespace child runs. The KWin script passed 37, frontend passed 10 Node and 31 vitest, and Tauri passed 8.
+- Not run: `tests/gate.sh`, `tests/auth.sh`, `tests/settings.sh`, installed-package verification, and live Wayland clicks.
+
 ### 2026-11-28 — Shared D-Bus compatibility predicate
 
 - Focused tests passed against the original CLI and Tauri predicates. The migrated core test decodes synthetic D-Bus error replies, accepts the four missing-method or service names, and rejects access denial, no reply, timeout, and an invalid reply. The four callers use the shared predicate.

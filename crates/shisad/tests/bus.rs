@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex, mpsc};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, UNIX_EPOCH};
 use zbus::blocking::Connection;
 
 struct PrivateBus {
@@ -127,11 +127,14 @@ fn interface_and_settings_changes() {
     let _bus = PrivateBus::start("iface");
     let state = state();
     let events = Arc::new(Events::new().unwrap());
+    let wall_clock_seconds = || UNIX_EPOCH.elapsed().unwrap().as_secs() as i64;
+    let before = wall_clock_seconds();
     let diag = Arc::new(Diag::new(PathBuf::from("/etc/shisa/users")));
+    let log = Arc::new(activity::Log::default());
     let tx = bus::spawn(
         state.clone(),
         events.clone(),
-        Arc::new(activity::Log::default()),
+        log.clone(),
         diag,
         Arc::new(Mutex::new(())),
     )
@@ -162,10 +165,28 @@ fn interface_and_settings_changes() {
     // the account check only says whether it could read /etc/shadow.
     let diag = manager.diagnostics().unwrap();
     assert_eq!(diag.0, env!("CARGO_PKG_VERSION"));
-    assert!(diag.1 > 0);
+    assert_eq!((diag.2, diag.3), (0, 0));
     assert_eq!((diag.4, diag.5), (1, 1));
     assert_eq!(diag.6, "/etc/shisa/users/tester.toml");
     assert_eq!(diag.8, 0);
+
+    let wait = Duration::from_secs(60);
+    let deadline = activity::after(wait);
+    log.record(uid(), 1, "app", 42, activity::ASKED, deadline);
+    let (pending, _, _, _) = manager.recent_launches().unwrap();
+    assert_eq!((pending[0].5, pending[0].6), (deadline, 0));
+    log.resolve(1, activity::GRANTED);
+    let (resolved, _, _, _) = manager.recent_launches().unwrap();
+    assert_eq!(resolved[0].5, 0);
+    let after = wall_clock_seconds();
+    let observed_seconds = before.min(after)..=before.max(after);
+    for timestamp in [diag.1, pending[0].1, resolved[0].6, deadline - 60_000] {
+        assert!(
+            observed_seconds.contains(&(timestamp / 1_000)),
+            "expected a Unix millisecond timestamp, got {timestamp}"
+        );
+    }
+
     manager.lock("app").unwrap();
     manager.lock("").unwrap();
     assert_eq!(manager.global_config().unwrap(), (300, true, 5));
