@@ -82,6 +82,9 @@
   // Bumped by every full refresh and every authenticated change, so a poll
   // that started earlier cannot put its pre-change snapshot back.
   let generation = 0;
+  // Bumped by every app selection. The id alone cannot order two reads of the
+  // same app, which A → B → A can start.
+  let selectGeneration = 0;
   // Ticket polling does not take a full refresh generation. Track it
   // separately so concurrent focus and timer polls can only publish their
   // newest answer, including their failure state.
@@ -469,6 +472,7 @@
   }
 
   async function select(id) {
+    const gen = ++selectGeneration;
     page = "app";
     currentId = id;
     rovingId = id;
@@ -491,8 +495,9 @@
           (reason) => ({ ok: false, reason }),
         ),
       ]);
-      // The user may have moved on while the daemon was answering.
-      if (currentId !== id || page !== "app") return;
+      // The user may have moved on while the daemon was answering. The
+      // generation orders two reads of the same app in an A → B → A switch.
+      if (gen !== selectGeneration || currentId !== id || page !== "app") return;
       config = { grace: cfg[0], autostart: cfg[1], relock: cfg[3], protected: cfg[2], ready: true };
       graceApp = !isPreset(cfg[0]);
       relockApp = !isRelockPreset(cfg[3]);
@@ -509,7 +514,7 @@
         ];
       }
     } catch (e) {
-      if (currentId === id && page === "app") fail(e);
+      if (gen === selectGeneration && currentId === id && page === "app") fail(e);
     }
   }
 
@@ -949,12 +954,21 @@
     const onMedia = () => {
       if (!followed) paint(null);
     };
-    const unlisten = listen("color_scheme", (event) => paint(event.payload)).catch(
-      () => () => {},
-    );
+    // A signal that arrives before the first read resolves is newer than
+    // that read. Let it paint, and discard the read so it cannot put the
+    // previous scheme back.
+    let schemeLive = false;
+    const unlisten = listen("color_scheme", (event) => {
+      if (typeof event.payload === "boolean") schemeLive = true;
+      paint(event.payload);
+    }).catch(() => () => {});
     invoke("color_scheme")
-      .then(paint)
-      .catch(() => paint(null));
+      .then((dark) => {
+        if (!schemeLive) paint(dark);
+      })
+      .catch(() => {
+        if (!schemeLive) paint(null);
+      });
     media.addEventListener("change", onMedia);
 
     const tick = setInterval(() => { refreshTickets(); checkAgent(); if (page === "app") loadActivity(); }, 10000);

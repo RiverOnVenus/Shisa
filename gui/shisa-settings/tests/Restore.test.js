@@ -6,7 +6,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { mount, unmount } from "svelte";
 
 const { state, close } = vi.hoisted(() => ({
-  state: { installed: [], hidden: {} },
+  state: { installed: [], hidden: {}, schemeRead: null, listeners: [] },
   close: vi.fn(async () => {}),
 }));
 
@@ -25,7 +25,7 @@ vi.mock("@tauri-apps/api/core", () => ({
       case "agent_status":
         return true;
       case "color_scheme":
-        return null;
+        return state.schemeRead;
       case "icon":
         return "";
       default:
@@ -35,7 +35,10 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 
 vi.mock("@tauri-apps/api/event", () => ({
-  listen: vi.fn(async () => () => {}),
+  listen: vi.fn(async (name, handler) => {
+    state.listeners.push({ name, handler });
+    return () => {};
+  }),
 }));
 
 vi.mock("@tauri-apps/api/window", () => ({
@@ -52,6 +55,9 @@ let app;
 beforeEach(() => {
   document.body.innerHTML = "";
   document.documentElement.lang = "";
+  document.documentElement.dataset.theme = "";
+  state.schemeRead = null;
+  state.listeners = [];
   close.mockClear();
 });
 
@@ -73,6 +79,22 @@ async function render() {
     expect(rows().length).toBe(Object.keys(state.hidden).length),
   );
 }
+
+test("a colour signal that beats the first read is not overwritten", async () => {
+  let answer;
+  state.schemeRead = new Promise((resolve) => {
+    answer = resolve;
+  });
+  await render();
+  await vi.waitFor(() => expect(state.listeners.length).toBeGreaterThan(0));
+  const listener = state.listeners.find(
+    (entry) => entry.name === "color_scheme",
+  );
+  listener.handler({ payload: true });
+  answer(false);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(document.documentElement.dataset.theme).toBe("dark");
+});
 
 test("two apps with one display name show their ids", async () => {
   state.installed = [

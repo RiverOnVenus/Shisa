@@ -94,7 +94,7 @@ function boot(options = {}) {
       args[args.length - 1](!options.rejectHidden);
     }
     if (args[3] === "WindowEvent") {
-      args[args.length - 1](!options.rejectWindowEvent);
+      args[args.length - 1](options.windowEventReply ?? !options.rejectWindowEvent);
     }
   }
 
@@ -164,6 +164,26 @@ test("a rejected focus report is sent again", () => {
   assert.equal(methodCalls(env, "WindowEvent").length, 1);
   env.timers.at(-1).onTimeout();
   assert.equal(methodCalls(env, "WindowEvent").length, 2);
+});
+
+test("a wrapped rejection is retried", () => {
+  const active = makeWindow("app", "app");
+  const env = boot({ locked: ["app"], active, windows: [active], windowEventReply: [false] });
+  env.timers[0].onTimeout();
+  assert.equal(methodCalls(env, "WindowEvent").length, 2);
+});
+
+test("a refocus in another process supersedes the app's rejected unfocus", () => {
+  const first = makeWindow("app", "app", 1);
+  const second = makeWindow("app", "app", 2);
+  const env = boot({ locked: ["app"], allowed: ["app"], active: first, windows: [first, second] });
+  env.options.rejectWindowEvent = true;
+  env.handlers.activated[0](makeWindow("other", "other"));
+  env.options.rejectWindowEvent = false;
+  env.workspace.activeWindow = second;
+  env.handlers.activated[0](second);
+  env.timers[0].onTimeout();
+  assert.equal(methodCalls(env, "WindowEvent").at(-1)[6], "focused");
 });
 
 test("a rejected close report is sent again", () => {

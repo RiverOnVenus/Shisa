@@ -939,11 +939,14 @@ fn skip_env(args: &[String]) -> &[String] {
         // Options that take their value as the next word.
         if matches!(arg.as_str(), "-u" | "--unset" | "-C" | "--chdir") {
             i += 2;
-        } else if arg.starts_with('-') || (arg.contains('=') && !arg.starts_with('/')) {
+        } else if arg.starts_with('-') {
             i += 1;
         } else {
             break;
         }
+    }
+    while args.get(i).is_some_and(|arg| arg.contains('=')) {
+        i += 1;
     }
     args.get(i..).unwrap_or(&[])
 }
@@ -1110,7 +1113,10 @@ fn metadata_command(text: &str) -> Option<String> {
 
 fn canonical_file(path: &Path) -> Option<PathBuf> {
     let meta = fs::metadata(path).ok()?;
-    if !meta.is_file() {
+    // A file with no execute bit cannot be run by anyone. A file executable
+    // only by its owner or group is still accepted, because the resolver does
+    // not carry the target user's uid and groups.
+    if !meta.is_file() || meta.mode() & 0o111 == 0 {
         return None;
     }
     fs::canonicalize(path).ok()
@@ -1350,6 +1356,21 @@ mod tests {
     }
 
     #[test]
+    fn path_lookup_skips_a_non_executable_file() {
+        let mut fx = fixture("path-executable");
+        let shadow = fx.env.path[0].join("editor");
+        fs::write(&shadow, "").unwrap();
+        fs::set_permissions(&shadow, fs::Permissions::from_mode(0o644)).unwrap();
+        let editor = binary(&fx, "editor");
+        fx.env.path.push(fx.dir.clone());
+        app(&fx, "editor", "[Desktop Entry]\nExec=editor\n");
+        assert_eq!(
+            resolve("editor", &fx.env).unwrap().paths,
+            vec![fs::canonicalize(editor).unwrap()]
+        );
+    }
+
+    #[test]
     fn quoted_first_word_and_escapes() {
         assert_eq!(
             split_exec(r#""/opt/my app/run" --flag "a b""#),
@@ -1390,7 +1411,7 @@ mod tests {
             &fx,
             "options",
             &format!(
-                "[Desktop Entry]\nName=X\nExec=/usr/bin/env -u OLD -i A=1 -- {}\n",
+                "[Desktop Entry]\nName=X\nExec=/usr/bin/env -u OLD -i -- A=1 {}\n",
                 two.display()
             ),
         );

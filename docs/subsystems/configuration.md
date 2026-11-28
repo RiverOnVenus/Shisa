@@ -109,6 +109,8 @@ shisa resolve <app-id>
 
 The CLI and settings share the daemon's policy operations. The tray and CLI share the lock contract. The tray can show the measured window result, while the CLI reports daemon success and prints the window result the session agent reports when available. For terminal authentication, `shisa unlock` can start `pkttyagent`. The `resolve` command is read-only and reports derived paths and coverage notes. `--help` and `-h` print the command list and the app-id format to stdout and exit 0. An unknown command prints the same list to stderr and exits 2. `status` names each protected app as authorized or locked, marks paths that are not in effect, and points to `shisa protect` or the settings window when the user has no protected apps. `protect` reads the app back with `ListApps` after the daemon saves the change and names configured paths that are not marked. It exits 1 when no path is in effect and 0 with a warning when only some are. Output follows the interface language above. The public text says authorization, while tickets remain the internal term for the same time-limited permission.
 
+All commands that take an app ID reject empty or invalid UTF-8 arguments with usage status 2. Only `shisa lock` with no argument selects all apps. Failed policy writes report the daemon error.
+
 ## Verification
 
 See [Tests and verification](../testing.md) for configuration changes and D-Bus permission coverage.

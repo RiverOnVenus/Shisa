@@ -651,6 +651,10 @@ fn main() -> std::process::ExitCode {
     // could land after a fresher read and leave the ring on the wrong color
     // until the next poll (docs/subsystems/window-management.md).
     let ticket_sync: Arc<Mutex<()>> = Arc::default();
+    // Two refreshes must read and publish in the same order. This serializes
+    // whole refreshes, while ticket_sync stays scoped to the count publish so
+    // a slow window-state sync cannot block the ticket poll or a KWin report.
+    let refresh_sync: Arc<Mutex<()>> = Arc::default();
     let tray = TrayState {
         protected_count: 0,
         hidden_windows: Default::default(),
@@ -749,12 +753,15 @@ fn main() -> std::process::ExitCode {
         let gate = gate.clone();
         let tracker = tracker.clone();
         let ticket_sync = ticket_sync.clone();
+        let refresh_sync = refresh_sync.clone();
         thread::Builder::new()
             .name("signals".into())
-            .spawn(move || signal_loop(&conn, &handle, &gate, &tracker, &ticket_sync))
+            .spawn(move || {
+                signal_loop(&conn, &handle, &gate, &tracker, &ticket_sync, &refresh_sync)
+            })
             .expect("signals thread");
     }
-    supervise(&conn, &handle, &gate, &tracker, &ticket_sync);
+    supervise(&conn, &handle, &gate, &tracker, &ticket_sync, &refresh_sync);
 }
 
 /// Claim the session name and serve the focus reporter. None when the
@@ -800,6 +807,7 @@ fn supervise(
     gate: &Arc<Mutex<Option<window::Gate>>>,
     tracker: &Arc<Mutex<window::Tracker>>,
     ticket_sync: &Mutex<()>,
+    refresh_sync: &Arc<Mutex<()>>,
 ) -> ! {
     let (wake_tx, wake_rx) = mpsc::channel::<()>();
     let subscribed = match owner_changes(conn) {
@@ -838,7 +846,7 @@ fn supervise(
                         let _ = handle.update(|tray| tray.offline = false);
                     }
                     if let Ok(manager) = ManagerProxyBlocking::new(conn) {
-                        refresh(handle, &manager, gate, tracker, ticket_sync);
+                        refresh(handle, &manager, gate, tracker, ticket_sync, refresh_sync);
                     }
                 }
                 Err(e) => warn!("register: {e}"),
@@ -880,6 +888,7 @@ fn signal_loop(
     gate: &Arc<Mutex<Option<window::Gate>>>,
     tracker: &Arc<Mutex<window::Tracker>>,
     ticket_sync: &Arc<Mutex<()>>,
+    refresh_sync: &Arc<Mutex<()>>,
 ) {
     let rule = match MatchRule::builder()
         .msg_type(Type::Signal)
@@ -890,14 +899,18 @@ fn signal_loop(
         Ok(rule) => rule,
         Err(e) => {
             error!("match rule: {e}");
-            return;
+            std::process::exit(1);
         }
     };
     let mut signals = match MessageIterator::for_match_rule(rule, conn, None) {
         Ok(signals) => signals,
         Err(e) => {
+            // Without the match the tray would keep claiming online while no
+            // StateChanged arrives. Exit so the user unit retries with a
+            // fresh connection, and let systemd's start limit stop a
+            // persistent policy denial instead of running signal-less.
             error!("signals: {e}");
-            return;
+            std::process::exit(1);
         }
     };
     for message in &mut signals {
@@ -933,7 +946,7 @@ fn signal_loop(
                 let _ =
                     handle.update(|tray| apply_state_change(tray, &app, unlocked, Instant::now()));
             }
-            refresh(handle, &manager, gate, tracker, ticket_sync);
+            refresh(handle, &manager, gate, tracker, ticket_sync, refresh_sync);
         }
         if member == "SessionUnlocked" {
             // KWin drops the window changes the script makes while the lock
@@ -946,11 +959,19 @@ fn signal_loop(
             let tracker = tracker.clone();
             let conn = conn.clone();
             let ticket_sync = ticket_sync.clone();
+            let refresh_sync = refresh_sync.clone();
             thread::spawn(move || {
                 for delay in [Duration::from_millis(300), Duration::from_millis(1200)] {
                     thread::sleep(delay);
                     if let Ok(manager) = ManagerProxyBlocking::new(&conn) {
-                        refresh(&handle, &manager, &gate, &tracker, &ticket_sync);
+                        refresh(
+                            &handle,
+                            &manager,
+                            &gate,
+                            &tracker,
+                            &ticket_sync,
+                            &refresh_sync,
+                        );
                     }
                     if let Some(gate) = gate.lock().unwrap().as_mut() {
                         gate.force();
@@ -973,13 +994,19 @@ fn refresh(
     gate: &Arc<Mutex<Option<window::Gate>>>,
     tracker: &Arc<Mutex<window::Tracker>>,
     ticket_sync: &Mutex<()>,
+    refresh_sync: &Mutex<()>,
 ) {
-    // Publish the protected and ticket counts under the ticket lock, from one
-    // daemon read, before the window-state sync. A failed WindowStates call
-    // must not leave the tray's lock action disabled with a stale zero. The
-    // lock keeps a read taken before a lock or unlock from landing after a
-    // fresher read.
+    // Two refreshes must read and publish in the same order. Serialize the
+    // whole sequence, and keep ticket_sync only around the count publication
+    // so a slow window-state sync cannot block the ticket poll or a KWin
+    // report.
+    let _refresh = refresh_sync.lock().unwrap();
     let apps = {
+        // Publish the protected and ticket counts under the ticket lock, from
+        // one daemon read, before the window-state sync. A failed WindowStates
+        // call must not leave the tray's lock action disabled with a stale
+        // zero. The lock keeps a read taken before a lock or unlock from
+        // landing after a fresher read.
         let _sync = ticket_sync.lock().unwrap();
         let Ok(apps) = manager.list_apps() else {
             return;

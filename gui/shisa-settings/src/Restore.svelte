@@ -84,8 +84,19 @@
   }
 
   onMount(() => {
-    const unlisten = listen("color_scheme", (event) => theme(event.payload));
-    invoke("color_scheme").then(theme).catch(() => {});
+    // A signal that arrives before the first read resolves is newer than
+    // that read. Let it paint, and discard the read so it cannot put the
+    // previous scheme back.
+    let live = false;
+    const unlisten = listen("color_scheme", (event) => {
+      if (typeof event.payload === "boolean") live = true;
+      theme(event.payload);
+    });
+    invoke("color_scheme")
+      .then((dark) => {
+        if (!live) theme(dark);
+      })
+      .catch(() => {});
     load();
     // The list can change while the panel stays open: a focus-loss hide can
     // fire just after the panel took focus, and the tray or the CLI can
