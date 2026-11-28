@@ -7,10 +7,11 @@ use shisa_core::config::{
     App, Autostart, MAX_GRACE, MAX_PROMPT_TIMEOUT, MAX_PROTECTED_PATHS, MAX_RELOCK_SECONDS,
     MIN_PROMPT_TIMEOUT, UserConfig, valid_app_id,
 };
+use shisa_core::files::{WriteDurability, write_atomic};
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io::{self, Write};
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::io;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tracing::{error, info, warn};
@@ -134,33 +135,10 @@ fn write_user_with(
     }
     let path = dir.join(&file);
     let temp = dir.join(format!(".{file}.new"));
-    // A temp file left by a crash is removed before the retry, which also
-    // removes a planted symlink instead of following it.
-    match fs::remove_file(&temp) {
-        Ok(()) => {}
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-        Err(e) => return Err(e),
-    }
-    // A failed write must not leave a half-written temp file behind: the
-    // next attempt would overwrite it, but it would sit there until then.
     // The data is synced before the rename. Otherwise a crash shortly after
     // could leave an empty file under the final name, and an empty config
     // parses as "nothing protected".
-    let written = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&temp)
-        .and_then(|mut file| {
-            file.write_all(text.as_bytes())?;
-            file.set_permissions(fs::Permissions::from_mode(0o600))?;
-            file.sync_all()
-        })
-        .and_then(|()| fs::rename(&temp, &path));
-    if written.is_err() {
-        let _ = fs::remove_file(&temp);
-    }
-    written
+    write_atomic(&path, &temp, text.as_bytes(), WriteDurability::SyncFile)
 }
 
 /// A path the daemon can actually mark: absolute, a regular file after

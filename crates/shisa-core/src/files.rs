@@ -1,8 +1,8 @@
-//! Bounded reads for policy, desktop metadata and session files.
+//! Bounded reads and atomic replacement for policy and session files.
 
 use std::fs::{File, Metadata, OpenOptions};
-use std::io::{self, Read};
-use std::os::unix::fs::OpenOptionsExt;
+use std::io::{self, Read, Write};
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 
 /// Check the opened file before reading it. Opening without blocking lets
@@ -49,6 +49,48 @@ pub fn read_small_text(
 ) -> io::Result<String> {
     String::from_utf8(read_small_file(path, limit, check)?)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+}
+
+pub enum WriteDurability {
+    /// Sync the new file's contents and metadata before publishing it.
+    SyncFile,
+    /// Publish recoverable runtime data without waiting for storage.
+    RenameOnly,
+}
+
+/// Publish a 0600 file in one rename. The temporary path must be distinct
+/// from the destination, in the same directory, and reserved for this writer.
+/// Callers that reuse a temporary name must serialize their writes because
+/// each attempt removes any temporary file left by its predecessor.
+/// The parent directory is not synced.
+pub fn write_atomic(
+    path: &Path,
+    temporary: &Path,
+    bytes: &[u8],
+    durability: WriteDurability,
+) -> io::Result<()> {
+    match std::fs::remove_file(temporary) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(temporary)?;
+    let result = (|| {
+        file.write_all(bytes)?;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        if matches!(durability, WriteDurability::SyncFile) {
+            file.sync_all()?;
+        }
+        std::fs::rename(temporary, path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(temporary);
+    }
+    result
 }
 
 #[cfg(test)]

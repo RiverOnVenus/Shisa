@@ -8,11 +8,13 @@
 
 use crate::dbus::{LOCK_CONFIRMED, LOCK_NO_LAYER, LOCK_PARTIAL, LockReport, lock_status};
 use crate::desktop::{Env, display_name};
+use crate::files::{WriteDurability, write_atomic};
 use serde::Deserialize;
 use std::fs;
-use std::io::{self, Write};
+use std::io;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// The interface languages Shisa ships with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -151,8 +153,7 @@ pub fn current() -> Language {
     }
 }
 
-/// Save this process's choice. Written to a temporary file and renamed, so a
-/// crash cannot leave a half-written preference behind.
+/// Save this process's choice by syncing the new file before an atomic rename.
 pub fn save(language: Language) -> io::Result<()> {
     let config_home = config_home()
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no home directory"))?;
@@ -169,18 +170,11 @@ pub fn save_to(config_home: &Path, language: Language) -> io::Result<()> {
         ));
     };
     fs::create_dir_all(dir)?;
-    let temp = dir.join(".ui.toml.new");
+    static NEXT_SAVE: AtomicU64 = AtomicU64::new(0);
+    let sequence = NEXT_SAVE.fetch_add(1, Ordering::Relaxed);
+    let temp = dir.join(format!(".ui.toml.new.{}.{sequence}", std::process::id()));
     let text = format!("language = \"{}\"\n", language.tag());
-    let written = fs::File::create(&temp)
-        .and_then(|mut file| {
-            file.write_all(text.as_bytes())?;
-            file.sync_all()
-        })
-        .and_then(|()| fs::rename(&temp, &path));
-    if written.is_err() {
-        let _ = fs::remove_file(&temp);
-    }
-    written
+    write_atomic(&path, &temp, text.as_bytes(), WriteDurability::SyncFile)
 }
 
 /// Rewrites a known English error from shisad, zbus or polkit for the
@@ -414,6 +408,31 @@ mod tests {
         assert_eq!(for_account(&dir, Some("zh_CN.UTF-8")), Language::ZhCn);
 
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_failed_preference_rename_cleans_up_and_can_be_retried() {
+        let dir = std::env::temp_dir().join(format!("shisa-i18n-rename-{}", std::process::id()));
+        let path = config_path(&dir);
+        fs::create_dir_all(&path).unwrap();
+        fs::write(path.join("marker"), "untouched").unwrap();
+
+        assert!(save_to(&dir, Language::En).is_err());
+        assert_eq!(
+            fs::read_to_string(path.join("marker")).unwrap(),
+            "untouched"
+        );
+        assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 1);
+
+        fs::remove_dir_all(&path).unwrap();
+        let sibling = dir.join("sibling");
+        fs::write(&sibling, "untouched").unwrap();
+        std::os::unix::fs::symlink(&sibling, path.with_file_name(".ui.toml.new")).unwrap();
+        save_to(&dir, Language::En).unwrap();
+        assert_eq!(saved(&dir), Some(Language::En));
+        assert_eq!(fs::read_to_string(sibling).unwrap(), "untouched");
+        assert_eq!(fs::symlink_metadata(path).unwrap().mode() & 0o777, 0o600);
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

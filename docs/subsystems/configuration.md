@@ -26,6 +26,8 @@ A reload is fail-closed. If the config directory or one of its entries cannot be
 
 A settings write is fail-closed too. shisad refuses a config directory that is not root's or that group or others can write, removes a stale temp file, and creates the new one without following a symlink. The directory is kept at 0700, the result is written as 0600, and it is renamed into place. The package's install script tightens the directory and files of an earlier installation, because the files list the apps and paths each user protects.
 
+The daemon's reload thread serializes policy changes. It uses [`shisa_core::files::write_atomic`](../../crates/shisa-core/src/files.rs) with `SyncFile` so a published policy has synced data and metadata. An empty policy would otherwise parse as no protection. A failed write preserves the destination and attempts to clean up its temporary file. The rename is atomic during normal operation. The parent directory is not synced, so the rename itself is not guaranteed to survive power loss.
+
 ### Interface language
 
 The settings window, restore window, tray menu and notifications, and `shisa` commands share one per-user choice. It lives in a user-writable file, apart from the root-owned policy file, because changing it must not need polkit authorization:
@@ -38,6 +40,8 @@ language = "zh-CN"   # or "en"
 Without a saved choice, the programs read `LC_ALL`, then `LC_MESSAGES`, then `LANG`. A `zh` locale selects Simplified Chinese and every other locale English. A missing, unreadable or malformed file falls back to the locale rather than failing. The daemon reads this user-writable file while it represents the account, so the read accepts only a small regular file, opens it without blocking on a FIFO, caps it at 64 KiB, and requires the opened file to belong to the account.
 
 The settings window writes the file from the General page's language selector. The tray re-reads it every two seconds, so its menu, tooltip and notifications follow a change without a restart. The restore window reads it when it opens. Desktop files' `Name[locale]` still follow the session locale: the choice changes Shisa's own text, not application names.
+
+Language saves use the same `SyncFile` replacement with a 0600 file. Each save has its own temporary name, so concurrent saves publish complete values and the last successful rename determines the saved language.
 
 The daemon keeps D-Bus error strings in English so the bus contract and the debug log stay stable. The settings shell and the CLI translate the known ones for the Chinese interface (`shisa_core::i18n::error_text`). Resolution notes from `ResolveApp` are formatted in the caller's saved language because they are content rather than error codes. The `.policy` file carries both languages through `xml:lang`, and polkit selects the action text by the session locale. The detail that names the target of a global settings change uses the saved choice instead.
 

@@ -52,6 +52,12 @@ These are the checks the matrix does not cover. A green cell is not a full verif
 
 The log keeps the results that the matrix cannot show, grouped by the build that produced them. The subsystem references linked at the end carry the full detail.
 
+### 2026-11-28 — Atomic file replacement
+
+- Focused tests passed before migration for a failed preference rename, a blocked journal write and retry, a failed policy rename, and stale policy symlink removal. `strace -f -yy -e trace=openat,fsync,rename` on the preference, journal and policy tests showed file `fsync` before rename for the preference and policy, with no journal `fsync`. After migration the same traces showed `O_EXCL` and mode 0600 for all three, and the same file-sync split. The preference and journal tests now also check that a stale temporary symlink leaves its target untouched.
+- The workspace, Tauri and fuzz formatting checks, workspace Clippy with `--all-targets --locked -- -D warnings`, and all test suites passed. Workspace tests reported 220 passed, 90 filtered, and 22 results including the namespace child runs. The real virtual KWin journal test passed in 12.33 seconds. The KWin script passed 37, the frontend passed 10 Node and 31 vitest, and Tauri passed 8.
+- Not run: simulated power loss, `tests/gate.sh`, `tests/auth.sh`, `tests/settings.sh`, installed-package verification, and live Wayland clicks.
+
 ### 2026-11-28 — Shared lock feedback
 
 - Baseline at `860a96a`: the workspace, Tauri, and fuzz formatting checks and workspace Clippy with `--all-targets --locked -- -D warnings` passed. `cargo test --workspace --locked` passed 208 distinct tests plus 10 `config_owner` child runs, each with 9 filtered, across 22 reported results. Concurrent child output split one result line. The KWin script passed 37 tests, `npm --prefix gui/shisa-settings test` passed 11 Node and 29 vitest tests, and the Tauri test suite passed 8.
